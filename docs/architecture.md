@@ -14,7 +14,7 @@ apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
-docs/          architecture.md, security.md, desktop.md, git_flow.md
+docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
 ```
 
 `apps/core` and `apps/cli` are members of the **root Cargo workspace**; each keeps

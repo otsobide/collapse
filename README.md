@@ -104,7 +104,7 @@ apps/
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
-docs/          architecture.md, security.md, desktop.md, git_flow.md
+docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
 ```
 
 Each app carries its own tests, in that ecosystem's conventional place: the Rust
@@ -116,7 +116,8 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 - [Architecture](docs/architecture.md) — the engine, the CLI, the desktop app, and how they fit together.
 - [Security](docs/security.md) — threat model, measures, and the attacks they prevent.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
-- [Git flow](docs/git_flow.md) — branching model and commit conventions.
+- [Deployment](docs/deployment.md) — how the landing site is built and published.
+- [Git flow](docs/git_flow.md) — branching model (including deploy branches) and commits.
 
 ## Development
 
