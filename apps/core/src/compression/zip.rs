@@ -41,6 +41,48 @@ pub fn compress_zip(
     Ok(())
 }
 
+/// Archive a whole directory tree into a standard ZIP.
+///
+/// Entries are stored relative to (and prefixed with) the directory's own
+/// name, and directory entries are emitted so empty folders survive the
+/// round-trip. `level` maps the same way as [`compress_zip`].
+pub fn compress_zip_dir(
+    source_dir: &Path,
+    output: &Path,
+    level: u32,
+) -> Result<(), CompressionError> {
+    let entries = super::walk_tree(source_dir)?;
+    let compress_level = ZIP_LEVELS[(level - 1) as usize];
+
+    let output_file = File::create(output)?;
+    let mut writer = ZipWriter::new(output_file);
+
+    let file_options = SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .compression_level(Some(compress_level));
+    let dir_options = SimpleFileOptions::default();
+
+    for entry in entries {
+        if entry.is_dir {
+            writer
+                .add_directory(&entry.archive_name, dir_options)
+                .map_err(|e| CompressionError::Failed(e.to_string()))?;
+        } else {
+            writer
+                .start_file(&entry.archive_name, file_options)
+                .map_err(|e| CompressionError::Failed(e.to_string()))?;
+            let bytes = fs::read(&entry.disk_path)?;
+            writer.write_all(&bytes)?;
+        }
+    }
+
+    writer
+        .finish()
+        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+
+    Ok(())
+}
+
 pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
     let file = File::open(archive)?;
     let mut zip = zip::ZipArchive::new(file)
