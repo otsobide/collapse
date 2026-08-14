@@ -53,8 +53,10 @@ jobs:
           # .nojekyll lets a static host serve Nuxt's _nuxt/ asset directory.
           touch .nojekyll
           git init -q -b "$TARGET"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Attribute the published build to the repo owner (links to the
+          # GitHub profile via the account's noreply email), not a bot.
+          git config user.name "Javier Parada"
+          git config user.email "19194763+n1nj4t4nuk1@users.noreply.github.com"
           git add -A
           git commit -q -m "Deploy landing from ${GITHUB_REF_NAME}@${GITHUB_SHA}"
           git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TARGET"
