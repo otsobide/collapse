@@ -120,8 +120,19 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 
 ## Development
 
+A root `Makefile` fans out to a `Makefile` in each app. Run `make help` for the
+list; a few common ones:
+
+```bash
+make test            # run every test suite (core, cli, desktop)
+make core/test       # a single app's tests (also cli/test, desktop/test)
+make desktop/dev     # run an app target (here: the Tauri app in dev mode)
+make fmt  make lint  # format / clippy the Rust workspace
+```
+
 Work happens on `dev`, merged into `main` per release (see
-[git flow](docs/git_flow.md)). CI runs `cargo test` on every push and pull request.
+[git flow](docs/git_flow.md)). CI invokes these same `make` targets on every
+push and pull request.
 
 ## License
 

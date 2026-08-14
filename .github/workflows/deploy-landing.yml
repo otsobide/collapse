@@ -32,10 +32,7 @@ jobs:
           cache-dependency-path: apps/landing/package-lock.json
 
       - name: Build the landing
-        working-directory: apps/landing
-        run: |
-          npm ci
-          npm run generate
+        run: make landing/build
 
       - name: Publish build output
         working-directory: apps/landing/.output/public
