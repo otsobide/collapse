@@ -14,6 +14,7 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
 ## Why Collapse
 
 - **Compress and decompress** — not a one-way tool. Every supported format round-trips.
+- **Files or whole folders** — archive a single file or an entire directory tree into a standard `.7z`, `.zip`, or `.tar` that any other tool can open.
 - **Three formats, one interface** — pick 7z, ZIP, or tar; the level (1–5) applies
   to the compressing formats and is ignored by tar.
 - **Safe by default** — extraction rejects entries with absolute paths or `..`
