@@ -2,7 +2,7 @@ mod sevenz;
 mod tar;
 mod zip;
 
-pub use self::sevenz::{compress_7z, extract_7z};
+pub use self::sevenz::{compress_7z, compress_7z_dir, extract_7z};
 pub use self::tar::{compress_tar, compress_tar_dir, extract_tar};
 pub use self::zip::{compress_zip, compress_zip_dir, extract_zip};
 
@@ -201,8 +201,6 @@ pub fn compress(
 /// Entries keep their paths relative to (and prefixed with) the directory's
 /// own name, producing a standard archive other tools can read. As with
 /// [`compress`], `level` must be 1–5; `tar` ignores it.
-///
-/// Only `tar` is supported for now; other formats return an error.
 pub fn compress_dir(
     source_dir: &Path,
     output: &Path,
@@ -213,11 +211,9 @@ pub fn compress_dir(
         return Err(CompressionError::InvalidLevel(level));
     }
     match algorithm {
+        Algorithm::SevenZ => compress_7z_dir(source_dir, output, level),
         Algorithm::Tar => compress_tar_dir(source_dir, output),
         Algorithm::Zip => compress_zip_dir(source_dir, output, level),
-        other => Err(CompressionError::Failed(format!(
-            "Directory compression is not yet supported for {other}"
-        ))),
     }
 }
 

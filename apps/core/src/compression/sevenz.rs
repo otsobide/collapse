@@ -40,6 +40,47 @@ pub fn compress_7z(
     Ok(())
 }
 
+/// Archive a whole directory tree into a standard 7z.
+///
+/// Entries are stored relative to (and prefixed with) the directory's own
+/// name, and directory entries are emitted so empty folders survive the
+/// round-trip. `level` maps the same way as [`compress_7z`].
+pub fn compress_7z_dir(
+    source_dir: &Path,
+    output: &Path,
+    level: u32,
+) -> Result<(), CompressionError> {
+    let entries = super::walk_tree(source_dir)?;
+    let preset = SEVENZ_PRESETS[(level - 1) as usize];
+
+    let mut writer =
+        SevenZWriter::create(output).map_err(|e| CompressionError::Failed(e.to_string()))?;
+    let lzma2_opts = LZMA2Options::with_preset(preset);
+    writer.set_content_methods(vec![SevenZMethodConfiguration::new(SevenZMethod::LZMA2)
+        .with_options(lzma2_opts.into())]);
+
+    for entry in entries {
+        // from_path sets is_directory/has_stream from the on-disk node.
+        let sz_entry = SevenZArchiveEntry::from_path(&entry.disk_path, entry.archive_name);
+        if entry.is_dir {
+            writer
+                .push_archive_entry::<&[u8]>(sz_entry, None)
+                .map_err(|e| CompressionError::Failed(e.to_string()))?;
+        } else {
+            let content = fs::read(&entry.disk_path)?;
+            writer
+                .push_archive_entry(sz_entry, Some(content.as_slice()))
+                .map_err(|e| CompressionError::Failed(e.to_string()))?;
+        }
+    }
+
+    writer
+        .finish()
+        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+
+    Ok(())
+}
+
 pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
     fs::create_dir_all(output_dir)?;
     let canonical_output = output_dir.canonicalize()?;
