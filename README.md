@@ -103,6 +103,7 @@ apps/
   core/        collapse-core — the shared compression engine
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
+  landing/     collapse-landing — Nuxt landing page (the product site)
 tests/
   core/        integration tests for collapse-core
   cli/         integration tests for collapse-cli

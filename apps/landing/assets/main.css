@@ -1,0 +1,63 @@
+/* Cervantic design tokens — warm cream + terracotta, monospace. */
+:root {
+  --bg: #ece4d5;
+  --surface: #f5efe3;
+  --cream: #f7f1e6;
+  --border: #e1d9c8;
+  --border-2: #d3c9b5;
+  --dashed: #c3b9a5;
+  --text: #3e362b;
+  --muted: #6e6456;
+  --faint: #a99e8b;
+  --accent: #bc5a38;
+  --accent-hover: #a54e30;
+  --accent-dim: rgba(188, 90, 56, 0.12);
+  --success: #6f7a4a;
+  --r: 16px;
+  --r-sm: 11px;
+  --font: 'SF Mono', ui-monospace, 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  --maxw: 940px;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.wrap { width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 20px;
+  border-radius: var(--r-sm);
+  font-family: var(--font);
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s, border-color 0.2s, color 0.2s;
+}
+.btn-primary { background: var(--accent); color: var(--cream); border: 1px solid var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); transform: translateY(-1px); }
+.btn-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border-2); }
+.btn-ghost:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+
+.eyebrow {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
