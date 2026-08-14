@@ -104,13 +104,12 @@ apps/
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
-tests/
-  core/        integration tests for collapse-core
-  cli/         integration tests for collapse-cli
 docs/          architecture.md, security.md, desktop.md, git_flow.md
 ```
 
-Each app under `apps/` gets a mirrored test crate under `tests/`.
+Each app carries its own tests, in that ecosystem's conventional place: the Rust
+crates keep Cargo integration tests in `apps/<crate>/tests/`; the desktop app
+keeps its Vitest suite in `apps/desktop/tests/`.
 
 ## Documentation
 

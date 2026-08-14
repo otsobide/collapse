@@ -29,7 +29,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Test collapse-core
-        run: cargo test -p collapse-core-tests
+        run: cargo test -p collapse-core
 
   # Runs only if core passed; parallel with vitest.
   cli:
@@ -55,7 +55,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Test collapse-cli
-        run: cargo test -p collapse-cli-tests
+        run: cargo test -p collapse-cli
 
   # Runs only if core passed; parallel with cli. Frontend tests mock the Tauri
   # IPC, so this needs Node only — no Tauri system dependencies.

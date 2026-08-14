@@ -15,3 +15,9 @@ path = "src/lib.rs"
 collapse-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+
+# Integration tests (tests/) drive the real clap parser and verify with core.
+[dev-dependencies]
+collapse-core = { path = "../core" }
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"

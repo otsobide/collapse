@@ -9,3 +9,11 @@ tar = "0.4"
 zip = "2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+
+# Integration tests (tests/) craft archives directly with these crates.
+[dev-dependencies]
+sevenz-rust2 = "0.13"
+tar = "0.4"
+zip = "2"
+tempfile = "3"
+serde_json = "1"
