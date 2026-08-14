@@ -71,11 +71,6 @@ async function browse() {
   if (selected) pick(selected)
 }
 
-async function browseFolder() {
-  const selected = await open({ directory: true, multiple: false, title: 'Choose a folder' })
-  if (selected) pick(selected)
-}
-
 async function compress() {
   if (!inputPath.value || processing.value) return
   error.value = null
@@ -226,10 +221,7 @@ onUnmounted(() => {
               <p class="label">
                 {{ mode === 'compress' ? 'Drop a file or folder' : 'Drop an archive to extract' }}
               </p>
-              <p class="hint">
-                or <button class="linkish" @click.stop="browse">browse</button>
-                <template v-if="mode === 'compress'"> · <button class="linkish" @click.stop="browseFolder">choose a folder</button></template>
-              </p>
+              <p class="hint">or <button class="linkish" @click.stop="browse">browse</button></p>
             </template>
           </div>
 
