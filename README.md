@@ -1,7 +1,7 @@
 # 🌟 Collapse
 
-A small, fast file compressor — compress **and** extract from your terminal or a
-native desktop window. One shared Rust engine, two ways to use it.
+A small, fast, beautiful file compressor — compress **and** extract from your
+terminal or a native desktop window. One shared Rust engine, two ways to use it.
 
 Supports **7z** (LZMA2), **ZIP** (Deflate), and **tar** (uncompressed container),
 with safe extraction that refuses path-traversal ("ZIP Slip") archives.
@@ -19,7 +19,7 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
   to the compressing formats and is ignored by tar.
 - **Safe by default** — extraction rejects entries with absolute paths or `..`
   components before writing anything to disk, so a malicious archive can't escape
-  the output directory.
+  the output directory. See [Security](docs/security.md) for the full threat model.
 - **Shared engine** — the CLI and the desktop app call the exact same core, so
   behavior is identical whichever you reach for.
 
