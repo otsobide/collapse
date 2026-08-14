@@ -92,19 +92,26 @@ Once the front-ends land, this section will cover installing and running them.
 
 ```
 apps/
-  core/        collapse-core — the shared compression engine (the only crate today)
+  core/        collapse-core — the shared compression engine
+  cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
 tests/
-  core/        integration tests for collapse-core, mirroring apps/core
-docs/          project documentation (see docs/git_flow.md)
+  core/        integration tests for collapse-core
+  cli/         integration tests for collapse-cli
+docs/          architecture.md, security.md, git_flow.md
 ```
 
 Each app under `apps/` gets a mirrored test crate under `tests/`.
 
+## Documentation
+
+- [Architecture](docs/architecture.md) — the engine, the CLI, and how they fit together.
+- [Security](docs/security.md) — threat model, measures, and the attacks they prevent.
+- [Git flow](docs/git_flow.md) — branching model and commit conventions.
+
 ## Development
 
-The branching model and commit conventions are documented in
-[`docs/git_flow.md`](docs/git_flow.md): work happens on `dev`, and `dev` is merged
-into `main` per release. CI runs `cargo test` on every push and pull request.
+Work happens on `dev`, merged into `main` per release (see
+[git flow](docs/git_flow.md)). CI runs `cargo test` on every push and pull request.
 
 ## License
 
