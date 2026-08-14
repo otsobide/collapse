@@ -4,8 +4,8 @@ Collapse is a small file-compression toolkit built around **one shared engine**
 with thin interfaces on top. Everything is a Cargo workspace under `apps/`, with
 a mirrored test tree under `tests/`.
 
-This document describes what exists today: the `collapse-core` engine and the
-`collapse` CLI. Interfaces still to come (desktop app) are noted at the end.
+This document describes what exists today: the `collapse-core` engine, the
+`collapse` CLI, and the Tauri desktop app.
 
 ## Workspace layout
 
@@ -13,15 +13,18 @@ This document describes what exists today: the `collapse-core` engine and the
 apps/
   core/        collapse-core — the shared compression/extraction engine
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
+  desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
 tests/
   core/        collapse-core-tests — integration tests for apps/core
   cli/         collapse-cli-tests  — integration tests for apps/cli
-docs/          architecture.md, security.md, git_flow.md
+docs/          architecture.md, security.md, desktop.md, git_flow.md
 ```
 
-Each app under `apps/` has a matching test crate under `tests/` (see
-[Testing](#testing)). Adding an app means adding **both** to `members` in the
-root `Cargo.toml`.
+`apps/core` and `apps/cli` are members of the **root Cargo workspace**, each with
+a matching test crate under `tests/`. `apps/desktop/src-tauri` is a **separate
+workspace** (empty `[workspace]` in its `Cargo.toml`) so a plain `cargo test` at
+the root doesn't need the Tauri system dependencies — see
+[desktop.md](desktop.md).
 
 ## Dependency graph
 
@@ -129,6 +132,22 @@ Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
 as needed.
 
+## collapse-desktop — the desktop app
+
+A **Tauri v2** app: a Vue 3 frontend (`src/App.vue` is the whole UI) over a small
+Rust backend (`src-tauri/src/lib.rs`) that calls `collapse-core` directly — no
+HTTP, same engine as the CLI. It compresses files and folders and extracts
+archives, in the cervantic visual style (warm cream + terracotta, monospace), and
+targets macOS, Windows and Linux from one codebase.
+
+The backend exposes three Tauri commands: `is_directory` (UI icon/name hint),
+`compress_path` (dispatches file vs. folder, refuses to overwrite its own
+source), and `extract_archive`. Every path is chosen through the native
+open/save dialogs, which is also what makes the app work under the macOS App
+Store sandbox. Build, signing, and per-platform distribution (including App Store
+steps) are documented in [desktop.md](desktop.md); it inherits every format,
+directory, and security guarantee from `collapse-core` for free.
+
 ## Testing
 
 Tests live in the **mirrored `tests/` tree**, not next to the source:
@@ -149,13 +168,8 @@ push to `main`/`dev` and on pull requests — which compiles and tests both
 `collapse-core` and `collapse-cli`. Branching and release flow are described in
 [git_flow.md](git_flow.md).
 
-## Planned components
+## Roadmap
 
-The MVP targets two interfaces; the desktop app is the remaining one:
-
-- **Desktop app** (Tauri v2, Vue frontend + Rust backend calling `collapse-core`
-  directly) — tracked in the repository issues.
-
-Because every interface funnels through `collapse-core`, the desktop app inherits
-the same formats, directory support, and security guarantees for free; it only
-adds a UI and its own thin command layer.
+The MVP interfaces — CLI and desktop app — are both in place. Remaining work
+(desktop CI, code signing / store submission, decompression-bomb limits, license)
+is tracked in the repository issues.

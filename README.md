@@ -62,10 +62,18 @@ cargo run -p collapse-cli -- compress notes.txt -f 7z
 cargo build -p collapse-cli --release      # binary at target/release/collapse
 ```
 
-### Desktop — *planned*
+### Desktop
 
-A cross-platform desktop window (drag a file in, pick a format and level, save the
-result) sharing the same engine as the CLI.
+A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
+CLI: drag in a file or folder to compress, or an archive to extract, in a calm
+interface using the cervantic palette. See [desktop.md](docs/desktop.md) for
+building, signing, and per-platform distribution (including the macOS App Store).
+
+```bash
+cd apps/desktop && npm install
+npm run tauri dev      # dev window
+npm run tauri build    # installers/bundles for the current OS
+```
 
 ## Status
 
@@ -75,7 +83,7 @@ Collapse is at an early stage. Here's exactly what exists today:
   path-traversal-safe extraction and whole-folder support. Fully tested,
   including a dedicated security suite for malicious archives.
 - ✅ **CLI** (`collapse`) — compress files/folders and extract archives.
-- 🚧 **Desktop app** — not started.
+- ✅ **Desktop app** — Tauri v2 (macOS / Windows / Linux), compress & extract.
 
 ## Getting started
 
@@ -94,18 +102,20 @@ Once the front-ends land, this section will cover installing and running them.
 apps/
   core/        collapse-core — the shared compression engine
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
+  desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
 tests/
   core/        integration tests for collapse-core
   cli/         integration tests for collapse-cli
-docs/          architecture.md, security.md, git_flow.md
+docs/          architecture.md, security.md, desktop.md, git_flow.md
 ```
 
 Each app under `apps/` gets a mirrored test crate under `tests/`.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — the engine, the CLI, and how they fit together.
+- [Architecture](docs/architecture.md) — the engine, the CLI, the desktop app, and how they fit together.
 - [Security](docs/security.md) — threat model, measures, and the attacks they prevent.
+- [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
 - [Git flow](docs/git_flow.md) — branching model and commit conventions.
 
 ## Development
