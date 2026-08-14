@@ -1,0 +1,12 @@
+[package]
+name = "collapse-core-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dev-dependencies]
+collapse-core = { path = "../../apps/core" }
+sevenz-rust2 = "0.13"
+zip = "2"
+tempfile = "3"
+serde_json = "1"

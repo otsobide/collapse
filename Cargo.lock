@@ -143,10 +143,19 @@ name = "collapse-core"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "sevenz-rust2",
+ "thiserror",
+ "zip",
+]
+
+[[package]]
+name = "collapse-core-tests"
+version = "0.1.0"
+dependencies = [
+ "collapse-core",
  "serde_json",
  "sevenz-rust2",
  "tempfile",
- "thiserror",
  "zip",
 ]
 
