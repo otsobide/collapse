@@ -1,6 +1,6 @@
 //! Tests for the 7z backend (`compress_7z` / `extract_7z`).
 
-use collapse_core::compression::{compress_7z, extract_7z};
+use collapse_core::compression::{compress_7z, compress_7z_dir, extract_7z};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 
 const SAMPLE: &[u8] = b"Hello, Collapse! Hello, Collapse! Hello, Collapse! ";
@@ -183,4 +183,56 @@ fn extract_7z_roundtrip_all_levels() {
         let content = std::fs::read(out.join("sample.txt")).unwrap();
         assert_eq!(content, SAMPLE, "roundtrip failed at level {level}");
     }
+}
+
+// -- compress_7z_dir (whole-directory archiving) --
+
+/// Build a small tree under `<parent>/photos` and return the `photos` dir.
+fn sample_tree(parent: &std::path::Path) -> std::path::PathBuf {
+    let root = parent.join("photos");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("top.txt"), b"top").unwrap();
+    std::fs::write(root.join("sub/inner.txt"), b"inner").unwrap();
+    root
+}
+
+#[test]
+fn compress_7z_dir_round_trips_tree() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = sample_tree(dir.path());
+    let archive = dir.path().join("photos.7z");
+
+    compress_7z_dir(&root, &archive, 3).unwrap();
+
+    let out = dir.path().join("out");
+    let mut files = extract_7z(&archive, &out).unwrap();
+    files.sort();
+    assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
+    assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
+    assert_eq!(std::fs::read(out.join("photos/sub/inner.txt")).unwrap(), b"inner");
+}
+
+#[test]
+fn compress_7z_dir_preserves_empty_subdir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    std::fs::write(root.join("file.txt"), b"x").unwrap();
+    let archive = dir.path().join("photos.7z");
+
+    compress_7z_dir(&root, &archive, 1).unwrap();
+
+    let out = dir.path().join("out");
+    extract_7z(&archive, &out).unwrap();
+    assert!(out.join("photos/empty").is_dir(), "empty subdir was not preserved");
+}
+
+#[test]
+fn compress_7z_dir_rejects_non_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = source_file(dir.path());
+    let archive = dir.path().join("out.7z");
+
+    let result = compress_7z_dir(&file, &archive, 1);
+    assert!(result.is_err());
 }
