@@ -1,4 +1,4 @@
-# 🗜️ Collapse
+# 🌟 Collapse
 
 A small, fast file compressor — compress **and** extract from your terminal or a
 native desktop window. One shared Rust engine, two ways to use it.
