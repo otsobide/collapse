@@ -55,8 +55,9 @@ pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Com
         }
 
         if entry.header().entry_type() == EntryType::Regular {
-            // unpack_in strips prefix/root/cur-dir components before writing,
-            // so report the path it actually wrote, relative to output_dir.
+            // The traversal guard is unpack_in itself (it refuses `..` and
+            // strips root/cur-dir before writing). Report the path it actually
+            // wrote by keeping only the normal components, relative to output_dir.
             let written: PathBuf = Path::new(&name)
                 .components()
                 .filter(|c| matches!(c, Component::Normal(_)))

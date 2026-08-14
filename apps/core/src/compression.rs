@@ -7,11 +7,31 @@ pub use self::tar::{compress_tar, extract_tar};
 pub use self::zip::{compress_zip, extract_zip};
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// Resolve an archive entry name to a path safe to join onto the output dir.
+///
+/// Returns the name reduced to its `Normal` components (dropping `.`), or
+/// `None` when it is absolute or contains a `..` component — i.e. a path
+/// traversal attempt, or an entry that resolves to no file at all.
+pub(crate) fn sanitize_entry_path(name: &str) -> Option<PathBuf> {
+    let mut safe = PathBuf::new();
+    for component in Path::new(name).components() {
+        match component {
+            Component::Normal(part) => safe.push(part),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    if safe.as_os_str().is_empty() {
+        return None;
+    }
+    Some(safe)
+}
 
 /// Supported compression algorithms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

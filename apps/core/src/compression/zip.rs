@@ -61,15 +61,16 @@ pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Com
             .map_err(|e| CompressionError::Failed(e.to_string()))?;
 
         let name = entry.name().to_string();
-        let dest = canonical_output.join(&name);
 
-        // Prevent ZIP Slip: ensure the resolved path stays within output_dir.
-        let canonical_dest = dest.canonicalize().unwrap_or_else(|_| dest.clone());
-        if !canonical_dest.starts_with(&canonical_output) {
-            return Err(CompressionError::Failed(format!(
+        // Prevent ZIP Slip: reject absolute paths and `..` components before
+        // touching the filesystem, rather than trusting a resolved-path check
+        // (which fails open when the target does not exist yet).
+        let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
+            CompressionError::Failed(format!(
                 "Path traversal detected in archive entry: {name}"
-            )));
-        }
+            ))
+        })?;
+        let dest = canonical_output.join(&rel);
 
         if entry.is_dir() {
             fs::create_dir_all(&dest)?;
@@ -80,7 +81,7 @@ pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Com
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
             fs::write(&dest, &buf)?;
-            extracted.push(name);
+            extracted.push(rel.to_string_lossy().to_string());
         }
     }
 

@@ -45,41 +45,34 @@ pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Comp
     let canonical_output = output_dir.canonicalize()?;
 
     let file = std::fs::File::open(archive)?;
-    sevenz_rust2::decompress(file, &canonical_output)
-        .map_err(|e| CompressionError::Failed(e.to_string()))?;
 
-    // Verify all extracted files stay within output_dir (path traversal check).
+    // Validate each entry name and write it ourselves, so a malicious name is
+    // rejected *before* any bytes reach disk. (`decompress` writes first and
+    // asks questions later, which lets `..` entries escape output_dir.)
     let mut extracted = Vec::new();
-    collect_files(&canonical_output, &canonical_output, &mut extracted)?;
-    for rel in &extracted {
-        let full = canonical_output.join(rel).canonicalize()?;
-        if !full.starts_with(&canonical_output) {
-            return Err(CompressionError::Failed(format!(
-                "Path traversal detected in archive entry: {rel}"
-            )));
-        }
-    }
-    Ok(extracted)
-}
+    sevenz_rust2::decompress_with_extract_fn(file, &canonical_output, |entry, reader, _dest| {
+        let name = entry.name().to_string();
+        let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
+            sevenz_rust2::Error::other(format!(
+                "Path traversal detected in archive entry: {name}"
+            ))
+        })?;
+        let dest = canonical_output.join(&rel);
 
-fn collect_files(
-    base: &Path,
-    dir: &Path,
-    out: &mut Vec<String>,
-) -> Result<(), CompressionError> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(base, &path, out)?;
+        if entry.is_directory() {
+            fs::create_dir_all(&dest).map_err(sevenz_rust2::Error::io)?;
         } else {
-            let rel = path
-                .strip_prefix(base)
-                .unwrap()
-                .to_string_lossy()
-                .to_string();
-            out.push(rel);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).map_err(sevenz_rust2::Error::io)?;
+            }
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf).map_err(sevenz_rust2::Error::io)?;
+            fs::write(&dest, &buf).map_err(sevenz_rust2::Error::io)?;
+            extracted.push(rel.to_string_lossy().to_string());
         }
-    }
-    Ok(())
+        Ok(true)
+    })
+    .map_err(|e| CompressionError::Failed(e.to_string()))?;
+
+    Ok(extracted)
 }
