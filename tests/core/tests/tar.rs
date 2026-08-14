@@ -2,7 +2,7 @@
 
 use std::io::Read;
 
-use collapse_core::compression::{compress_tar, extract_tar};
+use collapse_core::compression::{compress_tar, compress_tar_dir, extract_tar};
 use tar::{Builder, EntryType, Header};
 
 const SAMPLE: &[u8] = b"Hello, Collapse! Hello, Collapse! Hello, Collapse! ";
@@ -232,6 +232,60 @@ fn extract_tar_reports_absolute_entry_names_as_written() {
     let files = extract_tar(&archive, &out).unwrap();
     assert_eq!(files, vec!["abs.txt"]);
     assert!(out.join("abs.txt").exists());
+}
+
+// -- compress_tar_dir (whole-directory archiving) --
+
+/// Build a small tree under `<parent>/photos` and return the `photos` dir.
+fn sample_tree(parent: &std::path::Path) -> std::path::PathBuf {
+    let root = parent.join("photos");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("top.txt"), b"top").unwrap();
+    std::fs::write(root.join("sub/inner.txt"), b"inner").unwrap();
+    root
+}
+
+#[test]
+fn compress_tar_dir_round_trips_tree() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = sample_tree(dir.path());
+    let archive = dir.path().join("photos.tar");
+
+    compress_tar_dir(&root, &archive).unwrap();
+
+    // Entries are prefixed with the directory's own name.
+    let out = dir.path().join("out");
+    let mut files = extract_tar(&archive, &out).unwrap();
+    files.sort();
+    assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
+    assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
+    assert_eq!(std::fs::read(out.join("photos/sub/inner.txt")).unwrap(), b"inner");
+}
+
+#[test]
+fn compress_tar_dir_preserves_empty_subdir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    std::fs::write(root.join("file.txt"), b"x").unwrap();
+    let archive = dir.path().join("photos.tar");
+
+    compress_tar_dir(&root, &archive).unwrap();
+
+    let out = dir.path().join("out");
+    extract_tar(&archive, &out).unwrap();
+    assert!(out.join("photos/empty").is_dir(), "empty subdir was not preserved");
+}
+
+#[test]
+fn compress_tar_dir_rejects_non_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = source_file(dir.path());
+    let archive = dir.path().join("out.tar");
+
+    let result = compress_tar_dir(&file, &archive);
+    assert!(result.is_err());
+    assert!(!archive.exists(), "no archive should be created for a non-directory");
 }
 
 #[test]

@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use collapse_core::{compress, extract, Algorithm, CompressionError};
+use collapse_core::{compress, compress_dir, extract, Algorithm, CompressionError};
 
 #[test]
 fn algorithm_display() {
@@ -211,6 +211,54 @@ fn compression_error_display_io() {
     let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "not found");
     let err = CompressionError::from(io_err);
     assert!(err.to_string().contains("not found"));
+}
+
+// -- compress_dir dispatcher --
+
+#[test]
+fn compress_dir_dispatches_tar() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("data");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"alpha").unwrap();
+
+    let archive = dir.path().join("data.tar");
+    compress_dir(&root, &archive, Algorithm::Tar, 1).unwrap();
+
+    let out = dir.path().join("out");
+    let files = extract(&archive, &out).unwrap();
+    assert_eq!(files, vec!["data/a.txt"]);
+    assert_eq!(std::fs::read(out.join("data/a.txt")).unwrap(), b"alpha");
+}
+
+#[test]
+fn compress_dir_not_yet_supported_for_zip_and_7z() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("data");
+    std::fs::create_dir_all(&root).unwrap();
+
+    for algo in [Algorithm::Zip, Algorithm::SevenZ] {
+        let archive = dir.path().join(format!("data.{}", algo.extension()));
+        let err = compress_dir(&root, &archive, algo, 1).unwrap_err().to_string();
+        assert!(err.contains("not yet supported"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn compress_dir_invalid_level_is_rejected() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("data");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let archive = dir.path().join("data.tar");
+    assert!(matches!(
+        compress_dir(&root, &archive, Algorithm::Tar, 0),
+        Err(CompressionError::InvalidLevel(0))
+    ));
+    assert!(matches!(
+        compress_dir(&root, &archive, Algorithm::Tar, 6),
+        Err(CompressionError::InvalidLevel(6))
+    ));
 }
 
 #[test]
