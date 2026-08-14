@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 
-use collapse_core::compression::{compress_zip, extract_zip};
+use collapse_core::compression::{compress_zip, compress_zip_dir, extract_zip};
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 
@@ -166,4 +166,56 @@ fn extract_zip_roundtrip_all_levels() {
         let content = std::fs::read(out.join("sample.txt")).unwrap();
         assert_eq!(content, SAMPLE, "roundtrip failed at level {level}");
     }
+}
+
+// -- compress_zip_dir (whole-directory archiving) --
+
+/// Build a small tree under `<parent>/photos` and return the `photos` dir.
+fn sample_tree(parent: &std::path::Path) -> std::path::PathBuf {
+    let root = parent.join("photos");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("top.txt"), b"top").unwrap();
+    std::fs::write(root.join("sub/inner.txt"), b"inner").unwrap();
+    root
+}
+
+#[test]
+fn compress_zip_dir_round_trips_tree() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = sample_tree(dir.path());
+    let archive = dir.path().join("photos.zip");
+
+    compress_zip_dir(&root, &archive, 3).unwrap();
+
+    let out = dir.path().join("out");
+    let mut files = extract_zip(&archive, &out).unwrap();
+    files.sort();
+    assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
+    assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
+    assert_eq!(std::fs::read(out.join("photos/sub/inner.txt")).unwrap(), b"inner");
+}
+
+#[test]
+fn compress_zip_dir_preserves_empty_subdir() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    std::fs::write(root.join("file.txt"), b"x").unwrap();
+    let archive = dir.path().join("photos.zip");
+
+    compress_zip_dir(&root, &archive, 1).unwrap();
+
+    let out = dir.path().join("out");
+    extract_zip(&archive, &out).unwrap();
+    assert!(out.join("photos/empty").is_dir(), "empty subdir was not preserved");
+}
+
+#[test]
+fn compress_zip_dir_rejects_non_directory() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let file = source_file(dir.path());
+    let archive = dir.path().join("out.zip");
+
+    let result = compress_zip_dir(&file, &archive, 1);
+    assert!(result.is_err());
 }
