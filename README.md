@@ -36,13 +36,30 @@ Extraction auto-detects the format from the file extension.
 
 ## Interfaces
 
-### CLI — *planned*
+### CLI
 
-A single binary to compress and extract from scripts and the shell:
+Compress a file or a whole folder, or extract an archive, from the shell:
 
 ```bash
-collapse compress notes.txt --protocol 7z --level 5   # → notes.txt.7z
-collapse extract  notes.txt.7z --output ./out         # → ./out/notes.txt
+collapse compress notes.txt              # → notes.txt.zip  (zip, level 3)
+collapse compress photos/ -f 7z -l 5     # → photos.7z
+collapse extract photos.7z -o ./out      # restores the tree into ./out
+
+collapse c notes.txt                     # short aliases: c = compress, e = extract
+collapse e notes.txt.zip
+```
+
+Formats: `zip` (default, or inferred from `-o`'s extension), `7z`, `tar`. Level
+`1`–`5` (default `3`, ignored by tar). The archive defaults to `<source>.<ext>`
+next to the source; override with `-o`. It **won't overwrite** an existing
+archive (or its own source) unless you pass `--force`. Run `collapse --help` for
+the full surface.
+
+Build and run from source:
+
+```bash
+cargo run -p collapse-cli -- compress notes.txt -f 7z
+cargo build -p collapse-cli --release      # binary at target/release/collapse
 ```
 
 ### Desktop — *planned*
@@ -55,9 +72,9 @@ result) sharing the same engine as the CLI.
 Collapse is at an early stage. Here's exactly what exists today:
 
 - ✅ **`collapse-core`** — the compression/extraction engine (7z, ZIP, tar), with
-  path-traversal-safe extraction. Fully tested (69 tests, including a dedicated
-  security suite for malicious archives).
-- 🚧 **CLI** — not started.
+  path-traversal-safe extraction and whole-folder support. Fully tested,
+  including a dedicated security suite for malicious archives.
+- ✅ **CLI** (`collapse`) — compress files/folders and extract archives.
 - 🚧 **Desktop app** — not started.
 
 ## Getting started
