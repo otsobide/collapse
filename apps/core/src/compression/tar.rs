@@ -25,6 +25,39 @@ pub fn compress_tar(source: &Path, output: &Path, arcname: &str) -> Result<(), C
     Ok(())
 }
 
+/// Archive a whole directory tree into a standard tar file.
+///
+/// Entries are stored relative to (and prefixed with) the directory's own
+/// name, so `photos/` yields `photos/a.jpg`, `photos/sub/b.jpg`, … — the same
+/// layout `tar` and other tools produce, and round-trips back via `extract`.
+pub fn compress_tar_dir(source_dir: &Path, output: &Path) -> Result<(), CompressionError> {
+    if !source_dir.is_dir() {
+        return Err(CompressionError::Failed(format!(
+            "Not a directory: {}",
+            source_dir.display()
+        )));
+    }
+    let root = source_dir.file_name().ok_or_else(|| {
+        CompressionError::Failed("Cannot determine directory name to archive".to_string())
+    })?;
+
+    let output_file = File::create(output)?;
+    let mut builder = Builder::new(output_file);
+    // The crate default follows symlinks; disable it so links are stored as
+    // links and never dereferenced out of the tree.
+    builder.follow_symlinks(false);
+
+    builder
+        .append_dir_all(root, source_dir)
+        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+
+    builder
+        .finish()
+        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+
+    Ok(())
+}
+
 pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
     fs::create_dir_all(output_dir)?;
     let canonical_output = output_dir.canonicalize()?;

@@ -3,7 +3,7 @@ mod tar;
 mod zip;
 
 pub use self::sevenz::{compress_7z, extract_7z};
-pub use self::tar::{compress_tar, extract_tar};
+pub use self::tar::{compress_tar, compress_tar_dir, extract_tar};
 pub use self::zip::{compress_zip, extract_zip};
 
 use std::fmt;
@@ -127,6 +127,30 @@ pub fn compress(
         Algorithm::SevenZ => compress_7z(source, output, arcname, level),
         Algorithm::Tar => compress_tar(source, output, arcname),
         Algorithm::Zip => compress_zip(source, output, arcname, level),
+    }
+}
+
+/// Compress a whole directory tree into an archive.
+///
+/// Entries keep their paths relative to (and prefixed with) the directory's
+/// own name, producing a standard archive other tools can read. As with
+/// [`compress`], `level` must be 1–5; `tar` ignores it.
+///
+/// Only `tar` is supported for now; other formats return an error.
+pub fn compress_dir(
+    source_dir: &Path,
+    output: &Path,
+    algorithm: Algorithm,
+    level: u32,
+) -> Result<(), CompressionError> {
+    if !(1..=5).contains(&level) {
+        return Err(CompressionError::InvalidLevel(level));
+    }
+    match algorithm {
+        Algorithm::Tar => compress_tar_dir(source_dir, output),
+        other => Err(CompressionError::Failed(format!(
+            "Directory compression is not yet supported for {other}"
+        ))),
     }
 }
 
