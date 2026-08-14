@@ -1,16 +1,17 @@
 name: Deploy landing
 
-# Build the Nuxt landing and publish the compiled static site to the
-# `pages/landing` branch (which holds only the build output). Runs on every
-# push to main, and can be triggered manually.
+# Build the Nuxt landing and publish the compiled static site to a branch that
+# holds only the build output:
+#   - push to main → pages/landing       (production)
+#   - push to dev  → pages/landing-dev    (staging, to preview before main)
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
-# Avoid overlapping deploys clobbering each other.
+# One deploy per source branch at a time; don't let main and dev cancel each other.
 concurrency:
-  group: deploy-landing
+  group: deploy-landing-${{ github.ref_name }}
   cancel-in-progress: true
 
 permissions:
@@ -36,16 +37,24 @@ jobs:
           npm ci
           npm run generate
 
-      - name: Publish build output to pages/landing
+      - name: Publish build output
         working-directory: apps/landing/.output/public
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # main goes to production; every other branch (dev) goes to staging.
+          if [ "$GITHUB_REF_NAME" = "main" ]; then
+            TARGET="pages/landing"
+          else
+            TARGET="pages/landing-dev"
+          fi
+          echo "Publishing $GITHUB_REF_NAME → $TARGET"
+
           # .nojekyll lets a static host serve Nuxt's _nuxt/ asset directory.
           touch .nojekyll
-          git init -q -b pages/landing
+          git init -q -b "$TARGET"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -q -m "Deploy landing from ${GITHUB_SHA}"
-          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" pages/landing
+          git commit -q -m "Deploy landing from ${GITHUB_REF_NAME}@${GITHUB_SHA}"
+          git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$TARGET"
