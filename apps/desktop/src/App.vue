@@ -287,10 +287,6 @@ onUnmounted(() => {
         </div>
       </Transition>
     </main>
-
-    <footer>
-      <span>cervantic</span>
-    </footer>
   </div>
 </template>
 
@@ -394,7 +390,7 @@ main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 10px 22px 6px;
+  padding: 10px 22px 22px;
 }
 
 .work { display: flex; flex-direction: column; gap: 14px; flex: 1; }
@@ -610,18 +606,6 @@ main {
   line-height: 1.4;
 }
 .error svg { width: 17px; height: 17px; flex-shrink: 0; }
-
-footer {
-  padding: 8px 22px 12px;
-  text-align: center;
-}
-footer span {
-  font-size: 0.66rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-  color: var(--faint);
-  pointer-events: none;
-}
 
 .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
