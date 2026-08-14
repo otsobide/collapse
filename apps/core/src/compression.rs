@@ -1,7 +1,9 @@
 mod sevenz;
+mod tar;
 mod zip;
 
 pub use self::sevenz::{compress_7z, extract_7z};
+pub use self::tar::{compress_tar, extract_tar};
 pub use self::zip::{compress_zip, extract_zip};
 
 use std::fmt;
@@ -16,6 +18,8 @@ use thiserror::Error;
 pub enum Algorithm {
     #[serde(rename = "7z")]
     SevenZ,
+    #[serde(rename = "tar")]
+    Tar,
     #[serde(rename = "zip")]
     Zip,
 }
@@ -25,6 +29,7 @@ impl Algorithm {
     pub fn extension(&self) -> &str {
         match self {
             Algorithm::SevenZ => "7z",
+            Algorithm::Tar => "tar",
             Algorithm::Zip => "zip",
         }
     }
@@ -33,6 +38,7 @@ impl Algorithm {
     pub fn media_type(&self) -> &str {
         match self {
             Algorithm::SevenZ => "application/x-7z-compressed",
+            Algorithm::Tar => "application/x-tar",
             Algorithm::Zip => "application/zip",
         }
     }
@@ -50,6 +56,7 @@ impl FromStr for Algorithm {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "7z" => Ok(Algorithm::SevenZ),
+            "tar" => Ok(Algorithm::Tar),
             "zip" => Ok(Algorithm::Zip),
             other => Err(format!("Unknown algorithm: {other}")),
         }
@@ -61,6 +68,7 @@ impl Algorithm {
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext {
             "7z" => Some(Algorithm::SevenZ),
+            "tar" => Some(Algorithm::Tar),
             "zip" => Some(Algorithm::Zip),
             _ => None,
         }
@@ -83,6 +91,8 @@ pub enum CompressionError {
 /// Compress a file using the given algorithm and level (1–5).
 ///
 /// The file is stored inside the archive under `arcname`.
+/// `tar` archives without compressing, so it ignores the level
+/// (which must still be in range).
 pub fn compress(
     source: &Path,
     output: &Path,
@@ -95,6 +105,7 @@ pub fn compress(
     }
     match algorithm {
         Algorithm::SevenZ => compress_7z(source, output, arcname, level),
+        Algorithm::Tar => compress_tar(source, output, arcname),
         Algorithm::Zip => compress_zip(source, output, arcname, level),
     }
 }
@@ -115,6 +126,7 @@ pub fn extract(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Compres
 
     match algorithm {
         Algorithm::SevenZ => extract_7z(archive, output_dir),
+        Algorithm::Tar => extract_tar(archive, output_dir),
         Algorithm::Zip => extract_zip(archive, output_dir),
     }
 }

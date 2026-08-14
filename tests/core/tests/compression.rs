@@ -8,12 +8,14 @@ use collapse_core::{compress, extract, Algorithm, CompressionError};
 #[test]
 fn algorithm_display() {
     assert_eq!(Algorithm::SevenZ.to_string(), "7z");
+    assert_eq!(Algorithm::Tar.to_string(), "tar");
     assert_eq!(Algorithm::Zip.to_string(), "zip");
 }
 
 #[test]
 fn algorithm_from_str() {
     assert_eq!("7z".parse::<Algorithm>().unwrap(), Algorithm::SevenZ);
+    assert_eq!("tar".parse::<Algorithm>().unwrap(), Algorithm::Tar);
     assert_eq!("zip".parse::<Algorithm>().unwrap(), Algorithm::Zip);
     assert!("invalid".parse::<Algorithm>().is_err());
 }
@@ -21,6 +23,7 @@ fn algorithm_from_str() {
 #[test]
 fn algorithm_extension() {
     assert_eq!(Algorithm::SevenZ.extension(), "7z");
+    assert_eq!(Algorithm::Tar.extension(), "tar");
     assert_eq!(Algorithm::Zip.extension(), "zip");
 }
 
@@ -30,6 +33,7 @@ fn algorithm_media_type() {
         Algorithm::SevenZ.media_type(),
         "application/x-7z-compressed"
     );
+    assert_eq!(Algorithm::Tar.media_type(), "application/x-tar");
     assert_eq!(Algorithm::Zip.media_type(), "application/zip");
 }
 
@@ -39,6 +43,11 @@ fn algorithm_serde_roundtrip() {
     assert_eq!(json, "\"7z\"");
     let parsed: Algorithm = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed, Algorithm::SevenZ);
+
+    let json = serde_json::to_string(&Algorithm::Tar).unwrap();
+    assert_eq!(json, "\"tar\"");
+    let parsed: Algorithm = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed, Algorithm::Tar);
 
     let json = serde_json::to_string(&Algorithm::Zip).unwrap();
     assert_eq!(json, "\"zip\"");
@@ -71,8 +80,13 @@ fn from_extension_7z() {
 }
 
 #[test]
+fn from_extension_tar() {
+    assert_eq!(Algorithm::from_extension("tar"), Some(Algorithm::Tar));
+}
+
+#[test]
 fn from_extension_unknown() {
-    assert_eq!(Algorithm::from_extension("tar"), None);
+    assert_eq!(Algorithm::from_extension("rar"), None);
     assert_eq!(Algorithm::from_extension("gz"), None);
     assert_eq!(Algorithm::from_extension(""), None);
 }
@@ -110,9 +124,54 @@ fn extract_dispatches_7z() {
 }
 
 #[test]
+fn extract_dispatches_tar() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("input.txt");
+    std::fs::write(&src, b"dispatch tar").unwrap();
+
+    let archive = dir.path().join("out.tar");
+    compress(&src, &archive, "input.txt", Algorithm::Tar, 1).unwrap();
+
+    let out = dir.path().join("extracted");
+    let files = extract(&archive, &out).unwrap();
+    assert_eq!(files, vec!["input.txt"]);
+    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch tar");
+}
+
+#[test]
+fn tar_level_is_ignored() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("input.txt");
+    std::fs::write(&src, b"same bytes at every level").unwrap();
+
+    // All valid levels must produce byte-identical tar archives.
+    let reference = dir.path().join("out_l1.tar");
+    compress(&src, &reference, "input.txt", Algorithm::Tar, 1).unwrap();
+    let reference_bytes = std::fs::read(&reference).unwrap();
+
+    for level in 2..=5 {
+        let archive = dir.path().join(format!("out_l{level}.tar"));
+        compress(&src, &archive, "input.txt", Algorithm::Tar, level).unwrap();
+        assert_eq!(
+            std::fs::read(&archive).unwrap(),
+            reference_bytes,
+            "level {level} produced different output"
+        );
+    }
+}
+
+#[test]
+fn tar_out_of_range_level_is_still_rejected() {
+    let result = compress(Path::new("/x"), Path::new("/y"), "f", Algorithm::Tar, 0);
+    assert!(matches!(result, Err(CompressionError::InvalidLevel(0))));
+    let result = compress(Path::new("/x"), Path::new("/y"), "f", Algorithm::Tar, 6);
+    assert!(matches!(result, Err(CompressionError::InvalidLevel(6))));
+}
+
+#[test]
 fn extract_unknown_extension_errors() {
     let dir = tempfile::TempDir::new().unwrap();
-    let fake = dir.path().join("archive.tar");
+    let fake = dir.path().join("archive.rar");
     std::fs::write(&fake, b"not an archive").unwrap();
 
     let result = extract(&fake, &dir.path().join("out"));

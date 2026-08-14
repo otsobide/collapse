@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 sevenz-rust2 = "0.13"
+tar = "0.4"
 zip = "2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
