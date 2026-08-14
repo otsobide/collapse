@@ -3,8 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
-
-const ARCHIVE_EXTS = ['zip', '7z', 'tar']
+import { baseName, dirOf, isArchive, levelHint as levelHintFor } from './paths.js'
 
 const mode = ref('compress') // 'compress' | 'extract'
 const inputPath = ref(null)
@@ -18,24 +17,8 @@ const error = ref(null)
 const format = ref('zip')
 const level = ref(3)
 
-const levelHint = computed(() =>
-  level.value <= 2 ? 'Faster' : level.value >= 4 ? 'Smaller' : 'Balanced'
-)
+const levelHint = computed(() => levelHintFor(level.value))
 const levelDisabled = computed(() => format.value === 'tar')
-
-function baseName(path) {
-  return path.split(/[\\/]/).pop()
-}
-function dirOf(path) {
-  const sep = path.includes('\\') ? '\\' : '/'
-  const i = path.lastIndexOf(sep)
-  return { dir: i >= 0 ? path.slice(0, i) : '', sep }
-}
-function extOf(path) {
-  const name = baseName(path)
-  const i = name.lastIndexOf('.')
-  return i >= 0 ? name.slice(i + 1).toLowerCase() : ''
-}
 
 async function pick(path) {
   error.value = null
@@ -144,10 +127,8 @@ onMounted(async () => {
       const paths = event.payload.paths
       if (paths && paths.length > 0) {
         // Auto-switch mode from the dropped item's extension.
-        if (ARCHIVE_EXTS.includes(extOf(paths[0]))) mode.value = 'extract'
-        else if (mode.value === 'extract' && !ARCHIVE_EXTS.includes(extOf(paths[0]))) {
-          mode.value = 'compress'
-        }
+        if (isArchive(paths[0])) mode.value = 'extract'
+        else if (mode.value === 'extract') mode.value = 'compress'
         pick(paths[0])
       }
     }
