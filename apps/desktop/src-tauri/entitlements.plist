@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  App Sandbox entitlements for the macOS App Store build.
+  Not wired into the default `tauri build` (which produces a directly
+  distributable .app/.dmg). Apply these when building for the App Store, e.g.
+  by pointing the signing step at this file. Sandboxed file access is granted
+  through the native open/save dialogs (powerbox), which is exactly how the app
+  chooses every path.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <key>com.apple.security.files.user-selected.read-write</key>
+  <true/>
+</dict>
+</plist>

@@ -1,0 +1,32 @@
+[package]
+name = "collapse-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Collapse — a small, fast file compressor"
+authors = ["cervantic"]
+
+# Standalone workspace: kept out of the root Cargo workspace so a plain
+# `cargo test` at the repo root (core + CLI) does not need the Tauri system
+# dependencies. The desktop app is built with its own toolchain.
+[workspace]
+
+[lib]
+name = "collapse_desktop"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+collapse-core = { path = "../../core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
