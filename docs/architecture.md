@@ -27,15 +27,13 @@ dependencies — see [desktop.md](desktop.md).
 
 ```
 collapse-core  ◄──  collapse-cli
-      ▲                  ▲
-      │                  │
-collapse-core-tests   collapse-cli-tests
+             ◄──  collapse-desktop (apps/desktop/src-tauri)
 ```
 
 Everything flows from `collapse-core`. Interfaces call it directly as a Rust
 library — there is no HTTP, IPC, or subprocess boundary between an interface and
 the engine. New interfaces depend on `collapse-core`; they never reach into each
-other.
+other. (Each crate's tests live inside it — see [Testing](#testing).)
 
 ## collapse-core — the engine
 

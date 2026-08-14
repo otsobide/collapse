@@ -90,11 +90,12 @@ Collapse is at an early stage. Here's exactly what exists today:
 Requires **Rust 1.88+** (2021 edition).
 
 ```bash
-cargo build            # build the workspace
-cargo test             # run the full test suite (69 tests)
+make build             # build the Rust crates
+make test              # run the full test suite (108 Rust tests + the desktop Vitest suite)
 ```
 
-Once the front-ends land, this section will cover installing and running them.
+See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
+running the apps.
 
 ## Project layout
 
