@@ -1,6 +1,23 @@
 <script setup>
 const repo = 'https://github.com/otsobide/collapse'
 
+// Resolved client-side from the latest GitHub release (the .dmg asset name
+// embeds the version, so a hardcoded URL would go stale on every release).
+// Until it resolves — and as the no-JS / API-failure fallback — the button
+// points at the releases page.
+const macDownload = ref(null)
+onMounted(async () => {
+  try {
+    const res = await fetch('https://api.github.com/repos/otsobide/collapse/releases/latest')
+    if (!res.ok) return
+    const release = await res.json()
+    const dmg = release.assets?.find((a) => a.name.endsWith('.dmg'))
+    if (dmg) macDownload.value = { url: dmg.browser_download_url, version: release.tag_name }
+  } catch {
+    // keep the fallback link
+  }
+})
+
 const features = [
   { title: 'Files & folders', body: 'Compress a single file or an entire directory tree — the structure is preserved.' },
   { title: '7z · ZIP · tar', body: 'Standard archives any tool can open, with five compression levels.' },
@@ -25,7 +42,7 @@ const principles = [
       <a class="brand" href="#top">Collapse</a>
       <nav class="nav">
         <a href="#features">Features</a>
-        <a href="#get">Get it</a>
+        <a href="#get">Download</a>
         <a :href="repo" target="_blank" rel="noopener">GitHub ↗</a>
       </nav>
     </div>
@@ -44,7 +61,7 @@ const principles = [
             your terminal. Local, open-source, refreshingly simple.
           </p>
           <div class="cta-row">
-            <a class="btn btn-primary" :href="repo" target="_blank" rel="noopener">Get Collapse →</a>
+            <a class="btn btn-primary" href="#get">Download for macOS →</a>
             <a class="btn btn-ghost" href="#features">See what it does</a>
           </div>
           <p class="tagline">Open source · Local-first · No tracking</p>
@@ -95,17 +112,28 @@ const principles = [
       </div>
     </section>
 
-    <!-- Get it -->
+    <!-- Download -->
     <section id="get" class="section">
       <div class="wrap get-grid">
         <div>
-          <p class="eyebrow">Get it</p>
+          <p class="eyebrow">Download</p>
           <h2>Two ways to use it.</h2>
           <p class="lead sm">
             A native desktop window for drag-and-drop, or a single command for
             scripts and the shell. Same engine, same results.
           </p>
-          <a class="btn btn-primary" :href="repo" target="_blank" rel="noopener">Get Collapse →</a>
+          <div class="dl">
+            <a class="btn btn-primary" :href="macDownload ? macDownload.url : `${repo}/releases/latest`">
+               Download for macOS{{ macDownload ? ` · ${macDownload.version}` : '' }}
+            </a>
+            <p class="dl-meta">Universal app — Apple Silicon &amp; Intel · macOS 10.15+</p>
+            <p class="dl-meta faint">
+              Unsigned build for now: right-click → Open on first launch.
+              Windows and Linux builds are on the way — the
+              <a :href="`${repo}/releases/latest`" target="_blank" rel="noopener">release page</a>
+              also has the CLI and checksums.
+            </p>
+          </div>
         </div>
         <div class="terminal">
           <div class="term-bar"><i /><i /><i /></div>
@@ -208,8 +236,13 @@ h2 { font-size: 1.7rem; line-height: 1.2; letter-spacing: -0.01em; margin: 12px 
 .principle h3 { font-size: 0.98rem; margin-bottom: 6px; }
 .principle p { font-size: 0.87rem; color: var(--muted); }
 
-/* Get it */
+/* Download */
 .get-grid { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: 40px; align-items: center; }
+.dl { display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.dl-meta { font-size: 0.8rem; color: var(--muted); }
+.dl-meta.faint { font-size: 0.76rem; color: var(--faint); max-width: 40ch; }
+.dl-meta a { text-decoration: underline; text-underline-offset: 2px; }
+.dl-meta a:hover { color: var(--accent); }
 .terminal {
   background: #2b2620;
   border-radius: var(--r);
