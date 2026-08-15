@@ -1,10 +1,10 @@
 name: Release
 
 # Publish a GitHub release with prebuilt CLI binaries whenever a version tag
-# (vX.Y.Z) is pushed. Tags are only ever placed on main's release merge
-# commits (see docs/git_flow.md), so every release builds a green, audited
-# state. macOS only (unsigned) for now; more targets and signing as we
-# iterate.
+# (vX.Y.Z) is pushed. Tags belong on main's release merge commits (see
+# docs/git_flow.md), and the "tag is on main" job enforces it: a tag whose
+# commit is not on main fails the run and nothing is published. macOS only
+# (unsigned) for now; more targets and signing as we iterate.
 #
 # workflow_dispatch runs the build matrix as a dry run: it compiles and
 # packages the binaries but skips the publish job (no tag, no release).
@@ -17,6 +17,30 @@ permissions:
   contents: write
 
 jobs:
+  # A release must correspond to a released state of the code: refuse any
+  # v* tag whose commit is not part of main's history (e.g. a tag placed on
+  # dev by mistake). The publish job requires this to pass.
+  verify:
+    name: tag is on main
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check the tagged commit is on main
+        run: |
+          # ^{commit} peels annotated tags to the commit they point at.
+          COMMIT=$(git rev-parse "${GITHUB_REF}^{commit}")
+          if git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "ok: $GITHUB_REF_NAME points to a commit on main"
+          else
+            echo "Refusing to release: tag $GITHUB_REF_NAME points to $COMMIT, which is not on main"
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.target }})
     strategy:
@@ -55,7 +79,7 @@ jobs:
 
   release:
     name: publish release
-    needs: build
+    needs: [verify, build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
