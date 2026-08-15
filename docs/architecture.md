@@ -159,11 +159,17 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 
 ## CI
 
-`.github/workflows/tests.yml` runs on every push to `main`/`dev` and on pull
-requests: a `core` job (`cargo test -p collapse-core`) gates a `cli` job
-(`cargo test -p collapse-cli`) and a `vitest` job (the desktop suite), the latter
-two running in parallel. Branching and release flow are described in
-[git_flow.md](git_flow.md).
+`.github/workflows/test-and-build.yml` runs on every push to `main`/`dev` and
+on pull requests, entirely on Linux runners. Per app, tests gate the build: a
+`core` job (`make core/test`) gates a `cli` job and a `vitest` job (the
+desktop suite, Tauri IPC mocked), and each app's build job runs only after
+its own tests pass — `build (core)`, `build (cli)`, and `build (desktop)`,
+the last compiling the whole Tauri app (frontend + the `src-tauri` crate,
+which no other CI job compiles) via `make desktop/compile`
+(`tauri build --no-bundle`), with the webkit system libraries installed on
+the runner. The landing has no tests and is built by `deploy-landing.yml`;
+macOS release artifacts are `release.yml`'s job. Branching and release flow
+are described in [git_flow.md](git_flow.md).
 
 ## Roadmap
 
