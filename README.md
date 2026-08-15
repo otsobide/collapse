@@ -19,7 +19,7 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
   to the compressing formats and is ignored by tar.
 - **Safe by default** — extraction rejects entries with absolute paths or `..`
   components before writing anything to disk, so a malicious archive can't escape
-  the output directory. See [Security](docs/security.md) for the full threat model.
+  the output directory. See [Security](docs/threat_model.md) for the full threat model.
 - **Shared engine** — the CLI and the desktop app call the exact same core, so
   behavior is identical whichever you reach for.
 
@@ -105,7 +105,7 @@ apps/
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
-docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
+docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
 Each app carries its own tests, in that ecosystem's conventional place: the Rust
@@ -115,7 +115,7 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 ## Documentation
 
 - [Architecture](docs/architecture.md) — the engine, the CLI, the desktop app, and how they fit together.
-- [Security](docs/security.md) — threat model, measures, and the attacks they prevent.
+- [Security](docs/threat_model.md) — threat model, measures, and the attacks they prevent.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
 - [Deployment](docs/deployment.md) — how the landing site is built and published.
 - [Git flow](docs/git_flow.md) — branching model (including deploy branches) and commits.

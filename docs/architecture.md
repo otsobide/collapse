@@ -14,7 +14,7 @@ apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
-docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
+docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
 `apps/core` and `apps/cli` are members of the **root Cargo workspace**; each keeps
@@ -82,7 +82,7 @@ automatically because they go through the same dispatchers.
 Extraction is hardened against path traversal ("ZIP Slip"), and neither
 compression nor extraction ever follows or creates a symlink. The full threat
 model, the measures, and the attacks they prevent are documented in
-[security.md](security.md).
+[threat_model.md](threat_model.md).
 
 ## collapse-cli — the command-line tool
 
