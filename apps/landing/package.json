@@ -10,6 +10,7 @@
     "postinstall": "nuxt prepare"
   },
   "devDependencies": {
+    "@nuxtjs/i18n": "^10.6.0",
     "nuxt": "^3",
     "vue": "^3"
   }

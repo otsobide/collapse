@@ -1,0 +1,62 @@
+{
+  "seo": {
+    "title": "Collapse — a small, fast file compressor",
+    "description": "Collapse is a small, fast, open-source file compressor for MacOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives, and back. Local-first, no tracking."
+  },
+  "nav": {
+    "download": "Download",
+    "features": "Features",
+    "github": "GitHub ↗",
+    "language": "Language"
+  },
+  "hero": {
+    "eyebrow": "Collapse",
+    "titleLine1": "A small, fast",
+    "titleLine2": "file compressor.",
+    "lead": "Drag in a file or a folder, pick a format, and get a smaller archive in seconds. 7z, ZIP and tar, in and out. Local, open-source, refreshingly simple.",
+    "ctaDownload": "Download →",
+    "ctaFeatures": "See what it does",
+    "tagline": "Open source · Local-first · No tracking",
+    "dropLabel": "Drop a file or folder",
+    "dropHint": "or browse"
+  },
+  "download": {
+    "eyebrow": "Download",
+    "title": "Pick your platform.",
+    "soon": "soon",
+    "installer": "Installer",
+    "latest": "Latest release {version}",
+    "unsigned": "Builds are unsigned for now (MacOS: right-click → Open on first launch). Checksums live on the",
+    "releasePage": "release page",
+    "systems": {
+      "macos": "Universal app · Apple Silicon & Intel · MacOS 10.15+",
+      "linux": "Desktop app · x86_64",
+      "windows": "Installer · Windows 10+"
+    }
+  },
+  "features": {
+    "eyebrow": "What it does",
+    "title": "Everything you need to squeeze a file. Nothing you don't.",
+    "items": {
+      "folders": {
+        "title": "Files & folders",
+        "body": "Compress a single file or a whole directory tree; the structure survives the round-trip."
+      },
+      "formats": {
+        "title": "7z · ZIP · tar",
+        "body": "Standard archives any other tool can open, with five levels to trade speed for size."
+      },
+      "both": {
+        "title": "Compress & extract",
+        "body": "It goes both ways: drop an archive back in and the format is detected for you."
+      },
+      "safe": {
+        "title": "Safe & private",
+        "body": "Extraction can never escape its folder, and nothing ever leaves your machine."
+      }
+    }
+  },
+  "footer": {
+    "meta": "Open source · Local-first · No tracking · part of Cervantic"
+  }
+}
