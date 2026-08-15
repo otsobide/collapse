@@ -4,10 +4,37 @@ export default defineNuxtConfig({
   devtools: { enabled: false },
   ssr: true,
   css: ['~/assets/main.css'],
+  modules: ['@nuxtjs/i18n'],
+
+  // English lives at `/`, Spanish at `/es/`. Page titles, descriptions and the
+  // <html lang> come from the locale files via useLocaleHead (see app.vue), so
+  // there is no static title here.
+  i18n: {
+    defaultLocale: 'en',
+    strategy: 'prefix_except_default',
+    // hreflang alternates and the canonical link must be absolute URLs, so
+    // the production origin is baked in; override it (e.g. for the staging
+    // subdomain) with NUXT_PUBLIC_SITE_URL.
+    baseUrl: process.env.NUXT_PUBLIC_SITE_URL || 'https://collapse.cervantic.com',
+    locales: [
+      { code: 'en', language: 'en', name: 'English', file: 'en.json' },
+      { code: 'es', language: 'es', name: 'Español', file: 'es.json' },
+    ],
+    // First visit to `/` follows the browser's language, then remembers the
+    // choice in a cookie so the switcher always wins afterwards.
+    detectBrowserLanguage: {
+      useCookie: true,
+      cookieKey: 'i18n_redirected',
+      redirectOn: 'root',
+    },
+  },
+
+  // Both locales are prerendered explicitly, so a generate never depends on
+  // the crawler finding the switcher's links.
+  nitro: { prerender: { routes: ['/', '/es'] } },
+
   app: {
     head: {
-      htmlAttrs: { lang: 'en' },
-      title: 'Collapse — a small, fast file compressor',
       link: [
         { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' },
         // Serif "C" of the Cervantic brand mark (same font cervantic.com
@@ -22,11 +49,6 @@ export default defineNuxtConfig({
       meta: [
         { charset: 'utf-8' },
         { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        {
-          name: 'description',
-          content:
-            'Collapse is a small, fast, open-source file compressor for macOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives, and back. Local-first, no tracking.',
-        },
       ],
     },
   },

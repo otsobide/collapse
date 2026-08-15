@@ -1,0 +1,62 @@
+{
+  "seo": {
+    "title": "Collapse — un compresor de archivos pequeño y rápido",
+    "description": "Collapse es un compresor de archivos pequeño, rápido y de código abierto para macOS, Windows y Linux. Convierte archivos y carpetas en 7z, ZIP o tar, y al revés. Local, sin rastreo."
+  },
+  "nav": {
+    "download": "Descargas",
+    "features": "Características",
+    "github": "GitHub ↗",
+    "language": "Idioma"
+  },
+  "hero": {
+    "eyebrow": "Collapse",
+    "titleLine1": "Un compresor de archivos",
+    "titleLine2": "pequeño y rápido.",
+    "lead": "Arrastra un archivo o una carpeta, elige un formato y obtén un comprimido más pequeño en segundos. 7z, ZIP y tar, en ambos sentidos. Local, de código abierto y sencillo de verdad.",
+    "ctaDownload": "Descargar →",
+    "ctaFeatures": "Ver qué hace",
+    "tagline": "Código abierto · Local · Sin rastreo",
+    "dropLabel": "Suelta un archivo o una carpeta",
+    "dropHint": "o búscalo"
+  },
+  "download": {
+    "eyebrow": "Descargas",
+    "title": "Elige tu plataforma.",
+    "soon": "pronto",
+    "installer": "Instalador",
+    "latest": "Última versión {version}",
+    "unsigned": "Las builds todavía no están firmadas (en macOS: clic derecho → Abrir la primera vez). Los checksums están en la",
+    "releasePage": "página de la release",
+    "systems": {
+      "macos": "App universal · Apple Silicon e Intel · macOS 10.15+",
+      "linux": "App de escritorio · x86_64",
+      "windows": "Instalador · Windows 10+"
+    }
+  },
+  "features": {
+    "eyebrow": "Qué hace",
+    "title": "Todo lo que necesitas para comprimir un archivo. Nada más.",
+    "items": {
+      "folders": {
+        "title": "Archivos y carpetas",
+        "body": "Comprime un solo archivo o un árbol de carpetas entero; la estructura sobrevive a la ida y la vuelta."
+      },
+      "formats": {
+        "title": "7z · ZIP · tar",
+        "body": "Comprimidos estándar que cualquier otra herramienta puede abrir, con cinco niveles para cambiar velocidad por tamaño."
+      },
+      "both": {
+        "title": "Comprime y extrae",
+        "body": "Funciona en los dos sentidos: suelta un comprimido y el formato se detecta solo."
+      },
+      "safe": {
+        "title": "Seguro y privado",
+        "body": "La extracción nunca puede salirse de su carpeta, y nada sale nunca de tu equipo."
+      }
+    }
+  },
+  "footer": {
+    "meta": "Código abierto · Local · Sin rastreo · parte de Cervantic"
+  }
+}
