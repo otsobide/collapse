@@ -92,7 +92,11 @@ Distribute the `.msi` / NSIS installer (optionally code-signed with an
 Authenticode certificate). The Microsoft Store is an optional later channel.
 
 ### Linux
-Distribute `.deb` / `.AppImage` / `.rpm`; Flathub is an optional later channel.
+What ships **today**: every GitHub release includes an x86_64 **`.deb`** and
+**`.rpm`** (with sha256 checksums), built on the Ubuntu runner by
+`make desktop/bundle-linux` (`tauri build --bundles deb,rpm`). No Gatekeeper
+equivalent applies; they install with `dpkg -i` / `rpm -i` as usual. An
+AppImage, arm64 packages, and Flathub are optional later channels.
 
 ## Notes
 

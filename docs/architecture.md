@@ -172,8 +172,9 @@ the last compiling the whole Tauri app (frontend + the `src-tauri` crate,
 which no other CI job compiles) via `make desktop/compile`
 (`tauri build --no-bundle`), with the webkit system libraries installed on
 the runner. The landing has no tests and is built by `deploy-landing.yml`;
-macOS release artifacts are `release.yml`'s job (which also runs the Rust
-test suite once on a macOS runner, the one OS the binaries actually target).
+release artifacts (macOS tarballs and `.dmg`, Linux `.deb`/`.rpm`) are
+`release.yml`'s job (which also runs the Rust test suite once on a macOS
+runner, one of the OSes the binaries actually target).
 Branching and release flow are described in [git_flow.md](git_flow.md).
 
 ## Roadmap

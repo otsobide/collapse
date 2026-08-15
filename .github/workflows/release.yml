@@ -1,11 +1,11 @@
 name: Release
 
 # Publish a GitHub release whenever a version tag (vX.Y.Z) is pushed: the CLI
-# binaries (per-arch tarballs) and the desktop app (one universal .dmg). Tags
-# belong on main's release merge commits (see docs/git_flow.md), and the
-# "tag is on main" job enforces it: a tag whose commit is not on main fails
-# the run and nothing is published. macOS only (unsigned) for now, everything
-# built on the arm64 runner; more targets and signing as we iterate.
+# binaries (per-arch macOS tarballs) and the desktop app (one universal macOS
+# .dmg, plus Linux .deb/.rpm packages for x86_64). Tags belong on main's
+# release merge commits (see docs/git_flow.md), and the "tag is on main" job
+# enforces it: a tag whose commit is not on main fails the run and nothing is
+# published. Everything unsigned for now; signing as we iterate.
 #
 # workflow_dispatch is a dry run: it compiles and packages the binaries but
 # never publishes; the verify and publish jobs also require the push event,
@@ -118,10 +118,14 @@ jobs:
           tar -C "target/${{ matrix.target }}/release" -czf "$ARCHIVE" collapse
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
 
+      # overwrite: v4 artifacts are immutable per run, so without it a
+      # "Re-run all jobs" after a failed publish would 409 on the uploads
+      # from the first attempt (same on every upload step below).
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
+          overwrite: true
           path: |
             collapse-*.tar.gz
             collapse-*.sha256
@@ -164,13 +168,66 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-universal
+          overwrite: true
           path: |
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.sha256
 
+  # Linux desktop packages: a .deb and an .rpm for x86_64, built on the Ubuntu
+  # runner with the same Tauri system dependencies CI installs. Tauri names
+  # them from productName + version (Collapse_X.Y.Z_amd64.deb,
+  # Collapse-X.Y.Z-1.x86_64.rpm). No AppImage for now (its bundler pulls
+  # extra tooling); arm64 needs an arm runner — both can come later.
+  build-desktop-linux:
+    name: build (desktop, deb + rpm)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl \
+            wget file libxdo-dev libssl-dev libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Build the packages
+        run: make desktop/bundle-linux
+
+      # Flatten both packages into one staging dir: upload-artifact keeps the
+      # directory structure below the paths' common ancestor, and the publish
+      # job's `dist/*` expects plain files, not deb/ and rpm/ subdirs. The
+      # checksums are computed inside the staging dir so each .sha256 records
+      # the bare filename and `shasum -c` works next to the download.
+      - name: Stage and checksum the packages
+        working-directory: apps/desktop/src-tauri/target/release/bundle
+        run: |
+          mkdir staging
+          cp deb/*.deb rpm/*.rpm staging/
+          cd staging
+          for PKG in *; do shasum -a 256 "$PKG" > "$PKG.sha256"; done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-linux
+          overwrite: true
+          path: apps/desktop/src-tauri/target/release/bundle/staging/*
+
   release:
     name: publish release
-    needs: [verify, build, build-desktop]
+    needs: [verify, build, build-desktop, build-desktop-linux]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
