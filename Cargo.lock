@@ -234,17 +234,8 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "collapse-core",
- "thiserror",
-]
-
-[[package]]
-name = "collapse-cli-tests"
-version = "0.1.0"
-dependencies = [
- "clap",
- "collapse-cli",
- "collapse-core",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -252,21 +243,11 @@ name = "collapse-core"
 version = "0.1.0"
 dependencies = [
  "serde",
- "sevenz-rust2",
- "tar",
- "thiserror",
- "zip",
-]
-
-[[package]]
-name = "collapse-core-tests"
-version = "0.1.0"
-dependencies = [
- "collapse-core",
  "serde_json",
  "sevenz-rust2",
  "tar",
  "tempfile",
+ "thiserror",
  "zip",
 ]
 

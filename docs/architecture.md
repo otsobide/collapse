@@ -1,8 +1,8 @@
 # Architecture
 
 Collapse is a small file-compression toolkit built around **one shared engine**
-with thin interfaces on top. Everything is a Cargo workspace under `apps/`, with
-a mirrored test tree under `tests/`.
+with thin interfaces on top. Everything lives under `apps/`, each app carrying
+its own tests in that ecosystem's conventional place.
 
 This document describes what exists today: the `collapse-core` engine, the
 `collapse` CLI, and the Tauri desktop app.
@@ -11,34 +11,29 @@ This document describes what exists today: the `collapse-core` engine, the
 
 ```
 apps/
-  core/        collapse-core — the shared compression/extraction engine
-  cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
-  desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
-tests/
-  core/        collapse-core-tests — integration tests for apps/core
-  cli/         collapse-cli-tests  — integration tests for apps/cli
-docs/          architecture.md, security.md, desktop.md, git_flow.md
+  core/        collapse-core — the shared engine (src/ + tests/ integration tests)
+  cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
+  desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
+docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
 ```
 
-`apps/core` and `apps/cli` are members of the **root Cargo workspace**, each with
-a matching test crate under `tests/`. `apps/desktop/src-tauri` is a **separate
-workspace** (empty `[workspace]` in its `Cargo.toml`) so a plain `cargo test` at
-the root doesn't need the Tauri system dependencies — see
-[desktop.md](desktop.md).
+`apps/core` and `apps/cli` are members of the **root Cargo workspace**; each keeps
+its Cargo integration tests in its own `tests/` directory (the Rust convention).
+`apps/desktop/src-tauri` is a **separate workspace** (empty `[workspace]` in its
+`Cargo.toml`) so a plain `cargo test` at the root doesn't need the Tauri system
+dependencies — see [desktop.md](desktop.md).
 
 ## Dependency graph
 
 ```
 collapse-core  ◄──  collapse-cli
-      ▲                  ▲
-      │                  │
-collapse-core-tests   collapse-cli-tests
+             ◄──  collapse-desktop (apps/desktop/src-tauri)
 ```
 
 Everything flows from `collapse-core`. Interfaces call it directly as a Rust
 library — there is no HTTP, IPC, or subprocess boundary between an interface and
 the engine. New interfaces depend on `collapse-core`; they never reach into each
-other.
+other. (Each crate's tests live inside it — see [Testing](#testing).)
 
 ## collapse-core — the engine
 
@@ -150,22 +145,24 @@ directory, and security guarantee from `collapse-core` for free.
 
 ## Testing
 
-Tests live in the **mirrored `tests/` tree**, not next to the source:
+Each app carries its own tests, in that ecosystem's conventional place:
 
-- `tests/core` exercises `collapse-core` through its public API (`compress`,
-  `extract`, and the backend functions), including a dedicated
-  `security.rs` suite that crafts malicious archives.
-- `tests/cli` drives the real clap parser and `run` in-process.
+- `apps/core/tests/` — Cargo integration tests exercising `collapse-core` through
+  its public API (`compress`, `extract`, and the backend functions), including a
+  dedicated `security.rs` suite that crafts malicious archives.
+- `apps/cli/tests/` — drives the real clap parser and `run` in-process.
+- `apps/desktop/tests/` — Vitest suite (unit + component tests, Tauri IPC mocked).
 
-Because tests live in separate crates, they only see each crate's **public**
-surface — anything a test needs must be reachable from outside. Source files in
-`apps/` carry no inline `#[cfg(test)] mod tests`.
+The Rust integration tests compile as separate crates, so they only see each
+crate's **public** surface — anything a test needs must be reachable from
+outside. Source files carry no inline `#[cfg(test)] mod tests`.
 
 ## CI
 
-`.github/workflows/tests.yml` runs `cargo test` for the whole workspace on every
-push to `main`/`dev` and on pull requests — which compiles and tests both
-`collapse-core` and `collapse-cli`. Branching and release flow are described in
+`.github/workflows/tests.yml` runs on every push to `main`/`dev` and on pull
+requests: a `core` job (`cargo test -p collapse-core`) gates a `cli` job
+(`cargo test -p collapse-cli`) and a `vitest` job (the desktop suite), the latter
+two running in parallel. Branching and release flow are described in
 [git_flow.md](git_flow.md).
 
 ## Roadmap

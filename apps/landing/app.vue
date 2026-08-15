@@ -1,5 +1,5 @@
 <script setup>
-const repo = 'https://github.com/n1nj4t4nuk1/collapse'
+const repo = 'https://github.com/otsobide/collapse'
 
 const features = [
   { title: 'Files & folders', body: 'Compress a single file or an entire directory tree — the structure is preserved.' },

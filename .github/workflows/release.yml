@@ -1,0 +1,136 @@
+name: Release
+
+# Publish a GitHub release with prebuilt CLI binaries whenever a version tag
+# (vX.Y.Z) is pushed. Tags belong on main's release merge commits (see
+# docs/git_flow.md), and the "tag is on main" job enforces it: a tag whose
+# commit is not on main fails the run and nothing is published. macOS only
+# (unsigned) for now, both architectures built on the arm64 runner; more
+# targets and signing as we iterate.
+#
+# workflow_dispatch is a dry run: it compiles and packages the binaries but
+# never publishes; the verify and publish jobs also require the push event,
+# so even a dispatch pointed at a tag ref cannot release.
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+# Only the publish job needs to write (it gets contents: write per-job);
+# build jobs run third-party build scripts and should hold a read-only token.
+permissions:
+  contents: read
+
+# One run per ref at a time, so a delete-and-retag cannot race an in-flight
+# run for the same tag name.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A release must correspond to a released state of the code: refuse any
+  # v* tag whose commit is not part of main's history (e.g. a tag placed on
+  # dev by mistake). The publish job requires this to pass.
+  verify:
+    name: tag is on main
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check the tagged commit is on main
+        run: |
+          # Re-fetch tags: actions/checkout is known to mangle annotated-tag
+          # objects (actions/checkout#290). ^{commit} then peels either tag
+          # kind to the commit it points at (GITHUB_SHA is the tag object,
+          # not the commit, for annotated tags).
+          git fetch --tags --force --quiet origin
+          COMMIT=$(git rev-parse "${GITHUB_REF}^{commit}")
+          if git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "ok: $GITHUB_REF_NAME points to a commit on main"
+          else
+            echo "Refusing to release: tag $GITHUB_REF_NAME points to $COMMIT, which is not on main"
+            exit 1
+          fi
+
+      - name: Check the tag matches the CLI version
+        run: |
+          # The binary reports CARGO_PKG_VERSION via --version; a tag that
+          # does not match it would ship a binary claiming another version.
+          CRATE_VERSION=$(grep -m1 '^version' apps/cli/Cargo.toml | cut -d'"' -f2)
+          if [ "v$CRATE_VERSION" = "$GITHUB_REF_NAME" ]; then
+            echo "ok: apps/cli/Cargo.toml is at $CRATE_VERSION"
+          else
+            echo "Refusing to release: tag is $GITHUB_REF_NAME but apps/cli/Cargo.toml says $CRATE_VERSION (bump it before tagging)"
+            exit 1
+          fi
+
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    # Both architectures build on the arm64 runner: Apple's toolchain links
+    # either arch natively (rustup target add is enough), and GitHub retired
+    # macos-13, the last free Intel image, in December 2025.
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # The CI suite runs on Linux; run it once on the OS we actually ship
+      # (native arch only; the cross-built binary shares the same code).
+      - name: Test on macOS
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo test --workspace --locked
+
+      - name: Build the CLI
+        run: cargo build -p collapse-cli --release --locked --target ${{ matrix.target }}
+
+      - name: Package binary and checksum
+        run: |
+          # Dry runs happen on feature/* branches: flatten slashes so the
+          # ref name cannot become a directory in the archive path.
+          NAME="${GITHUB_REF_NAME//\//-}"
+          ARCHIVE="collapse-${NAME}-${{ matrix.target }}.tar.gz"
+          tar -C "target/${{ matrix.target }}/release" -czf "$ARCHIVE" collapse
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            collapse-*.tar.gz
+            collapse-*.sha256
+
+  release:
+    name: publish release
+    needs: [verify, build]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*

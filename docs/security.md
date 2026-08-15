@@ -42,7 +42,7 @@ with `..` or by using an absolute path. This is the classic *ZIP Slip* /
   with a `..` component (Collapse turns that refusal into an error) and strips
   root/current-dir components so absolute names land *inside* the output dir.
 
-**Covered by** `tests/core/tests/security.rs`:
+**Covered by** `apps/core/tests/security.rs`:
 `*_rejects_parent_dir_traversal`, `*_rejects_nested_parent_dir_traversal`,
 `*_rejects_absolute_path`, `*_rejects_directory_entry_traversal` (traversal via
 a *directory* entry, not just a file), `*_rejects_malicious_entry_after_benign_ones`
@@ -161,7 +161,7 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
 
 ## Testing & verification
 
-All measures above are exercised by `tests/core/tests/security.rs`, which
+All measures above are exercised by `apps/core/tests/security.rs`, which
 crafts genuinely malicious archives (smuggling traversal and symlink entries
 past the writer libraries' own validation by writing raw header bytes) and
 asserts both that extraction is rejected/neutralized **and** that nothing was

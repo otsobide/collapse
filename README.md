@@ -90,11 +90,12 @@ Collapse is at an early stage. Here's exactly what exists today:
 Requires **Rust 1.88+** (2021 edition).
 
 ```bash
-cargo build            # build the workspace
-cargo test             # run the full test suite (69 tests)
+make build             # build the Rust crates
+make test              # run the full test suite (108 Rust tests + the desktop Vitest suite)
 ```
 
-Once the front-ends land, this section will cover installing and running them.
+See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
+running the apps.
 
 ## Project layout
 
@@ -104,25 +105,36 @@ apps/
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
-tests/
-  core/        integration tests for collapse-core
-  cli/         integration tests for collapse-cli
-docs/          architecture.md, security.md, desktop.md, git_flow.md
+docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
 ```
 
-Each app under `apps/` gets a mirrored test crate under `tests/`.
+Each app carries its own tests, in that ecosystem's conventional place: the Rust
+crates keep Cargo integration tests in `apps/<crate>/tests/`; the desktop app
+keeps its Vitest suite in `apps/desktop/tests/`.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md) — the engine, the CLI, the desktop app, and how they fit together.
 - [Security](docs/security.md) — threat model, measures, and the attacks they prevent.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
-- [Git flow](docs/git_flow.md) — branching model and commit conventions.
+- [Deployment](docs/deployment.md) — how the landing site is built and published.
+- [Git flow](docs/git_flow.md) — branching model (including deploy branches) and commits.
 
 ## Development
 
+A root `Makefile` fans out to a `Makefile` in each app. Run `make help` for the
+list; a few common ones:
+
+```bash
+make test            # run every test suite (core, cli, desktop)
+make core/test       # a single app's tests (also cli/test, desktop/test)
+make desktop/dev     # run an app target (here: the Tauri app in dev mode)
+make fmt  make lint  # format / clippy the Rust workspace
+```
+
 Work happens on `dev`, merged into `main` per release (see
-[git flow](docs/git_flow.md)). CI runs `cargo test` on every push and pull request.
+[git flow](docs/git_flow.md)). CI invokes these same `make` targets on every
+push and pull request.
 
 ## License
 
