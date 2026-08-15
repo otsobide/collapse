@@ -81,8 +81,15 @@ prerenders both (they are also listed in `nitro.prerender.routes`, so a build
 never depends on the crawler finding the switcher's links).
 
 - **Copy** lives in `i18n/locales/{en,es}.json`, keyed by section. Components
-  hold no literal copy; adding a language means adding a locale file plus one
-  entry in `nuxt.config.ts`.
+  hold no literal copy.
+- **Adding a language** is a locale file plus one entry in the `LOCALES` array
+  at the top of `nuxt.config.ts`. That array is the single source: the i18n
+  routing, the prerendered routes and the navbar menu all derive from it, and
+  its `name` field (written in the language itself) is the menu's label.
+- **The switcher** (`components/LanguageSwitcher.vue`) is a dropdown rather
+  than inline links, so the header keeps its width as languages are added; the
+  menu scrolls past roughly seven of them. Its links stay in the DOM while the
+  menu is closed, so they remain crawlable.
 - **SEO** comes from `useLocaleHead` in `app.vue`: per-locale `<title>`,
   description and `<html lang>`, plus `hreflang` alternates, `x-default` and a
   canonical. Those must be absolute URLs, so `i18n.baseUrl` defaults to the
