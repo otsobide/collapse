@@ -4,7 +4,8 @@ name: Release
 # (vX.Y.Z) is pushed. Tags belong on main's release merge commits (see
 # docs/git_flow.md), and the "tag is on main" job enforces it: a tag whose
 # commit is not on main fails the run and nothing is published. macOS only
-# (unsigned) for now; more targets and signing as we iterate.
+# (unsigned) for now, both architectures built on the arm64 runner; more
+# targets and signing as we iterate.
 #
 # workflow_dispatch runs the build matrix as a dry run: it compiles and
 # packages the binaries but skips the publish job (no tag, no release).
@@ -45,12 +46,11 @@ jobs:
     name: build (${{ matrix.target }})
     strategy:
       matrix:
-        include:
-          - runner: macos-latest # Apple Silicon
-            target: aarch64-apple-darwin
-          - runner: macos-13 # Intel
-            target: x86_64-apple-darwin
-    runs-on: ${{ matrix.runner }}
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    # Both architectures build on the arm64 runner: Apple's toolchain links
+    # either arch natively (rustup target add is enough), and GitHub retired
+    # macos-13, the last free Intel image, in December 2025.
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
