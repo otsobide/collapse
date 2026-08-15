@@ -173,13 +173,13 @@ jobs:
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.sha256
 
-  # Linux desktop packages: a .deb and an .rpm for x86_64, built on the Ubuntu
-  # runner with the same Tauri system dependencies CI installs. Tauri names
-  # them from productName + version (Collapse_X.Y.Z_amd64.deb,
-  # Collapse-X.Y.Z-1.x86_64.rpm). No AppImage for now (its bundler pulls
-  # extra tooling); arm64 needs an arm runner — both can come later.
+  # Linux desktop packages for x86_64 — a .deb, an .rpm and a portable
+  # .AppImage — built on the Ubuntu runner with the same Tauri system
+  # dependencies CI installs. Tauri names them from productName + version
+  # (Collapse_X.Y.Z_amd64.deb, Collapse-X.Y.Z-1.x86_64.rpm,
+  # Collapse_X.Y.Z_amd64.AppImage). arm64 needs an arm runner: later.
   build-desktop-linux:
-    name: build (desktop, deb + rpm)
+    name: build (desktop, deb + rpm + AppImage)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -205,16 +205,17 @@ jobs:
       - name: Build the packages
         run: make desktop/bundle-linux
 
-      # Flatten both packages into one staging dir: upload-artifact keeps the
+      # Flatten the packages into one staging dir: upload-artifact keeps the
       # directory structure below the paths' common ancestor, and the publish
-      # job's `dist/*` expects plain files, not deb/ and rpm/ subdirs. The
-      # checksums are computed inside the staging dir so each .sha256 records
-      # the bare filename and `shasum -c` works next to the download.
+      # job's `dist/*` expects plain files, not deb/, rpm/ and appimage/
+      # subdirs. The checksums are computed inside the staging dir so each
+      # .sha256 records the bare filename and `shasum -c` works next to the
+      # download.
       - name: Stage and checksum the packages
         working-directory: apps/desktop/src-tauri/target/release/bundle
         run: |
           mkdir staging
-          cp deb/*.deb rpm/*.rpm staging/
+          cp deb/*.deb rpm/*.rpm appimage/*.AppImage staging/
           cd staging
           for PKG in *; do shasum -a 256 "$PKG" > "$PKG.sha256"; done
 

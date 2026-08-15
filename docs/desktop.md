@@ -92,11 +92,20 @@ Distribute the `.msi` / NSIS installer (optionally code-signed with an
 Authenticode certificate). The Microsoft Store is an optional later channel.
 
 ### Linux
-What ships **today**: every GitHub release includes an x86_64 **`.deb`** and
-**`.rpm`** (with sha256 checksums), built on the Ubuntu runner by
-`make desktop/bundle-linux` (`tauri build --bundles deb,rpm`). No Gatekeeper
-equivalent applies; they install with `dpkg -i` / `rpm -i` as usual. An
-AppImage, arm64 packages, and Flathub are optional later channels.
+What ships **today**: every GitHub release includes an x86_64 **`.deb`**,
+**`.rpm`** and **`.AppImage`** (with sha256 checksums), built on the Ubuntu
+runner by `make desktop/bundle-linux`
+(`tauri build --bundles deb,rpm,appimage`). No Gatekeeper equivalent applies:
+the packages install with `dpkg -i` / `rpm -i` as usual, and the AppImage is a
+single portable file that runs anywhere once marked executable
+(`chmod +x Collapse_X.Y.Z_amd64.AppImage`), with no install and no system
+dependencies — it carries its own webkit.
+
+Building the AppImage needs `APPIMAGE_EXTRACT_AND_RUN=1` (the make target sets
+it): the tooling Tauri downloads for it ships as AppImages that self-mount
+through FUSE 2, which Ubuntu 24.04 and the CI runners no longer provide.
+
+arm64 packages and Flathub are optional later channels.
 
 ## Notes
 
