@@ -80,7 +80,7 @@ A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
 CLI: drag in a file or folder to compress, or an archive to extract, in a calm
 interface using the cervantic palette. Every release ships an unsigned
 **universal macOS `.dmg`** (right-click → Open on first launch) and x86_64
-Linux **`.deb`/`.rpm`** packages: grab them from the
+Linux **`.deb`**, **`.rpm`** and **`.AppImage`** builds: grab them from the
 [releases page](https://github.com/otsobide/collapse/releases/latest) or
 the landing site. See [desktop.md](docs/desktop.md) for building, signing, and
 per-platform distribution (including the macOS App Store).
