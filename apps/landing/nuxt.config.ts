@@ -1,3 +1,15 @@
+// Adding a language is two steps and nothing else: drop an `i18n/locales/
+// <code>.json` next to the others, then add one entry here. Routing, the
+// prerendered routes, the navbar menu and the hreflang tags all derive from
+// this list. `name` is what the language menu shows, so write it in the
+// language itself.
+const DEFAULT_LOCALE = 'en'
+
+const LOCALES = [
+  { code: 'en', language: 'en', name: 'English', file: 'en.json' },
+  { code: 'es', language: 'es', name: 'Español', file: 'es.json' },
+]
+
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
@@ -6,20 +18,17 @@ export default defineNuxtConfig({
   css: ['~/assets/main.css'],
   modules: ['@nuxtjs/i18n'],
 
-  // English lives at `/`, Spanish at `/es/`. Page titles, descriptions and the
-  // <html lang> come from the locale files via useLocaleHead (see app.vue), so
-  // there is no static title here.
+  // The default locale is served at `/`, every other one under `/<code>/`.
+  // Page titles, descriptions and the <html lang> come from the locale files
+  // via useLocaleHead (see app.vue), so there is no static title here.
   i18n: {
-    defaultLocale: 'en',
+    defaultLocale: DEFAULT_LOCALE,
+    locales: LOCALES,
     strategy: 'prefix_except_default',
     // hreflang alternates and the canonical link must be absolute URLs, so
     // the production origin is baked in; override it (e.g. for the staging
     // subdomain) with NUXT_PUBLIC_SITE_URL.
     baseUrl: process.env.NUXT_PUBLIC_SITE_URL || 'https://collapse.cervantic.com',
-    locales: [
-      { code: 'en', language: 'en', name: 'English', file: 'en.json' },
-      { code: 'es', language: 'es', name: 'Español', file: 'es.json' },
-    ],
     // First visit to `/` follows the browser's language, then remembers the
     // choice in a cookie so the switcher always wins afterwards.
     detectBrowserLanguage: {
@@ -29,9 +38,13 @@ export default defineNuxtConfig({
     },
   },
 
-  // Both locales are prerendered explicitly, so a generate never depends on
-  // the crawler finding the switcher's links.
-  nitro: { prerender: { routes: ['/', '/es'] } },
+  // Every locale is prerendered explicitly, so a generate never depends on the
+  // crawler finding the language menu's links.
+  nitro: {
+    prerender: {
+      routes: LOCALES.map((l) => (l.code === DEFAULT_LOCALE ? '/' : `/${l.code}`)),
+    },
+  },
 
   app: {
     head: {

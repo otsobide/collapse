@@ -1,6 +1,5 @@
 <script setup>
-const { t, locale, locales } = useI18n()
-const switchLocalePath = useSwitchLocalePath()
+const { t } = useI18n()
 
 const repo = 'https://github.com/otsobide/collapse'
 const releasePage = `${repo}/releases/latest`
@@ -33,7 +32,7 @@ function assetUrl(ext) {
 // extensions stay untranslated; only the prose around them is localized.
 const systems = computed(() => [
   {
-    name: 'macOS',
+    name: 'MacOS',
     detail: t('download.systems.macos'),
     downloads: [{ label: '.dmg', href: assetUrl('.dmg') }],
   },
@@ -77,18 +76,7 @@ const features = computed(() =>
         <a href="#download">{{ t('nav.download') }}</a>
         <a href="#features">{{ t('nav.features') }}</a>
         <a :href="repo" target="_blank" rel="noopener">{{ t('nav.github') }}</a>
-        <span class="lang" role="group" :aria-label="t('nav.language')">
-          <NuxtLink
-            v-for="l in locales"
-            :key="l.code"
-            :to="switchLocalePath(l.code)"
-            :hreflang="l.language"
-            :lang="l.language"
-            class="lang-link"
-            :class="{ active: l.code === locale }"
-            :aria-current="l.code === locale ? 'true' : undefined"
-          >{{ l.code.toUpperCase() }}</NuxtLink>
-        </span>
+        <LanguageSwitcher />
       </nav>
     </div>
   </header>
@@ -232,20 +220,6 @@ header, main, footer { position: relative; z-index: 1; }
 }
 .nav { display: flex; align-items: center; gap: 22px; font-size: 0.86rem; color: var(--muted); }
 .nav a:hover { color: var(--accent); }
-
-/* Language switcher */
-.lang { display: inline-flex; align-items: center; gap: 8px; }
-.lang-link {
-  font-size: 0.74rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--faint);
-  padding: 3px 7px;
-  border-radius: 999px;
-  transition: color 0.2s, background 0.2s;
-}
-.lang-link:hover { color: var(--accent); }
-.lang-link.active { color: var(--accent); background: var(--accent-dim); }
 
 /* Hero */
 .hero { padding: 56px 0 72px; }
