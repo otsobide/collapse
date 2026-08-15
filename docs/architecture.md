@@ -14,6 +14,7 @@ apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
+  landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
@@ -21,7 +22,9 @@ docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_
 its Cargo integration tests in its own `tests/` directory (the Rust convention).
 `apps/desktop/src-tauri` is a **separate workspace** (empty `[workspace]` in its
 `Cargo.toml`) so a plain `cargo test` at the root doesn't need the Tauri system
-dependencies — see [desktop.md](desktop.md).
+dependencies — see [desktop.md](desktop.md). `apps/landing` is a Node app with
+no Rust at all, outside the Cargo workspace entirely — see
+[deployment.md](deployment.md).
 
 ## Dependency graph
 
@@ -129,7 +132,8 @@ as needed.
 
 ## collapse-desktop — the desktop app
 
-A **Tauri v2** app: a Vue 3 frontend (`src/App.vue` is the whole UI) over a small
+A **Tauri v2** app: a Vue 3 frontend (`src/App.vue` is the UI; `src/paths.js`
+holds the path/format helpers, split out for unit testing) over a small
 Rust backend (`src-tauri/src/lib.rs`) that calls `collapse-core` directly — no
 HTTP, same engine as the CLI. It compresses files and folders and extracts
 archives, in the cervantic visual style (warm cream + terracotta, monospace), and
@@ -168,11 +172,13 @@ the last compiling the whole Tauri app (frontend + the `src-tauri` crate,
 which no other CI job compiles) via `make desktop/compile`
 (`tauri build --no-bundle`), with the webkit system libraries installed on
 the runner. The landing has no tests and is built by `deploy-landing.yml`;
-macOS release artifacts are `release.yml`'s job. Branching and release flow
-are described in [git_flow.md](git_flow.md).
+macOS release artifacts are `release.yml`'s job (which also runs the Rust
+test suite once on a macOS runner, the one OS the binaries actually target).
+Branching and release flow are described in [git_flow.md](git_flow.md).
 
 ## Roadmap
 
-The MVP interfaces — CLI and desktop app — are both in place. Remaining work
-(desktop CI, code signing / store submission, decompression-bomb limits, license)
-is tracked in the repository issues.
+The MVP interfaces — CLI and desktop app — are both in place, tested and built
+in CI, and shipped by the release pipeline. Remaining work (code signing /
+store submission, decompression-bomb limits) is tracked in the repository
+issues.
