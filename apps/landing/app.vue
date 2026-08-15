@@ -62,7 +62,12 @@ const features = [
 
   <header class="site-header">
     <div class="wrap bar">
-      <a class="brand" href="#top">Collapse</a>
+      <a class="brand" href="#top">
+        <span class="brand-mark" role="img" aria-label="Cervantic">
+          <span class="brand-letter">C</span>
+        </span>
+        <span class="brand-name">Cervantic</span>
+      </a>
       <nav class="nav">
         <a href="#download">Download</a>
         <a href="#features">Features</a>
@@ -76,7 +81,7 @@ const features = [
     <section class="hero">
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">cervantic</p>
+          <p class="eyebrow">Collapse</p>
           <h1>A small, fast<br />file compressor.</h1>
           <p class="lead">
             Drag in a file or a folder, pick a format, and get a smaller
@@ -156,7 +161,7 @@ const features = [
   <footer class="site-footer">
     <div class="wrap foot">
       <span class="brand">Collapse</span>
-      <span class="foot-meta">Open source · Local-first · No tracking · part of cervantic</span>
+      <span class="foot-meta">Open source · Local-first · No tracking · part of Cervantic</span>
       <a :href="repo" target="_blank" rel="noopener">GitHub ↗</a>
     </div>
   </footer>
@@ -180,6 +185,39 @@ header, main, footer { position: relative; z-index: 1; }
 .site-header { padding: 22px 0; }
 .bar { display: flex; align-items: center; justify-content: space-between; }
 .brand { font-weight: 700; letter-spacing: -0.01em; }
+
+/* Cervantic brand lockup (mirrors cervantic.com: terracotta rounded square
+   with a serif C, wordmark in mono at weight 500). */
+.site-header .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--accent);
+}
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: currentColor;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  user-select: none;
+}
+.brand-letter {
+  font-family: 'Cormorant Garamond', Garamond, 'Times New Roman', serif;
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--cream);
+  transform: translateY(0.02em);
+}
+.brand-name {
+  font-size: 0.98rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
 .nav { display: flex; gap: 22px; font-size: 0.86rem; color: var(--muted); }
 .nav a:hover { color: var(--accent); }
 
