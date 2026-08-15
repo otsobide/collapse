@@ -15,8 +15,16 @@ on:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
   workflow_dispatch:
 
+# Only the publish job needs to write (it gets contents: write per-job);
+# build jobs run third-party build scripts and should hold a read-only token.
 permissions:
-  contents: write
+  contents: read
+
+# One run per ref at a time, so a delete-and-retag cannot race an in-flight
+# run for the same tag name.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # A release must correspond to a released state of the code: refuse any
@@ -77,12 +85,21 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # The CI suite runs on Linux; run it once on the OS we actually ship
+      # (native arch only; the cross-built binary shares the same code).
+      - name: Test on macOS
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo test --workspace --locked
+
       - name: Build the CLI
-        run: cargo build -p collapse-cli --release --target ${{ matrix.target }}
+        run: cargo build -p collapse-cli --release --locked --target ${{ matrix.target }}
 
       - name: Package binary and checksum
         run: |
-          ARCHIVE="collapse-${GITHUB_REF_NAME}-${{ matrix.target }}.tar.gz"
+          # Dry runs happen on feature/* branches: flatten slashes so the
+          # ref name cannot become a directory in the archive path.
+          NAME="${GITHUB_REF_NAME//\//-}"
+          ARCHIVE="collapse-${NAME}-${{ matrix.target }}.tar.gz"
           tar -C "target/${{ matrix.target }}/release" -czf "$ARCHIVE" collapse
           shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
 
@@ -99,6 +116,8 @@ jobs:
     needs: [verify, build]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
