@@ -1,11 +1,11 @@
 name: Release
 
-# Publish a GitHub release with prebuilt CLI binaries whenever a version tag
-# (vX.Y.Z) is pushed. Tags belong on main's release merge commits (see
-# docs/git_flow.md), and the "tag is on main" job enforces it: a tag whose
-# commit is not on main fails the run and nothing is published. macOS only
-# (unsigned) for now, both architectures built on the arm64 runner; more
-# targets and signing as we iterate.
+# Publish a GitHub release whenever a version tag (vX.Y.Z) is pushed: the CLI
+# binaries (per-arch tarballs) and the desktop app (one universal .dmg). Tags
+# belong on main's release merge commits (see docs/git_flow.md), and the
+# "tag is on main" job enforces it: a tag whose commit is not on main fails
+# the run and nothing is published. macOS only (unsigned) for now, everything
+# built on the arm64 runner; more targets and signing as we iterate.
 #
 # workflow_dispatch is a dry run: it compiles and packages the binaries but
 # never publishes; the verify and publish jobs also require the push event,
@@ -67,6 +67,18 @@ jobs:
             exit 1
           fi
 
+      - name: Check the tag matches the desktop version
+        run: |
+          # tauri.conf.json's version names the bundles (Collapse_X.Y.Z_...);
+          # a mismatched tag would ship a .dmg claiming another version.
+          APP_VERSION=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+          if [ "v$APP_VERSION" = "$GITHUB_REF_NAME" ]; then
+            echo "ok: the desktop app is at $APP_VERSION"
+          else
+            echo "Refusing to release: tag is $GITHUB_REF_NAME but tauri.conf.json says $APP_VERSION (bump it before tagging)"
+            exit 1
+          fi
+
   build:
     name: build (${{ matrix.target }})
     strategy:
@@ -111,9 +123,54 @@ jobs:
             collapse-*.tar.gz
             collapse-*.sha256
 
+  # The desktop app ships as ONE universal .dmg (arm64 + Intel via lipo,
+  # `--target universal-apple-darwin`), the macOS convention for apps, unlike
+  # the CLI's per-arch tarballs. Unsigned for now: first run needs right-click
+  # Open (or removing the quarantine attribute) until we sign and notarize.
+  build-desktop:
+    name: build (desktop, universal dmg)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build the app
+        working-directory: apps/desktop
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+
+      - name: Checksum the dmg
+        working-directory: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg
+        run: |
+          DMG=$(ls *.dmg)
+          shasum -a 256 "$DMG" > "$DMG.sha256"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-universal
+          path: |
+            apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.sha256
+
   release:
     name: publish release
-    needs: [verify, build]
+    needs: [verify, build, build-desktop]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
