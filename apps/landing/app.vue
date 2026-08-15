@@ -1,33 +1,52 @@
 <script setup>
 const repo = 'https://github.com/otsobide/collapse'
+const releasePage = `${repo}/releases/latest`
 
-// The macOS link is resolved client-side from the latest GitHub release (the
-// .dmg asset name embeds the version, so a hardcoded URL would go stale on
-// every release). Until it resolves, and as the no-JS / API-failure fallback,
-// the button points at the releases page.
-const macDownload = ref(null)
+// Download links are resolved client-side from the latest GitHub release
+// (asset names embed the version, so hardcoded URLs would go stale on every
+// release). Until it resolves, and as the no-JS / API-failure fallback,
+// available buttons point at the releases page.
+const release = ref(null)
 onMounted(async () => {
   try {
     const res = await fetch('https://api.github.com/repos/otsobide/collapse/releases/latest')
-    if (!res.ok) return
-    const release = await res.json()
-    const dmg = release.assets?.find((a) => a.name.endsWith('.dmg'))
-    if (dmg) macDownload.value = { url: dmg.browser_download_url, version: release.tag_name }
+    if (res.ok) release.value = await res.json()
   } catch {
-    // keep the fallback link
+    // keep the fallback links
   }
 })
 
-const platforms = computed(() => [
+const version = computed(() => release.value?.tag_name)
+
+function assetUrl(ext) {
+  const asset = release.value?.assets?.find((a) => a.name.toLowerCase().endsWith(ext))
+  return asset?.browser_download_url
+}
+
+// One row per OS. A download without `href` links to the releases page;
+// `soon: true` renders as a disabled chip instead of a button. AppImage is
+// derived from the release assets, so it turns into a real download the
+// moment an .AppImage asset ships — no page change needed.
+const systems = computed(() => [
   {
     name: 'macOS',
     detail: 'Universal app · Apple Silicon & Intel · macOS 10.15+',
-    href: macDownload.value ? macDownload.value.url : `${repo}/releases/latest`,
-    label: macDownload.value ? `Download ${macDownload.value.version}` : 'Download',
-    soon: false,
+    downloads: [{ label: '.dmg', href: assetUrl('.dmg') }],
   },
-  { name: 'Windows', detail: 'Installer · Windows 10+', soon: true },
-  { name: 'Linux', detail: 'AppImage / .deb', soon: true },
+  {
+    name: 'Linux',
+    detail: 'Desktop app · x86_64',
+    downloads: [
+      { label: '.deb', href: assetUrl('.deb') },
+      { label: '.rpm', href: assetUrl('.rpm') },
+      { label: 'AppImage', href: assetUrl('.appimage'), soon: !assetUrl('.appimage') },
+    ],
+  },
+  {
+    name: 'Windows',
+    detail: 'Installer · Windows 10+',
+    downloads: [{ label: 'Installer', soon: true }],
+  },
 ])
 
 const features = [
@@ -43,7 +62,12 @@ const features = [
 
   <header class="site-header">
     <div class="wrap bar">
-      <a class="brand" href="#top">Collapse</a>
+      <a class="brand" href="#top">
+        <span class="brand-mark" role="img" aria-label="Cervantic">
+          <span class="brand-letter">C</span>
+        </span>
+        <span class="brand-name">Cervantic</span>
+      </a>
       <nav class="nav">
         <a href="#download">Download</a>
         <a href="#features">Features</a>
@@ -57,7 +81,7 @@ const features = [
     <section class="hero">
       <div class="wrap hero-grid">
         <div class="hero-copy">
-          <p class="eyebrow">cervantic</p>
+          <p class="eyebrow">Collapse</p>
           <h1>A small, fast<br />file compressor.</h1>
           <p class="lead">
             Drag in a file or a folder, pick a format, and get a smaller
@@ -91,18 +115,30 @@ const features = [
       <div class="wrap">
         <p class="eyebrow">Download</p>
         <h2>Pick your platform.</h2>
-        <div class="dl-grid">
-          <article v-for="p in platforms" :key="p.name" class="dl-card" :class="{ soon: p.soon }">
-            <h3>{{ p.name }}</h3>
-            <p class="dl-detail">{{ p.detail }}</p>
-            <a v-if="!p.soon" class="btn btn-primary" :href="p.href">{{ p.label }}</a>
-            <span v-else class="btn btn-soon" aria-disabled="true">Coming soon</span>
+        <div class="dl-list">
+          <article
+            v-for="sys in systems"
+            :key="sys.name"
+            class="dl-row"
+            :class="{ soon: sys.downloads.every((d) => d.soon) }"
+          >
+            <div class="dl-os">
+              <h3>{{ sys.name }}</h3>
+              <p class="dl-detail">{{ sys.detail }}</p>
+            </div>
+            <div class="dl-actions">
+              <template v-for="d in sys.downloads" :key="d.label">
+                <a v-if="!d.soon" class="btn btn-primary" :href="d.href || releasePage">{{ d.label }}</a>
+                <span v-else class="btn btn-soon" aria-disabled="true">{{ d.label }} · soon</span>
+              </template>
+            </div>
           </article>
         </div>
         <p class="dl-note">
-          macOS builds are unsigned for now: right-click → Open on first
-          launch. Checksums live on the
-          <a :href="`${repo}/releases/latest`" target="_blank" rel="noopener">release page</a>.
+          <template v-if="version">Latest release {{ version }} · </template>
+          Builds are unsigned for now (macOS: right-click → Open on first
+          launch). Checksums live on the
+          <a :href="releasePage" target="_blank" rel="noopener">release page</a>.
         </p>
       </div>
     </section>
@@ -125,7 +161,7 @@ const features = [
   <footer class="site-footer">
     <div class="wrap foot">
       <span class="brand">Collapse</span>
-      <span class="foot-meta">Open source · Local-first · No tracking · part of cervantic</span>
+      <span class="foot-meta">Open source · Local-first · No tracking · part of Cervantic</span>
       <a :href="repo" target="_blank" rel="noopener">GitHub ↗</a>
     </div>
   </footer>
@@ -149,6 +185,39 @@ header, main, footer { position: relative; z-index: 1; }
 .site-header { padding: 22px 0; }
 .bar { display: flex; align-items: center; justify-content: space-between; }
 .brand { font-weight: 700; letter-spacing: -0.01em; }
+
+/* Cervantic brand lockup (mirrors cervantic.com: terracotta rounded square
+   with a serif C, wordmark in mono at weight 500). */
+.site-header .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--accent);
+}
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: currentColor;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  user-select: none;
+}
+.brand-letter {
+  font-family: 'Cormorant Garamond', Garamond, 'Times New Roman', serif;
+  font-weight: 600;
+  font-size: 20px;
+  line-height: 1;
+  color: var(--cream);
+  transform: translateY(0.02em);
+}
+.brand-name {
+  font-size: 0.98rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
 .nav { display: flex; gap: 22px; font-size: 0.86rem; color: var(--muted); }
 .nav a:hover { color: var(--accent); }
 
@@ -193,21 +262,25 @@ h1 { font-size: 3rem; line-height: 1.08; letter-spacing: -0.02em; margin: 14px 0
 h2 { font-size: 1.7rem; line-height: 1.2; letter-spacing: -0.01em; margin: 12px 0 34px; max-width: 26ch; }
 
 /* Download */
-.dl-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
-.dl-card {
+.dl-list {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
   background: var(--cream);
   border: 1px solid var(--border);
   border-radius: var(--r);
-  padding: 24px;
 }
-.dl-card h3 { font-size: 1.05rem; }
-.dl-card .btn { margin-top: auto; }
-.dl-detail { font-size: 0.8rem; color: var(--muted); min-height: 2.6em; }
-.dl-card.soon h3, .dl-card.soon .dl-detail { color: var(--faint); }
+.dl-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 22px 24px;
+}
+.dl-row + .dl-row { border-top: 1px solid var(--border); }
+.dl-row h3 { font-size: 1.05rem; }
+.dl-detail { font-size: 0.8rem; color: var(--muted); margin-top: 4px; }
+.dl-row.soon h3, .dl-row.soon .dl-detail { color: var(--faint); }
+.dl-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
 .btn-soon {
   background: transparent;
   color: var(--faint);
@@ -240,7 +313,9 @@ h2 { font-size: 1.7rem; line-height: 1.2; letter-spacing: -0.01em; margin: 12px 
 /* Responsive */
 @media (max-width: 820px) {
   .hero-grid { grid-template-columns: 1fr; gap: 32px; }
-  .dl-grid, .grid { grid-template-columns: 1fr; }
+  .grid { grid-template-columns: 1fr; }
+  .dl-row { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .dl-actions { justify-content: flex-start; }
   h1 { font-size: 2.4rem; }
   .nav a:first-child { display: none; }
 }
