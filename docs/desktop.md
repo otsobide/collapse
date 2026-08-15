@@ -11,7 +11,9 @@ It runs on **macOS, Windows and Linux** from one codebase.
 
 ```
 apps/desktop/
-  src/                Vue 3 frontend (App.vue is the whole UI)
+  src/                Vue 3 frontend (App.vue is the UI; paths.js holds the
+                      path/format helpers, split out for unit testing)
+  tests/              Vitest suite (App.test.js, paths.test.js — Tauri IPC mocked)
   src-tauri/          Rust backend
     src/lib.rs        Tauri commands: is_directory, compress_path, extract_archive
     tauri.conf.json   window, bundle, identifier (com.cervantic.collapse)
@@ -42,6 +44,7 @@ cd apps/desktop
 npm install
 npm run tauri dev       # hot-reloading dev window
 npm run tauri build     # produce installers/bundles for the current OS
+npm run test            # frontend Vitest suite (or make desktop/test) — Node only
 ```
 
 `tauri build` outputs to `apps/desktop/src-tauri/target/release/bundle/`:
@@ -68,7 +71,9 @@ tag) includes an **unsigned universal `.dmg`** (arm64 + Intel), built by
 `make desktop/bundle` (`tauri build --target universal-apple-darwin`, dmg
 bundle only). Until signing/notarization lands, first launch requires
 right-click → Open (or `xattr -d com.apple.quarantine`) to get past
-Gatekeeper.
+Gatekeeper. The landing page's macOS button links this `.dmg`, resolved
+client-side from the latest release — see
+[deployment.md](deployment.md#what-the-page-serves).
 
 ### macOS — App Store
 1. Join the Apple Developer Program; register the bundle id
@@ -93,6 +98,9 @@ Distribute `.deb` / `.AppImage` / `.rpm`; Flathub is an optional later channel.
 
 - The window uses the macOS overlay title bar (`titleBarStyle: "Overlay"`,
   `hiddenTitle`); on Windows/Linux Tauri falls back to standard decorations.
-- Continuous integration for the desktop build (installing the Tauri system deps,
-  building per-OS) is tracked separately — it is intentionally not part of the
-  lean `cargo test` pipeline.
+- CI covers the desktop app in `test-and-build.yml`: a `vitest (desktop)` job
+  runs the frontend suite (Node only, Tauri IPC mocked), and a `build (desktop)`
+  job installs the Tauri Linux system deps and compiles the whole app via
+  `make desktop/compile` (`tauri build --no-bundle`). The macOS universal
+  `.dmg` is built by `release.yml` on each version tag. The `src-tauri` crate
+  stays out of the root `cargo test` pipeline, which needs no Tauri deps.
