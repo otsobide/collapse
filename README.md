@@ -138,4 +138,5 @@ push and pull request.
 
 ## License
 
-To be determined.
+Collapse is free software, released under the
+[GNU General Public License v3.0](LICENSE).
