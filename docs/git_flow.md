@@ -49,7 +49,7 @@ bind everyone, including the repo owner:
 
 When `dev` reaches a state worth shipping, open a pull request from `dev` into `main`, merge it, and tag the merge commit with the version number. `main` therefore only ever moves forward one version at a time.
 
-Pushing the tag triggers [`release.yml`](../.github/workflows/release.yml), which builds the CLI binaries (macOS arm64 and Intel for now, unsigned) and publishes a GitHub release with them, their sha256 checksums, and auto-generated notes. The workflow refuses to publish a tag whose commit is not on `main` (a "tag is on main" guard job fails the run), so a tag placed on `dev` by mistake never becomes a release. The `workflow_dispatch` trigger dry-runs the build without publishing anything.
+Pushing the tag triggers [`release.yml`](../.github/workflows/release.yml), which builds the CLI binaries (macOS arm64 and Intel for now, unsigned) and publishes a GitHub release with them, their sha256 checksums, and auto-generated notes. Only exact `vX.Y.Z` tags trigger it, and a guard job refuses to publish when the tagged commit is not on `main` (a tag placed on `dev` by mistake never becomes a release) or when the tag does not match the version in `apps/cli/Cargo.toml` (bump it before tagging, or the binary would report the wrong `--version`). The `workflow_dispatch` trigger dry-runs the build without publishing anything, even if pointed at a tag.
 
 ## Commits
 
