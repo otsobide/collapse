@@ -55,7 +55,19 @@ next to the source; override with `-o`. It **won't overwrite** an existing
 archive (or its own source) unless you pass `--force`. Run `collapse --help` for
 the full surface.
 
-Build and run from source:
+Prebuilt macOS binaries (Apple Silicon and Intel tarballs, with sha256
+checksums) are attached to every
+[GitHub release](https://github.com/otsobide/collapse/releases/latest):
+
+```bash
+tar -xzf collapse-v0.2.0-aarch64-apple-darwin.tar.gz
+mv collapse ~/.local/bin/        # or anywhere on your PATH
+```
+
+The binaries are unsigned for now; if the browser download is quarantined,
+clear it with `xattr -d com.apple.quarantine collapse`.
+
+Or build and run from source:
 
 ```bash
 cargo run -p collapse-cli -- compress notes.txt -f 7z
@@ -66,8 +78,11 @@ cargo build -p collapse-cli --release      # binary at target/release/collapse
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
 CLI: drag in a file or folder to compress, or an archive to extract, in a calm
-interface using the cervantic palette. See [desktop.md](docs/desktop.md) for
-building, signing, and per-platform distribution (including the macOS App Store).
+interface using the cervantic palette. Every release ships an unsigned
+**universal macOS `.dmg`** (right-click → Open on first launch): grab it from
+the [releases page](https://github.com/otsobide/collapse/releases/latest) or
+the landing site. See [desktop.md](docs/desktop.md) for building, signing, and
+per-platform distribution (including the macOS App Store).
 
 ```bash
 cd apps/desktop && npm install
@@ -134,7 +149,7 @@ make fmt  make lint  # format / clippy the Rust workspace
 
 Work happens on `dev`, merged into `main` per release (see
 [git flow](docs/git_flow.md)). CI invokes these same `make` targets on every
-push and pull request.
+pull request and on pushes to `dev` and `main`.
 
 ## License
 
