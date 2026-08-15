@@ -1,7 +1,7 @@
 {
   "seo": {
     "title": "Collapse — a small, fast file compressor",
-    "description": "Collapse is a small, fast, open-source file compressor for macOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives, and back. Local-first, no tracking."
+    "description": "Collapse is a small, fast, open-source file compressor for MacOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives, and back. Local-first, no tracking."
   },
   "nav": {
     "download": "Download",
@@ -26,10 +26,10 @@
     "soon": "soon",
     "installer": "Installer",
     "latest": "Latest release {version}",
-    "unsigned": "Builds are unsigned for now (macOS: right-click → Open on first launch). Checksums live on the",
+    "unsigned": "Builds are unsigned for now (MacOS: right-click → Open on first launch). Checksums live on the",
     "releasePage": "release page",
     "systems": {
-      "macos": "Universal app · Apple Silicon & Intel · macOS 10.15+",
+      "macos": "Universal app · Apple Silicon & Intel · MacOS 10.15+",
       "linux": "Desktop app · x86_64",
       "windows": "Installer · Windows 10+"
     }

@@ -1,7 +1,7 @@
 {
   "seo": {
     "title": "Collapse — un compresor de archivos pequeño y rápido",
-    "description": "Collapse es un compresor de archivos pequeño, rápido y de código abierto para macOS, Windows y Linux. Convierte archivos y carpetas en 7z, ZIP o tar, y al revés. Local, sin rastreo."
+    "description": "Collapse es un compresor de archivos pequeño, rápido y de código abierto para MacOS, Windows y Linux. Convierte archivos y carpetas en 7z, ZIP o tar, y al revés. Local, sin rastreo."
   },
   "nav": {
     "download": "Descargas",
@@ -26,10 +26,10 @@
     "soon": "pronto",
     "installer": "Instalador",
     "latest": "Última versión {version}",
-    "unsigned": "Las builds todavía no están firmadas (en macOS: clic derecho → Abrir la primera vez). Los checksums están en la",
+    "unsigned": "Las builds todavía no están firmadas (en MacOS: clic derecho → Abrir la primera vez). Los checksums están en la",
     "releasePage": "página de la release",
     "systems": {
-      "macos": "App universal · Apple Silicon e Intel · macOS 10.15+",
+      "macos": "App universal · Apple Silicon e Intel · MacOS 10.15+",
       "linux": "App de escritorio · x86_64",
       "windows": "Instalador · Windows 10+"
     }
