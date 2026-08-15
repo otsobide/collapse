@@ -62,13 +62,37 @@ so it must be served at a **domain/subdomain root** — not under a subpath like
 
 ## What the page serves
 
-The page is built around three platform download cards. Windows and Linux are
-"Coming soon" placeholders; the **macOS card resolves its link at page load**:
-`app.vue` fetches
-`https://api.github.com/repos/otsobide/collapse/releases/latest` client-side
-and links the first asset whose name ends in `.dmg` (labeling the button with
-the release tag). With JavaScript disabled or the API unreachable, the button
-falls back to the releases page.
+The page is one row per operating system: macOS (`.dmg`), Linux (`.deb`,
+`.rpm`, AppImage) and Windows (still a "coming soon" placeholder). Every
+download **resolves its link at page load**: `pages/index.vue` fetches
+`https://api.github.com/repos/otsobide/collapse/releases/latest` client-side and
+matches each button to the first release asset whose name ends in that
+extension. A button whose asset is missing from the release renders as a
+disabled "soon" chip instead, so the AppImage entry becomes a real download the
+moment such an asset ships, with no page change. With JavaScript disabled or the
+API unreachable, the available buttons fall back to the releases page.
+
+## Languages
+
+The site ships in **English and Spanish** via
+[`@nuxtjs/i18n`](https://i18n.nuxtjs.org/), with the `prefix_except_default`
+strategy: English is served at `/` and Spanish at `/es/`, and `nuxt generate`
+prerenders both (they are also listed in `nitro.prerender.routes`, so a build
+never depends on the crawler finding the switcher's links).
+
+- **Copy** lives in `i18n/locales/{en,es}.json`, keyed by section. Components
+  hold no literal copy; adding a language means adding a locale file plus one
+  entry in `nuxt.config.ts`.
+- **SEO** comes from `useLocaleHead` in `app.vue`: per-locale `<title>`,
+  description and `<html lang>`, plus `hreflang` alternates, `x-default` and a
+  canonical. Those must be absolute URLs, so `i18n.baseUrl` defaults to the
+  production origin (`https://collapse.cervantic.com`); override it with the
+  `NUXT_PUBLIC_SITE_URL` environment variable when building for another origin.
+  Staging builds keep the production canonical, which is what stops the preview
+  from competing with the live site in search results.
+- **First visit** to `/` follows the browser's language and redirects to `/es`
+  for Spanish speakers; the choice is then remembered in the `i18n_redirected`
+  cookie, so the navbar switcher always wins afterwards.
 
 That gives the live site a runtime dependency on the GitHub API, on the
 hardcoded `otsobide/collapse` slug, and on every release containing exactly one
