@@ -63,6 +63,12 @@ Sign with a **Developer ID Application** certificate and notarize the app, then
 ship the `.dmg`. Tauri wires signing/notarization through env vars
 (`APPLE_CERTIFICATE`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`).
 
+What ships **today**: every GitHub release (`release.yml`, on each `vX.Y.Z`
+tag) includes an **unsigned universal `.dmg`** (arm64 + Intel,
+`--target universal-apple-darwin`). Until signing/notarization lands,
+first launch requires right-click → Open (or
+`xattr -d com.apple.quarantine`) to get past Gatekeeper.
+
 ### macOS — App Store
 1. Join the Apple Developer Program; register the bundle id
    **`com.cervantic.collapse`** in App Store Connect.
