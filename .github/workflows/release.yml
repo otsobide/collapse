@@ -97,14 +97,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Build first: the make target builds with --locked, so a drifted
+      # Cargo.lock fails the run here, before any other cargo command could
+      # quietly re-resolve and rewrite it on the runner.
+      - name: Build the CLI
+        run: make cli/release TARGET=${{ matrix.target }}
+
       # The CI suite runs on Linux; run it once on the OS we actually ship
       # (native arch only; the cross-built binary shares the same code).
       - name: Test on macOS
         if: matrix.target == 'aarch64-apple-darwin'
-        run: cargo test --workspace --locked
-
-      - name: Build the CLI
-        run: cargo build -p collapse-cli --release --locked --target ${{ matrix.target }}
+        run: make test/rust
 
       - name: Package binary and checksum
         run: |
@@ -146,13 +149,10 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      - name: Install frontend dependencies
-        working-directory: apps/desktop
-        run: npm ci
-
+      # make handles npm ci (via its node_modules dependency) and the Tauri
+      # invocation; the workflow stays free of per-app tooling details.
       - name: Build the app
-        working-directory: apps/desktop
-        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+        run: make desktop/bundle
 
       - name: Checksum the dmg
         working-directory: apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/dmg
