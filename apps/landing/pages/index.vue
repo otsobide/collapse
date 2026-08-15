@@ -179,7 +179,12 @@ const features = computed(() =>
   pointer-events: none;
   z-index: 0;
 }
-header, main, footer { position: relative; z-index: 1; }
+/* The header outranks main/footer instead of tying with them: a tie would let
+   the later siblings paint over it, and since `header` is its own stacking
+   context, the language menu cannot escape it however high its own z-index is.
+   The menu drops into the hero, so a tie left it visible but unclickable. */
+header { position: relative; z-index: 10; }
+main, footer { position: relative; z-index: 1; }
 
 /* Header */
 .site-header { padding: 22px 0; }
