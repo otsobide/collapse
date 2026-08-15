@@ -15,7 +15,7 @@ export default defineNuxtConfig({
         {
           name: 'description',
           content:
-            'Collapse is a small, fast, open-source file compressor. Turn files and folders into 7z, ZIP or tar archives — and back — from your desktop or your terminal. Local-first, no tracking.',
+            'Collapse is a small, fast, open-source file compressor for macOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives, and back. Local-first, no tracking.',
         },
       ],
     },
