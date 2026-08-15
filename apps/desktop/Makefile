@@ -20,8 +20,12 @@ build: node_modules ## Build the Tauri bundles for this OS
 bundle: node_modules ## Build the distributable macOS app: one universal .dmg
 	npm run tauri -- build --target universal-apple-darwin --bundles dmg
 
-bundle-linux: node_modules ## Build the distributable Linux packages: .deb and .rpm (host arch)
-	npm run tauri -- build --bundles deb,rpm
+# APPIMAGE_EXTRACT_AND_RUN: the AppImage tooling Tauri downloads (linuxdeploy,
+# appimagetool) ships as AppImages itself, and those self-mount through FUSE 2,
+# which Ubuntu 24.04 and the CI runners no longer provide. Extracting them
+# instead works with or without FUSE.
+bundle-linux: node_modules ## Build the distributable Linux packages: .deb, .rpm and .AppImage (host arch)
+	APPIMAGE_EXTRACT_AND_RUN=1 npm run tauri -- build --bundles deb,rpm,appimage
 
 compile: node_modules ## Compile the app (frontend + Rust) without bundling installers
 	npm run tauri -- build --no-bundle
