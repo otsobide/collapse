@@ -1,8 +1,10 @@
 # Deployment
 
 This covers how the **landing page** (`apps/landing`, a Nuxt static site) is
-built and published. Distribution of the apps themselves — the desktop bundles —
-is a separate topic, in [desktop.md](desktop.md).
+built and published. Distribution of the apps themselves — the CLI tarballs and
+the desktop `.dmg` that `release.yml` attaches to each GitHub release — is a
+separate topic: see [git_flow.md](git_flow.md#releasing) for the release
+pipeline and [desktop.md](desktop.md) for the desktop bundle specifics.
 
 ## Two environments
 
@@ -57,6 +59,23 @@ so it must be served at a **domain/subdomain root** — not under a subpath like
 `user.github.io/collapse/`, where `/_nuxt/…` would 404. Staging
 (`pages/landing-dev`) can be served the same way from a separate subdomain (e.g.
 `dev.collapse.cervantic.com`).
+
+## What the page serves
+
+The page is built around three platform download cards. Windows and Linux are
+"Coming soon" placeholders; the **macOS card resolves its link at page load**:
+`app.vue` fetches
+`https://api.github.com/repos/otsobide/collapse/releases/latest` client-side
+and links the first asset whose name ends in `.dmg` (labeling the button with
+the release tag). With JavaScript disabled or the API unreachable, the button
+falls back to the releases page.
+
+That gives the live site a runtime dependency on the GitHub API, on the
+hardcoded `otsobide/collapse` slug, and on every release containing exactly one
+`.dmg` asset. Renaming the repo, making it private, or changing the desktop
+bundle naming silently downgrades the button to the fallback link — nothing
+fails in CI, because the landing has no test suite. Revisit `app.vue` if any of
+those change.
 
 ## Local preview
 

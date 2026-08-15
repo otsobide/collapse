@@ -19,7 +19,7 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
   to the compressing formats and is ignored by tar.
 - **Safe by default** — extraction rejects entries with absolute paths or `..`
   components before writing anything to disk, so a malicious archive can't escape
-  the output directory. See [Security](docs/security.md) for the full threat model.
+  the output directory. See [Security](docs/threat_model.md) for the full threat model.
 - **Shared engine** — the CLI and the desktop app call the exact same core, so
   behavior is identical whichever you reach for.
 
@@ -55,7 +55,19 @@ next to the source; override with `-o`. It **won't overwrite** an existing
 archive (or its own source) unless you pass `--force`. Run `collapse --help` for
 the full surface.
 
-Build and run from source:
+Prebuilt macOS binaries (Apple Silicon and Intel tarballs, with sha256
+checksums) are attached to every
+[GitHub release](https://github.com/otsobide/collapse/releases/latest):
+
+```bash
+tar -xzf collapse-v0.2.0-aarch64-apple-darwin.tar.gz
+mv collapse ~/.local/bin/        # or anywhere on your PATH
+```
+
+The binaries are unsigned for now; if the browser download is quarantined,
+clear it with `xattr -d com.apple.quarantine collapse`.
+
+Or build and run from source:
 
 ```bash
 cargo run -p collapse-cli -- compress notes.txt -f 7z
@@ -66,8 +78,12 @@ cargo build -p collapse-cli --release      # binary at target/release/collapse
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
 CLI: drag in a file or folder to compress, or an archive to extract, in a calm
-interface using the cervantic palette. See [desktop.md](docs/desktop.md) for
-building, signing, and per-platform distribution (including the macOS App Store).
+interface using the cervantic palette. Every release ships an unsigned
+**universal macOS `.dmg`** (right-click → Open on first launch) and x86_64
+Linux **`.deb`/`.rpm`** packages: grab them from the
+[releases page](https://github.com/otsobide/collapse/releases/latest) or
+the landing site. See [desktop.md](docs/desktop.md) for building, signing, and
+per-platform distribution (including the macOS App Store).
 
 ```bash
 cd apps/desktop && npm install
@@ -105,7 +121,7 @@ apps/
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
-docs/          architecture.md, security.md, desktop.md, deployment.md, git_flow.md
+docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
 Each app carries its own tests, in that ecosystem's conventional place: the Rust
@@ -115,7 +131,7 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 ## Documentation
 
 - [Architecture](docs/architecture.md) — the engine, the CLI, the desktop app, and how they fit together.
-- [Security](docs/security.md) — threat model, measures, and the attacks they prevent.
+- [Security](docs/threat_model.md) — threat model, measures, and the attacks they prevent.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
 - [Deployment](docs/deployment.md) — how the landing site is built and published.
 - [Git flow](docs/git_flow.md) — branching model (including deploy branches) and commits.
@@ -134,8 +150,9 @@ make fmt  make lint  # format / clippy the Rust workspace
 
 Work happens on `dev`, merged into `main` per release (see
 [git flow](docs/git_flow.md)). CI invokes these same `make` targets on every
-push and pull request.
+pull request and on pushes to `dev` and `main`.
 
 ## License
 
-To be determined.
+Collapse is free software, released under the
+[GNU General Public License v3.0](LICENSE).
