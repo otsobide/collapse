@@ -1,0 +1,26 @@
+name: Gitflow
+
+# Enforce the gitflow rule that changes reach dev only by merging a gitflow
+# branch: feature/* or hotfix/* (or main itself, for a post-release back-merge).
+# The "gitflow branch name" check is required by the dev branch ruleset, so a
+# PR from any other branch cannot be merged.
+on:
+  pull_request:
+    branches: [dev]
+
+jobs:
+  branch-name:
+    name: gitflow branch name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the head branch follows gitflow
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          case "$HEAD_REF" in
+            feature/*|hotfix/*|main)
+              echo "ok: $HEAD_REF" ;;
+            *)
+              echo "PRs into dev must come from a feature/* or hotfix/* branch (got: $HEAD_REF)"
+              exit 1 ;;
+          esac
