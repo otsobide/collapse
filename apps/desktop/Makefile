@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: install test dev build clean
+.PHONY: install test dev build bundle clean
 
 # Install JS deps only when the lockfile changed.
 node_modules: package-lock.json
@@ -16,6 +16,9 @@ dev: node_modules ## Run the Tauri app in dev mode (hot reload)
 
 build: node_modules ## Build the Tauri bundles for this OS
 	npm run tauri build
+
+bundle: node_modules ## Build the distributable macOS app: one universal .dmg
+	npm run tauri -- build --target universal-apple-darwin --bundles dmg
 
 clean: ## Remove JS and Tauri build artifacts
 	rm -rf node_modules dist .output src-tauri/target src-tauri/gen
