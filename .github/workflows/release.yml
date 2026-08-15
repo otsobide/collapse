@@ -200,23 +200,24 @@ jobs:
       - name: Build the packages
         run: make desktop/bundle-linux
 
-      # cd into each bundle dir so the .sha256 records the bare filename and
-      # `shasum -c` works next to the downloaded package.
-      - name: Checksum the packages
+      # Flatten both packages into one staging dir: upload-artifact keeps the
+      # directory structure below the paths' common ancestor, and the publish
+      # job's `dist/*` expects plain files, not deb/ and rpm/ subdirs. The
+      # checksums are computed inside the staging dir so each .sha256 records
+      # the bare filename and `shasum -c` works next to the download.
+      - name: Stage and checksum the packages
         working-directory: apps/desktop/src-tauri/target/release/bundle
         run: |
-          (cd deb && DEB=$(ls *.deb) && shasum -a 256 "$DEB" > "$DEB.sha256")
-          (cd rpm && RPM=$(ls *.rpm) && shasum -a 256 "$RPM" > "$RPM.sha256")
+          mkdir staging
+          cp deb/*.deb rpm/*.rpm staging/
+          cd staging
+          for PKG in *; do shasum -a 256 "$PKG" > "$PKG.sha256"; done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: desktop-linux
-          path: |
-            apps/desktop/src-tauri/target/release/bundle/deb/*.deb
-            apps/desktop/src-tauri/target/release/bundle/deb/*.sha256
-            apps/desktop/src-tauri/target/release/bundle/rpm/*.rpm
-            apps/desktop/src-tauri/target/release/bundle/rpm/*.sha256
+          path: apps/desktop/src-tauri/target/release/bundle/staging/*
 
   release:
     name: publish release
