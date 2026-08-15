@@ -49,7 +49,7 @@ bind everyone, including the repo owner:
 
 When `dev` reaches a state worth shipping, open a pull request from `dev` into `main`, merge it, and tag the merge commit with the version number. `main` therefore only ever moves forward one version at a time.
 
-Pushing the tag triggers [`release.yml`](../.github/workflows/release.yml), which builds the CLI binaries (macOS arm64 and Intel for now, unsigned) and publishes a GitHub release with them, their sha256 checksums, and auto-generated notes. The workflow's `workflow_dispatch` trigger dry-runs the build without publishing anything.
+Pushing the tag triggers [`release.yml`](../.github/workflows/release.yml), which builds the CLI binaries (macOS arm64 and Intel for now, unsigned) and publishes a GitHub release with them, their sha256 checksums, and auto-generated notes. The workflow refuses to publish a tag whose commit is not on `main` (a "tag is on main" guard job fails the run), so a tag placed on `dev` by mistake never becomes a release. The `workflow_dispatch` trigger dry-runs the build without publishing anything.
 
 ## Commits
 
