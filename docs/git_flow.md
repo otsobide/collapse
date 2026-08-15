@@ -53,5 +53,5 @@ We favor **small commits with few changes** over large ones:
 
 - One logical change per commit — a commit should be explainable in one sentence.
 - Prefer several small commits over one big commit, even within a single task.
-- Every commit should leave the repo in a working state (`cargo test` passes).
+- Red commits are fine on `feature/*`/`hotfix/*` branches while work is in progress (say so in the message); whatever merges into `dev` must pass `cargo test`, so every commit on `dev` and `main` is green.
 - Message format: a short imperative summary line, optionally prefixed by area (`core:`, `docs:`, `chore:`), with a body only when the *why* is not obvious from the diff.
