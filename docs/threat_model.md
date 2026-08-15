@@ -126,7 +126,7 @@ before dispatching (`CompressionError::InvalidLevel` otherwise). The per-format
 backends are only ever reached with a validated level.
 
 **Covered by** `compress_invalid_level_zero`, `compress_invalid_level_six`,
-`compress_dir_invalid_level_is_rejected`.
+`compress_dir_invalid_level_is_rejected` (in `apps/core/tests/compression.rs`).
 
 ---
 
@@ -137,11 +137,12 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
 
 - **Decompression bombs.** There is no limit on the *output* size or entry
   count of an archive, so a "zip bomb" (a tiny archive that expands to enormous
-  data) can exhaust disk or memory. Extraction reads each entry fully into
-  memory before writing.
+  data) can exhaust disk or memory. The zip and 7z extractors read each entry
+  fully into memory before writing (tar streams entries through `unpack_in`).
 - **Resource exhaustion.** The directory walker recurses without a depth cap
-  (a pathologically deep tree could overflow the stack) and buffers whole files
-  in memory (no streaming). Symlink loops cannot occur — symlinks are skipped.
+  (a pathologically deep tree could overflow the stack), and the zip and 7z
+  backends buffer whole files in memory (tar streams file contents). Symlink
+  loops cannot occur — symlinks are skipped.
 - **Symlinks/hardlinks are not preserved.** This is a deliberate safety choice,
   but it means archiving and re-extracting a tree with links loses them (a
   fidelity limitation, not a security hole).
@@ -161,7 +162,9 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
 
 ## Testing & verification
 
-All measures above are exercised by `apps/core/tests/security.rs`, which
+The extraction and symlink measures above are exercised by
+`apps/core/tests/security.rs` (level validation, measure 7, lives with the
+functional tests in `apps/core/tests/compression.rs`), which
 crafts genuinely malicious archives (smuggling traversal and symlink entries
 past the writer libraries' own validation by writing raw header bytes) and
 asserts both that extraction is rejected/neutralized **and** that nothing was
