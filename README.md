@@ -80,8 +80,9 @@ cargo build -p collapse-cli --release      # binary at target/release/collapse
 Compression (files only, for now) can be offloaded to a remote Collapse
 server: run `collapse-api` somewhere and point the CLI at it with `--server`.
 The file's bytes are sent over, compressed there, and the archive is written
-locally, with the same defaults and safety guards as local mode. Extraction
-stays local.
+locally, with the same defaults and safety guards as local mode; under the
+hood the CLI follows the server's job flow (queue, poll, download, delete).
+Extraction stays local.
 
 ```bash
 cargo run -p collapse-api -- --host 0.0.0.0 --port 8000    # on the server

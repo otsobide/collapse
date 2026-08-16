@@ -129,12 +129,13 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
    - refuse an existing output unless `--force`;
    - reject a source that is neither a regular file nor a directory (e.g. a FIFO).
 5. Dispatch to `compress_dir` (directory) or `compress` (file). With
-   `--server <URL>`, files are instead sent to a remote
-   [`collapse-api`](#collapse-api--the-compression-server): the bytes go out,
-   the archive comes back, and it is written to the same output path the local
-   mode would use. The safety guards in step 4 run before any network I/O, and
-   directories are rejected client-side (remote directory compression does not
-   exist yet). Extraction has no remote mode.
+   `--server <URL>`, files are instead compressed by a remote
+   [`collapse-api`](#collapse-api--the-compression-server): the CLI queues the
+   job, polls its status, downloads the archive to the same output path the
+   local mode would use, and deletes the job server-side. The safety guards in
+   step 4 run before any network I/O, and directories are rejected client-side
+   (remote directory compression does not exist yet). Extraction has no remote
+   mode.
 
 Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
@@ -142,27 +143,40 @@ as needed.
 
 ## collapse-api — the compression server
 
-`collapse-api` (`apps/api`) lets a client compress on another machine: the
-CLI's `--server` flag posts a file's bytes and receives the archive in the
-response. It is compression-only, and deliberately **synchronous and
-stateless**, unlike the job-queue design of the reference implementation
-(whose polling model served a web UI): each request is staged in its own
-temporary directory, compressed with the same `collapse-core` engine, and the
-temp dir vanishes once the response is built. No job registry, no persistent
-storage, no cleanup endpoints.
+`collapse-api` (`apps/api`) lets a client compress on another machine; it is
+what the CLI's `--server` flag talks to, and it is compression-only
+(extraction stays client-side). The flow is **asynchronous, job-based**,
+following the reference implementation's process: uploading answers
+immediately while a background worker compresses (a single queue consumer, so
+concurrent uploads line up instead of oversubscribing the CPU), and the
+client polls the job, downloads the archive, then deletes the job. Jobs are
+staged on disk with one directory per job under the staging dir (deleting a
+job is a single `remove_dir_all`) and tracked in an in-memory registry:
+nothing survives a restart, and nothing is cleaned up automatically — the
+delete endpoint is the cleanup.
 
-Like the CLI it is a **library + binary**: `build_router()` lives in the lib
-(which is what the tests, and the CLI's end-to-end tests, drive in-process);
-`main.rs` only parses `--host` / `--port` / `--max-upload-mb` and serves. It
-binds `127.0.0.1` by default.
+Like the CLI it is a **library + binary**: `build_app()` (routes, state and
+the worker) lives in the lib, which is what its tests, and the CLI's
+end-to-end tests, drive in-process; `main.rs` only parses `--host` / `--port`
+/ `--max-upload-mb` / `--storage-dir` and serves. It binds `127.0.0.1` by
+default, and the default staging dir is a temporary directory removed when
+the server stops.
 
-The surface is two routes:
+The surface:
 
 - `GET /health` — liveness probe, returns `{"status":"ok"}`.
 - `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]` — the body is
-  the raw file content; the response body is the archive, with the matching
-  `Content-Type` and a `Content-Disposition` filename. Defaults mirror the CLI
-  (zip, level 3).
+  the raw file content; answers **202 Accepted** with the queued job as JSON
+  (`job_id`, `status`, `archive_name`, …). Defaults mirror the CLI (zip,
+  level 3).
+- `GET /jobs/{job_id}` — the job's current state:
+  `queued` → `compressing` → `completed` | `failed` (with `error_message`
+  when failed).
+- `GET /jobs/{job_id}/download` — the archive bytes once completed, with the
+  matching `Content-Type` and a `Content-Disposition` filename; 409 while in
+  progress or after a failure.
+- `DELETE /jobs/{job_id}` — drops the job and its files once downloaded; 409
+  while in progress.
 
 Errors are JSON `{"detail": "..."}` with a 4xx/5xx status. Input is validated,
 never coerced: an unparseable or out-of-range `level` is a 400 (the reference
@@ -199,9 +213,9 @@ Each app carries its own tests, in that ecosystem's conventional place:
 - `apps/cli/tests/` — drives the real clap parser and `run` in-process; the
   remote-mode tests (`tests/remote.rs`) serve the real `collapse-api` router on
   an ephemeral port and go through it end-to-end.
-- `apps/api/tests/` — drives the router in-process (tower `oneshot`, no
-  sockets), verifying round-trips by feeding the response bytes back through
-  the core extractors.
+- `apps/api/tests/` — drives the app in-process (tower `oneshot`, no sockets)
+  through the full job flow, verifying round-trips by feeding the downloaded
+  bytes back through the core extractors.
 - `apps/desktop/tests/` — Vitest suite (unit + component tests, Tauri IPC mocked).
 
 The Rust integration tests compile as separate crates, so they only see each
