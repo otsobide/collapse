@@ -1,0 +1,57 @@
+# Bring up collapse-api locally:
+#
+#   make docker/up      then open http://localhost:8000/docs
+#
+# Override the host port or the upload cap without editing this file:
+#
+#   COLLAPSE_PORT=9000 make docker/up
+#   COLLAPSE_MAX_UPLOAD_MB=50 make docker/up
+
+name: collapse
+
+services:
+  api:
+    build:
+      # The context is the repository root: collapse-api depends on
+      # collapse-core through a path dependency.
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: collapse-api:dev
+    container_name: collapse-api
+
+    # Appended to the image's ENTRYPOINT, which already pins --host 0.0.0.0.
+    command:
+      - --port
+      - "8000"
+      - --max-upload-mb
+      - "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+
+    # Published on the loopback interface only, matching the server's own
+    # default posture: the API has no authentication and no rate limiting, so
+    # it should not land on the LAN by accident. Change to
+    # "${COLLAPSE_PORT:-8000}:8000" if you really want it reachable from
+    # other machines.
+    ports:
+      - "127.0.0.1:${COLLAPSE_PORT:-8000}:8000"
+
+    # Job staging. Uploads and archives live here, so keep them off the
+    # container's writable layer.
+    volumes:
+      - jobs:/var/lib/collapse
+
+    # The zip and 7z backends buffer whole files in memory and nothing caps an
+    # archive's expansion, so a container-level ceiling is the only thing
+    # standing between a large upload and the host's RAM.
+    mem_limit: 2g
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    restart: unless-stopped
+
+volumes:
+  jobs:
