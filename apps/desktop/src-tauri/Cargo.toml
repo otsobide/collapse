@@ -4,6 +4,7 @@ version = "0.4.0"
 edition = "2021"
 description = "Collapse — a small, fast file compressor"
 authors = ["cervantic"]
+license = "GPL-3.0-only"
 
 # Standalone workspace: kept out of the root Cargo workspace so a plain
 # `cargo test` at the repo root (core + CLI) does not need the Tauri system
