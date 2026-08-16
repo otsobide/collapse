@@ -1,0 +1,31 @@
+# The Docker build context is the repository root (collapse-api depends on
+# collapse-core by path), so everything the API does not need is excluded here.
+# Keep this honest: dropping something cargo reads turns into a build failure,
+# not a smaller image.
+
+# Rust build output: gigabytes, and useless inside the image.
+target/
+**/target/
+
+# Apps that are not workspace members and play no part in the API build.
+apps/desktop/
+apps/landing/
+
+# Never ship history or local tooling state into the context.
+.git/
+.github/
+.claude/
+**/node_modules/
+**/.DS_Store
+
+# Docs and repo furniture.
+docs/
+*.md
+LICENSE
+Makefile
+docker-compose.yml
+
+# Note what deliberately stays: Cargo.toml, Cargo.lock, apps/core, apps/cli
+# (a workspace member, so its manifest and the source files its manifest
+# declares must exist) and apps/api including apps/api/assets, which is
+# embedded into the binary with include_str! at compile time.
