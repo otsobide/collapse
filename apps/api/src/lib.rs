@@ -14,6 +14,7 @@
 // (handlers and the worker) stays private.
 pub mod error;
 pub mod models;
+pub mod openapi;
 pub mod registry;
 pub mod storage;
 pub mod validate;
@@ -48,6 +49,8 @@ pub(crate) struct AppState {
 ///
 /// Routes:
 /// - `GET /health` — liveness probe, returns `{"status":"ok"}`.
+/// - `GET /docs` — the interactive documentation page.
+/// - `GET /openapi.json` — the OpenAPI 3.1 description of this server.
 /// - `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]` — the
 ///   body is the raw file content; answers `202 Accepted` with the queued
 ///   job as JSON (`job_id`, `status`, `archive_name`, …) while a worker
@@ -77,6 +80,10 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
 
     Router::new()
         .route("/health", get(routes::health))
+        // Interactive documentation, the way FastAPI serves it — but built
+        // into the binary, so it works with no network access.
+        .route("/docs", get(routes::docs))
+        .route("/openapi.json", get(routes::openapi))
         .route("/compress", post(routes::compress_create))
         .route("/jobs/{job_id}", get(routes::job_status).delete(routes::delete_job))
         .route("/jobs/{job_id}/download", get(routes::download))

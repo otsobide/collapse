@@ -1,7 +1,7 @@
 use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{Html, IntoResponse};
 use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
@@ -39,6 +39,18 @@ fn job_or_404(state: &AppState, job_id: &str) -> Result<Job, ApiError> {
 
 pub(crate) async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /openapi.json and GET /docs
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn openapi() -> Json<serde_json::Value> {
+    Json(crate::openapi::spec())
+}
+
+pub(crate) async fn docs() -> Html<&'static str> {
+    Html(crate::openapi::DOCS_HTML)
 }
 
 // ---------------------------------------------------------------------------

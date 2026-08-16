@@ -1,0 +1,621 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://spec.openapis.org/oas/3.1/dialect/base",
+  "info": {
+    "title": "Collapse Compression API",
+    "summary": "Asynchronous HTTP compression: upload a file, poll the job, download the archive.",
+    "description": "Collapse compresses a single uploaded file into a 7z, tar or zip archive. Extraction is not exposed over HTTP; it stays local to the clients.\n\n## The asynchronous flow\n\nUploading never blocks on the compression itself. A client is expected to walk these four steps in order:\n\n1. **Create the job.** `POST /compress?name=<bare file name>` with the raw file bytes as the request body. The server stages the upload, queues the work and answers `202 Accepted` with a Job whose `status` is `queued`. Keep the `job_id`.\n2. **Poll the job.** `GET /jobs/{job_id}` until `status` leaves `queued`/`compressing` and settles on `completed` or `failed`. Polling every 100 to 500 ms is plenty. A `failed` job carries the reason in `error_message`.\n3. **Download the archive.** `GET /jobs/{job_id}/download` returns the archive bytes once the job is `completed`, with `Content-Disposition: attachment` naming it `archive_name`. Downloading before the job completes is a `409`. The download may be repeated for as long as the job exists.\n4. **Delete the job.** `DELETE /jobs/{job_id}` drops the job and its staged files. Nothing else reclaims that disk space, so always delete after a successful download.\n\nA background worker processes jobs sequentially, so several uploads queue up instead of competing for the CPU. Jobs live in an in-memory registry and their files in a per-job staging directory: nothing survives a server restart.\n\n## Error shape\n\nErrors raised by the application are JSON objects of the shape `{\"detail\": \"<message>\"}`. Two rejections are produced by the web framework before the handler runs and are `text/plain` instead: a query string that cannot be deserialized at all (a missing `name`, a non numeric `level`) and a request body over the upload cap. Both are documented on the operations where they can occur.",
+    "version": "__VERSION__",
+    "license": {
+      "name": "GPL-3.0-only",
+      "identifier": "GPL-3.0-only"
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "Liveness probing."
+    },
+    {
+      "name": "compress",
+      "description": "Submitting files for compression."
+    },
+    {
+      "name": "jobs",
+      "description": "Following a compression job through its lifecycle: poll, download, delete."
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "tags": ["health"],
+        "summary": "Liveness probe",
+        "description": "Reports that the server is up and serving. It touches neither the job registry nor the staging directory, so a healthy answer says nothing about pending jobs or free disk space. Use it for load balancer and container health checks.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "The server is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthStatus"
+                },
+                "examples": {
+                  "ok": {
+                    "summary": "Healthy server",
+                    "value": {
+                      "status": "ok"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/compress": {
+      "post": {
+        "tags": ["compress"],
+        "summary": "Upload a file and queue a compression job",
+        "description": "Step 1 of the asynchronous flow. The request body is the **raw bytes of the file** to compress: not multipart, not JSON, not base64. Everything else travels in the query string.\n\nThe server validates the parameters, writes the upload to the job's staging directory, registers the job and hands it to the background worker, then answers `202 Accepted` immediately with the job in its `queued` state. Compression has not started yet when the response arrives, so the job in the body always reads `\"status\": \"queued\"` and `\"error_message\": null`.\n\nExactly one file goes into the archive, stored under `name`. The archive itself is named `archive_name`, which is `<name>.<extension>` for the chosen algorithm. An empty body is accepted and produces an archive holding an empty file.\n\nContinue with `GET /jobs/{job_id}` to poll the job.",
+        "operationId": "createCompressionJob",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "description": "File name the uploaded bytes will carry inside the archive, and the stem of the archive's own name. It must be a bare file name: not empty, not `.`, not `..`, and free of `/`, `\\` and NUL bytes. A backslash is rejected even on Unix, where it is a legal filename character, because these archives are opened on Windows too. Anything else is a `400`, since this value is used both as the archive entry name and as the leaf of the staging path.",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "example": "notes.txt"
+          },
+          {
+            "name": "algorithm",
+            "in": "query",
+            "required": false,
+            "description": "Archive format to produce. Matched exactly and case sensitively, so `ZIP` is rejected. Defaults to `zip`, like the CLI.",
+            "schema": {
+              "$ref": "#/components/schemas/Algorithm",
+              "default": "zip"
+            },
+            "example": "7z"
+          },
+          {
+            "name": "level",
+            "in": "query",
+            "required": false,
+            "description": "Compression level, from 1 (fastest, largest) to 5 (slowest, smallest). Defaults to 3, like the CLI. `tar` stores without compressing and ignores the value, but still rejects one outside 1 to 5. A value out of range is a JSON `400`; a value that is not an integer at all is a plain text `400` from the query string parser, never silently coerced to the default.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 5,
+              "default": 3
+            },
+            "example": 4
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "The raw bytes of the file to compress, sent as the whole request body. Send an empty body to archive an empty file. Bodies larger than the server's upload cap (500 MiB by default, set with `--max-upload-mb`) are rejected with `413`.",
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The upload was staged and the job queued. Compression runs in the background; poll `GET /jobs/{job_id}`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                },
+                "examples": {
+                  "queued": {
+                    "summary": "A freshly queued 7z job",
+                    "value": {
+                      "job_id": "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d",
+                      "name": "notes.txt",
+                      "archive_name": "notes.txt.7z",
+                      "algorithm": "7z",
+                      "level": 4,
+                      "status": "queued",
+                      "error_message": null
+                    }
+                  },
+                  "queuedWithDefaults": {
+                    "summary": "Defaults applied (zip, level 3)",
+                    "value": {
+                      "job_id": "a1c05e7b4d2f43a9b6e8017c9d3f5b2e",
+                      "name": "report.pdf",
+                      "archive_name": "report.pdf.zip",
+                      "algorithm": "zip",
+                      "level": 3,
+                      "status": "queued",
+                      "error_message": null
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request was rejected before any work was queued. Two different bodies are possible. Validation performed by the handler (an unknown `algorithm`, a `level` outside 1 to 5, a `name` that is not a bare file name) answers with the JSON error shape. Failures of the query string parser itself (`name` missing entirely, `level` not an integer) answer with plain text, because they happen before the handler runs.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "unknownAlgorithm": {
+                    "summary": "algorithm=rar",
+                    "value": {
+                      "detail": "Unknown algorithm: rar"
+                    }
+                  },
+                  "levelOutOfRange": {
+                    "summary": "level=6",
+                    "value": {
+                      "detail": "Invalid compression level: 6. Must be between 1 and 5."
+                    }
+                  },
+                  "invalidName": {
+                    "summary": "name=../evil.txt",
+                    "value": {
+                      "detail": "Invalid file name: \"../evil.txt\". Must be a bare file name."
+                    }
+                  }
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "missingName": {
+                    "summary": "name absent from the query string",
+                    "value": "Failed to deserialize query string: missing field `name`"
+                  },
+                  "unparseableLevel": {
+                    "summary": "level=fast",
+                    "value": "Failed to deserialize query string: invalid digit found in string"
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body exceeded the configured upload cap (500 MiB by default). The limit is enforced while buffering the body, before the handler runs, so the body is plain text rather than the JSON error shape. The query string is parsed first, so a request that is both oversized and malformed answers `400` instead.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                },
+                "examples": {
+                  "tooLarge": {
+                    "summary": "Body past the cap",
+                    "value": "Failed to buffer the request body: length limit exceeded"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The upload could not be staged on disk, or the job could not be handed to the worker. No job is created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "storageFailure": {
+                    "summary": "Staging directory not writable",
+                    "value": {
+                      "detail": "No space left on device (os error 28)"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/JobId"
+        }
+      ],
+      "get": {
+        "tags": ["jobs"],
+        "summary": "Poll a compression job",
+        "description": "Step 2 of the asynchronous flow. Returns the job's current state. Poll this until `status` leaves `queued`/`compressing`.\n\nThe lifecycle is `queued` then `compressing` then either `completed` or `failed`, and it never moves backwards. On `completed` the archive is ready at `GET /jobs/{job_id}/download`. On `failed`, `error_message` carries the reason and no archive exists; the job should be deleted.\n\nThe job disappears (and this becomes a `404`) once it is deleted or the server restarts.",
+        "operationId": "getJob",
+        "responses": {
+          "200": {
+            "description": "The job's current state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                },
+                "examples": {
+                  "compressing": {
+                    "summary": "Still working, keep polling",
+                    "value": {
+                      "job_id": "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d",
+                      "name": "notes.txt",
+                      "archive_name": "notes.txt.7z",
+                      "algorithm": "7z",
+                      "level": 4,
+                      "status": "compressing",
+                      "error_message": null
+                    }
+                  },
+                  "completed": {
+                    "summary": "Ready to download",
+                    "value": {
+                      "job_id": "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d",
+                      "name": "notes.txt",
+                      "archive_name": "notes.txt.7z",
+                      "algorithm": "7z",
+                      "level": 4,
+                      "status": "completed",
+                      "error_message": null
+                    }
+                  },
+                  "failed": {
+                    "summary": "Compression failed, delete the job",
+                    "value": {
+                      "job_id": "c7d9410be6a24f8fbb1e5a03d8127c46",
+                      "name": "notes.txt",
+                      "archive_name": "notes.txt.zip",
+                      "algorithm": "zip",
+                      "level": 3,
+                      "status": "failed",
+                      "error_message": "Compression failed: unexpected end of file"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/JobNotFound"
+          }
+        }
+      },
+      "delete": {
+        "tags": ["jobs"],
+        "summary": "Delete a job and its staged files",
+        "description": "Step 4 and last of the asynchronous flow. Removes the job from the registry and deletes its staging directory, which holds both the upload and the archive. Nothing else reclaims that space, so call this once the archive has been downloaded, and also for jobs that ended `failed`.\n\nIt is refused with `409` while the job is `queued` or `compressing`; wait for a terminal state first. After a successful delete every endpoint answers `404` for that `job_id`.\n\nThe `deleted` flag in the response reports whether files were actually removed from disk. It is `false` when the job had no staging directory left, for instance if it was already cleaned up externally; the job is dropped from the registry either way.",
+        "operationId": "deleteJob",
+        "responses": {
+          "200": {
+            "description": "The job was dropped from the registry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteJobResult"
+                },
+                "examples": {
+                  "deleted": {
+                    "summary": "Job and files removed",
+                    "value": {
+                      "job_id": "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d",
+                      "deleted": true
+                    }
+                  },
+                  "nothingOnDisk": {
+                    "summary": "Job removed, no files were left to delete",
+                    "value": {
+                      "job_id": "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d",
+                      "deleted": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/JobNotFound"
+          },
+          "409": {
+            "description": "The job is still `queued` or `compressing`. Poll `GET /jobs/{job_id}` until it is `completed` or `failed`, then retry.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "inProgress": {
+                    "summary": "Deletion refused while working",
+                    "value": {
+                      "detail": "Cannot delete a job while compression is in progress."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The staging directory could not be removed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "cleanupFailure": {
+                    "summary": "Background cleanup task failed",
+                    "value": {
+                      "detail": "task panicked"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/jobs/{job_id}/download": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/JobId"
+        }
+      ],
+      "get": {
+        "tags": ["jobs"],
+        "summary": "Download the finished archive",
+        "description": "Step 3 of the asynchronous flow. Streams back the archive bytes for a `completed` job.\n\nThe response `Content-Type` follows the job's `algorithm`: `application/zip` for zip, `application/x-7z-compressed` for 7z, `application/x-tar` for tar. `Content-Disposition` suggests the file name from the job's `archive_name`, with the characters that could break out of the quoted value stripped.\n\nThe download is idempotent and may be repeated until the job is deleted. Calling it too early is a `409`, not a wait: poll `GET /jobs/{job_id}` first. Finish with `DELETE /jobs/{job_id}`.",
+        "operationId": "downloadArchive",
+        "responses": {
+          "200": {
+            "description": "The archive bytes. Which of the three media types is used depends on the job's `algorithm`.",
+            "headers": {
+              "Content-Disposition": {
+                "description": "Always `attachment`, with `filename` set to the job's `archive_name`. Double quotes, backslashes and newlines are stripped from the name so they cannot break out of the quoted value.",
+                "required": true,
+                "schema": {
+                  "type": "string"
+                },
+                "example": "attachment; filename=\"notes.txt.7z\""
+              }
+            },
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/x-7z-compressed": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "application/x-tar": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Either no job carries this `job_id` (unknown, already deleted, or lost to a restart), or the job exists and reports `completed` but its archive is gone from the staging directory.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "jobNotFound": {
+                    "summary": "Unknown job id",
+                    "value": {
+                      "detail": "Job not found."
+                    }
+                  },
+                  "archiveMissing": {
+                    "summary": "Job is completed but its file is gone",
+                    "value": {
+                      "detail": "Archive file not found."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The job is not downloadable. While it is `queued` or `compressing` the detail is a fixed message and the client should keep polling. Once it is `failed` the detail is the job's own `error_message`, so the text varies; it falls back to `Compression failed.` when no message was recorded.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "stillWorking": {
+                    "summary": "Job is queued or compressing",
+                    "value": {
+                      "detail": "Compression is still in progress."
+                    }
+                  },
+                  "failedJob": {
+                    "summary": "Job failed, the detail is its error_message",
+                    "value": {
+                      "detail": "Compression failed: unexpected end of file"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "JobId": {
+        "name": "job_id",
+        "in": "path",
+        "required": true,
+        "description": "Identifier returned in the `job_id` field of the `202` response to `POST /compress`. Any string is accepted by the router; one that matches no job answers `404`.",
+        "schema": {
+          "type": "string"
+        },
+        "example": "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"
+      }
+    },
+    "responses": {
+      "JobNotFound": {
+        "description": "No job carries this `job_id`. It was never created, it was already deleted, or the server restarted (jobs are held in memory only).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "examples": {
+              "notFound": {
+                "summary": "Unknown job id",
+                "value": {
+                  "detail": "Job not found."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Algorithm": {
+        "title": "Algorithm",
+        "description": "Archive format. `7z` and `zip` compress and honour `level`; `tar` only bundles the file without compressing it.",
+        "type": "string",
+        "enum": ["7z", "tar", "zip"],
+        "examples": ["zip"]
+      },
+      "JobStatus": {
+        "title": "JobStatus",
+        "description": "Lifecycle state of a compression job. It advances `queued` to `compressing` to either `completed` or `failed`, and never moves backwards. `completed` and `failed` are terminal: only then may the job be downloaded or deleted.",
+        "type": "string",
+        "enum": ["queued", "compressing", "completed", "failed"],
+        "examples": ["completed"]
+      },
+      "Job": {
+        "title": "Job",
+        "description": "One compression job. Returned by `POST /compress` (always `queued`) and by `GET /jobs/{job_id}` (any state).",
+        "type": "object",
+        "required": [
+          "job_id",
+          "name",
+          "archive_name",
+          "algorithm",
+          "level",
+          "status",
+          "error_message"
+        ],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "Server generated identifier: a version 4 UUID in its 32 character hexadecimal form, without dashes. Use it in every follow up call.",
+            "pattern": "^[0-9a-f]{32}$",
+            "examples": ["3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"]
+          },
+          "name": {
+            "type": "string",
+            "description": "The `name` query parameter as given: the file name stored inside the archive.",
+            "examples": ["notes.txt"]
+          },
+          "archive_name": {
+            "type": "string",
+            "description": "Name of the produced archive, `<name>.<extension>` for the chosen algorithm. It is what `Content-Disposition` suggests on download.",
+            "examples": ["notes.txt.7z"]
+          },
+          "algorithm": {
+            "$ref": "#/components/schemas/Algorithm"
+          },
+          "level": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "Compression level in effect, defaulting to 3. Recorded even for `tar`, which ignores it.",
+            "examples": [4]
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "error_message": {
+            "type": ["string", "null"],
+            "description": "Why the job failed. Always `null` unless `status` is `failed`.",
+            "examples": [null, "Compression failed: unexpected end of file"]
+          }
+        }
+      },
+      "DeleteJobResult": {
+        "title": "DeleteJobResult",
+        "description": "Outcome of `DELETE /jobs/{job_id}`.",
+        "type": "object",
+        "required": ["job_id", "deleted"],
+        "properties": {
+          "job_id": {
+            "type": "string",
+            "description": "The job that was dropped from the registry.",
+            "examples": ["3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"]
+          },
+          "deleted": {
+            "type": "boolean",
+            "description": "Whether the job's staging directory existed and was removed. `false` means there was nothing left on disk; the job is gone from the registry either way.",
+            "examples": [true]
+          }
+        }
+      },
+      "HealthStatus": {
+        "title": "HealthStatus",
+        "description": "Body of the liveness probe.",
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "description": "Always the literal `ok`. The endpoint has no unhealthy response: a failing server does not answer at all."
+          }
+        },
+        "examples": [
+          {
+            "status": "ok"
+          }
+        ]
+      },
+      "Error": {
+        "title": "Error",
+        "description": "Every error raised by the application uses this shape. The two rejections produced by the web framework before the handler runs (an unparseable query string, an oversized body) are plain text instead.",
+        "type": "object",
+        "required": ["detail"],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "Human readable explanation of what went wrong. The wording is not a stable contract; branch on the status code, not on this text.",
+            "examples": ["Job not found."]
+          }
+        },
+        "examples": [
+          {
+            "detail": "Job not found."
+          }
+        ]
+      }
+    }
+  }
+}
