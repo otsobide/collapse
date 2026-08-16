@@ -2,8 +2,9 @@
 
 This document describes the security measures implemented in Collapse, the
 attacks they prevent, and the current limitations. Everything here applies to
-**`collapse-core`** — the engine every interface (CLI, desktop, …) builds on —
-so the guarantees hold no matter which front-end invokes it.
+**`collapse-core`** — the engine every interface (CLI, desktop, server) builds
+on — so the guarantees hold no matter which front-end invokes it, plus a
+section on what changes once a **server** is doing the work for someone else.
 
 ## Threat model
 
@@ -177,6 +178,11 @@ Stated plainly, because deploying it assumes these:
 - **No transport security.** The server speaks plain HTTP, so uploaded content
   and downloaded archives travel in the clear. Do not send anything sensitive
   across a network you do not trust; terminate TLS in front of it if you must.
+
+  This cuts both ways: a **client** that picks a remote destination (the CLI's
+  `--server`, the desktop app's picker) is putting the file's contents on the
+  network. The desktop app says so in its servers panel, and both default to
+  compressing locally.
 - **Uploads are held in memory.** The request body is buffered before staging,
   and the zip/7z backends buffer whole files, so concurrent large uploads
   multiply. The upload cap and a container memory limit are the only ceilings;

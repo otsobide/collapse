@@ -1,16 +1,18 @@
 # 🌟 Collapse
 
 A small, fast, beautiful file compressor — compress **and** extract from your
-terminal or a native desktop window. One shared Rust engine, two ways to use it.
+terminal or a native desktop window, on this machine or on another one. One
+shared Rust engine behind every front-end.
 
 Supports **7z** (LZMA2), **ZIP** (Deflate), and **tar** (uncompressed container),
 with safe extraction that refuses path-traversal ("ZIP Slip") archives.
 
-> **MVP scope.** Collapse is being built incrementally. The first release targets
-> two front-ends only — a **CLI** and a **desktop app** — both powered by the
-> `collapse-core` library. The repo also carries **`collapse-api`**, a minimal
-> compression server the CLI can target with `--server`; it is not part of the
-> release artifacts yet. A web UI is out of scope for now.
+> **MVP scope.** Collapse is being built incrementally. The release artifacts
+> are two front-ends — a **CLI** and a **desktop app** — both powered by the
+> `collapse-core` library. The repo also carries **`collapse-api`**, an optional
+> compression server that either front-end can offload work to, and
+> **`collapse-remote`**, the client they share to talk to it. The server is not
+> shipped in releases yet. A web UI is out of scope for now.
 
 ## Why Collapse
 
@@ -23,6 +25,9 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
   the output directory. See [Security](docs/threat_model.md) for the full threat model.
 - **Shared engine** — the CLI and the desktop app call the exact same core, so
   behavior is identical whichever you reach for.
+- **Optional remote compression** — hand the work to another machine running
+  the Collapse server, from the CLI's `--server` flag or the desktop app's
+  destination picker. Same defaults, same guards, same resulting archive.
 
 ## Formats
 
@@ -119,7 +124,11 @@ server's own posture (it has no authentication). Override the port with
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
 CLI: drag in a file or folder to compress, or an archive to extract, in a calm
-interface using the cervantic palette. Every release ships an unsigned
+interface using the cervantic palette. Compression can also be sent to a remote
+`collapse-api` server: the compress options carry a destination picker (this
+computer by default) and the header gear manages the list of servers.
+
+Every release ships an unsigned
 **universal macOS `.dmg`** (right-click → Open on first launch) and x86_64
 Linux **`.deb`**, **`.rpm`** and **`.AppImage`** builds: grab them from the
 [releases page](https://github.com/otsobide/collapse/releases/latest) or
@@ -139,10 +148,15 @@ Collapse is at an early stage. Here's exactly what exists today:
 - ✅ **`collapse-core`** — the compression/extraction engine (7z, ZIP, tar), with
   path-traversal-safe extraction and whole-folder support. Fully tested,
   including a dedicated security suite for malicious archives.
-- ✅ **CLI** (`collapse`) — compress files/folders and extract archives.
-- ✅ **Desktop app** — Tauri v2 (macOS / Windows / Linux), compress & extract.
-- ✅ **API server** (`collapse-api`) — optional remote compression, the endpoint
-  behind the CLI's `--server` flag. Not shipped in releases yet.
+- ✅ **CLI** (`collapse`) — compress files/folders and extract archives, locally
+  or on a remote server with `--server`.
+- ✅ **Desktop app** — Tauri v2 (macOS / Windows / Linux), compress & extract,
+  with a destination picker for remote servers.
+- ✅ **API server** (`collapse-api`) — optional remote compression over an
+  asynchronous job flow, self-documenting at `/docs`, with a Dockerfile and a
+  compose file. Not shipped in releases yet.
+- ✅ **`collapse-remote`** — the client both front-ends use to talk to a server,
+  so the exchange is written once.
 
 ## Getting started
 
@@ -150,7 +164,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run the full test suite (190 Rust tests + the desktop Vitest suite)
+make test              # run every suite (203 Rust tests + 27 desktop Vitest cases)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
@@ -175,7 +189,7 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — the engine, the CLI, the desktop app, and how they fit together.
+- [Architecture](docs/architecture.md) — the engine, the CLI, the server, the desktop app, and how they fit together.
 - [Security](docs/threat_model.md) — threat model, measures, and the attacks they prevent.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
 - [Deployment](docs/deployment.md) — how the landing site is built and published.
@@ -187,8 +201,8 @@ A root `Makefile` fans out to a `Makefile` in each app. Run `make help` for the
 list; a few common ones:
 
 ```bash
-make test            # run every test suite (core, cli, desktop)
-make core/test       # a single app's tests (also cli/test, desktop/test)
+make test            # run every test suite (core, remote, cli, api, desktop)
+make core/test       # a single app's tests (also remote/test, cli/test, api/test, desktop/test)
 make desktop/dev     # run an app target (here: the Tauri app in dev mode)
 make fmt  make lint  # format / clippy the Rust workspace
 ```

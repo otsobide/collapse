@@ -5,7 +5,8 @@ with thin interfaces on top. Everything lives under `apps/`, each app carrying
 its own tests in that ecosystem's conventional place.
 
 This document describes what exists today: the `collapse-core` engine, the
-`collapse` CLI, and the Tauri desktop app.
+`collapse` CLI, the `collapse-api` server and the `collapse-remote` client that
+lets a front-end offload work to it, and the Tauri desktop app.
 
 ## Workspace layout
 
@@ -39,9 +40,14 @@ collapse-core  ◄──  collapse-cli  ──►  collapse-remote ── HTTP (
 Everything flows from `collapse-core`. Interfaces call it directly as a Rust
 library — there is no HTTP, IPC, or subprocess boundary between an interface and
 the engine. New interfaces depend on `collapse-core`; they never reach into each
-other. The one networked path is opt-in: `collapse compress --server` sends the
-file's bytes to a `collapse-api` instance, which calls the same engine on its
-side. (Each crate's tests live inside it — see [Testing](#testing).)
+other.
+
+The one networked path is **opt-in and shared**: both front-ends can hand a
+compression to a `collapse-api` instance, and both do it through the same
+`collapse-remote` crate rather than each growing its own client. The server
+calls the very same engine on its side, so a remote archive is byte-for-byte
+what a local run would have produced (a test asserts exactly that). Extraction
+is always local. (Each crate's tests live inside it — see [Testing](#testing).)
 
 ## collapse-core — the engine
 
@@ -245,9 +251,12 @@ HTTP, same engine as the CLI. It compresses files and folders and extracts
 archives, in the cervantic visual style (warm cream + terracotta, monospace), and
 targets macOS, Windows and Linux from one codebase.
 
-The backend exposes three Tauri commands: `is_directory` (UI icon/name hint),
+The backend exposes four Tauri commands: `is_directory` (UI icon/name hint),
 `compress_path` (dispatches file vs. folder, refuses to overwrite its own
-source), and `extract_archive`. Every path is chosen through the native
+source, and hands the work to a remote server when one is chosen),
+`extract_archive`, and `check_server` (a health probe for the settings panel).
+Remote work goes through [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server)
+from Rust rather than the webview, so the app's CSP stays `default-src 'self'`. Every path is chosen through the native
 open/save dialogs, which is also what makes the app work under the macOS App
 Store sandbox. Build, signing, and per-platform distribution (including App Store
 steps) are documented in [desktop.md](desktop.md); it inherits every format,
@@ -297,6 +306,9 @@ Branching and release flow are described in [git_flow.md](git_flow.md).
 ## Roadmap
 
 The MVP interfaces — CLI and desktop app — are both in place, tested and built
-in CI, and shipped by the release pipeline. Remaining work (code signing /
-store submission, decompression-bomb limits) is tracked in the repository
-issues.
+in CI, and shipped by the release pipeline. Remote compression (the server, the
+shared client, and both front-ends' entry points) works end to end but the
+server binary is not a release artifact yet. Remaining work (code signing /
+store submission, decompression-bomb limits, an upper bound on how long a
+client waits for a job, authentication and TLS for the server) is tracked in
+the repository issues.
