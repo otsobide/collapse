@@ -60,6 +60,32 @@ jobs:
       - name: Test collapse-cli
         run: make cli/test
 
+  # Runs only if core passed; parallel with cli and vitest.
+  api:
+    name: api
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Test collapse-api
+        run: make api/test
+
   # Runs only if core passed; parallel with cli. Frontend tests mock the Tauri
   # IPC, so this needs Node only — no Tauri system dependencies.
   vitest:
@@ -132,6 +158,31 @@ jobs:
 
       - name: Build collapse-cli
         run: make cli/build
+
+  build-api:
+    name: build (api)
+    needs: api
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build collapse-api
+        run: make api/build
 
   # Compiles the whole desktop app (frontend + the src-tauri Rust crate,
   # which no other CI job compiles) without bundling installers. Needs the
