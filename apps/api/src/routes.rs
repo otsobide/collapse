@@ -1,15 +1,16 @@
-use std::fs;
-
 use axum::body::Bytes;
-use axum::extract::Query;
-use axum::http::header;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
+use uuid::Uuid;
 
-use collapse_core::{compress, Algorithm};
+use collapse_core::Algorithm;
 
 use crate::error::ApiError;
+use crate::models::{Job, JobStatus};
+use crate::AppState;
 
 /// Query parameters for `POST /compress`. An unparseable `level` (or a
 /// missing `name`) is rejected by the extractor itself — never coerced to a
@@ -24,6 +25,13 @@ pub(crate) struct CompressParams {
     level: Option<u32>,
 }
 
+fn job_or_404(state: &AppState, job_id: &str) -> Result<Job, ApiError> {
+    state
+        .registry
+        .get(job_id)
+        .ok_or_else(|| ApiError::NotFound("Job not found.".into()))
+}
+
 // ---------------------------------------------------------------------------
 // GET /health
 // ---------------------------------------------------------------------------
@@ -33,10 +41,11 @@ pub(crate) async fn health() -> Json<serde_json::Value> {
 }
 
 // ---------------------------------------------------------------------------
-// POST /compress
+// POST /compress — accept the bytes, queue the job, answer 202
 // ---------------------------------------------------------------------------
 
-pub(crate) async fn compress_file(
+pub(crate) async fn compress_create(
+    State(state): State<AppState>,
     Query(params): Query<CompressParams>,
     body: Bytes,
 ) -> Result<impl IntoResponse, ApiError> {
@@ -54,41 +63,108 @@ pub(crate) async fn compress_file(
         )));
     }
 
-    // The engine works on paths, so stage the bytes in a per-request temp
-    // directory; it is dropped (and deleted) inside the blocking task once
-    // the archive bytes are read back.
-    let dir = tempfile::tempdir()?;
-    let input = dir.path().join(&name);
-    let output = dir.path().join(format!("archive.{}", algorithm.extension()));
+    let job_id = Uuid::new_v4().simple().to_string();
+
+    // Persist the upload before registering the job, so a job never exists
+    // without its input (blocking I/O offloaded to the thread pool).
+    let storage = state.storage.clone();
+    let save_id = job_id.clone();
+    let save_name = name.clone();
     let data = body.to_vec();
-    let arcname = name.clone();
+    tokio::task::spawn_blocking(move || storage.save_input(&save_id, &save_name, &data))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))??;
 
-    let archive = tokio::task::spawn_blocking(move || -> Result<Vec<u8>, ApiError> {
-        fs::write(&input, &data)?;
-        compress(&input, &output, &arcname, algorithm, level)?;
-        let bytes = fs::read(&output)?;
-        drop(dir);
-        Ok(bytes)
-    })
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))??;
+    let job = Job::new(job_id.clone(), name, algorithm, level);
+    state.registry.add(job.clone());
+    state
+        .queue_tx
+        .send(job_id)
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
 
-    let filename = format!("{name}.{}", algorithm.extension());
+    Ok((StatusCode::ACCEPTED, Json(job)))
+}
+
+// ---------------------------------------------------------------------------
+// GET /jobs/{job_id} — current state of a job
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn job_status(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<Job>, ApiError> {
+    Ok(Json(job_or_404(&state, &job_id)?))
+}
+
+// ---------------------------------------------------------------------------
+// GET /jobs/{job_id}/download — the archive, once completed
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn download(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<impl IntoResponse, ApiError> {
+    let job = job_or_404(&state, &job_id)?;
+
+    match job.status {
+        JobStatus::Queued | JobStatus::Compressing => {
+            return Err(ApiError::Conflict("Compression is still in progress.".into()));
+        }
+        JobStatus::Failed => {
+            return Err(ApiError::Conflict(
+                job.error_message
+                    .unwrap_or_else(|| "Compression failed.".into()),
+            ));
+        }
+        JobStatus::Completed => {}
+    }
+
+    let path = state.storage.output_path(&job_id, job.algorithm);
+    let archive = tokio::fs::read(&path)
+        .await
+        .map_err(|_| ApiError::NotFound("Archive file not found.".into()))?;
+
     Ok((
         [
-            (header::CONTENT_TYPE, algorithm.media_type().to_string()),
+            (header::CONTENT_TYPE, job.algorithm.media_type().to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", header_safe(&filename)),
+                format!("attachment; filename=\"{}\"", header_safe(&job.archive_name)),
             ),
         ],
         archive,
     ))
 }
 
+// ---------------------------------------------------------------------------
+// DELETE /jobs/{job_id} — drop the job and its files after downloading
+// ---------------------------------------------------------------------------
+
+pub(crate) async fn delete_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let job = job_or_404(&state, &job_id)?;
+
+    if matches!(job.status, JobStatus::Queued | JobStatus::Compressing) {
+        return Err(ApiError::Conflict(
+            "Cannot delete a job while compression is in progress.".into(),
+        ));
+    }
+
+    let storage = state.storage.clone();
+    let delete_id = job_id.clone();
+    let deleted = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    state.registry.remove(&job_id);
+
+    Ok(Json(serde_json::json!({ "job_id": job_id, "deleted": deleted })))
+}
+
 /// Require `name` to be a bare file name: the arcname goes into the archive
-/// verbatim and the staging path joins it onto the temp dir, so separators,
-/// `..` and empty names are rejected before anything touches disk.
+/// verbatim and the staging path joins it onto the job directory, so
+/// separators, `..` and empty names are rejected before anything touches disk.
 fn validated_name(name: &str) -> Result<String, ApiError> {
     let bare = !name.is_empty()
         && name != "."

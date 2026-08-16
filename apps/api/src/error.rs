@@ -10,6 +10,8 @@ use collapse_core::CompressionError;
 #[derive(Debug)]
 pub(crate) enum ApiError {
     BadRequest(String),
+    NotFound(String),
+    Conflict(String),
     Internal(String),
 }
 
@@ -17,6 +19,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, detail) = match self {
             ApiError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
+            ApiError::Conflict(msg) => (StatusCode::CONFLICT, msg),
             ApiError::Internal(msg) => (StatusCode::INTERNAL_SERVER_ERROR, msg),
         };
         (status, Json(json!({ "detail": detail }))).into_response()

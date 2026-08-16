@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
+use std::path::PathBuf;
 
 use clap::Parser;
 
-use collapse_api::{build_router, DEFAULT_MAX_UPLOAD_MB};
+use collapse_api::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 /// Collapse compression API server.
 #[derive(Parser)]
@@ -19,11 +20,26 @@ struct Cli {
     /// Maximum accepted upload size, in mebibytes.
     #[arg(long, default_value_t = DEFAULT_MAX_UPLOAD_MB)]
     max_upload_mb: usize,
+
+    /// Directory to stage job files in (default: a temporary directory
+    /// removed when the server stops).
+    #[arg(long)]
+    storage_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+
+    // Keep the TempDir guard alive for the whole run so the default staging
+    // area is cleaned up when the server exits.
+    let (storage_dir, _storage_guard) = match cli.storage_dir {
+        Some(dir) => (dir, None),
+        None => {
+            let tmp = tempfile::tempdir().expect("Failed to create the staging directory");
+            (tmp.path().to_path_buf(), Some(tmp))
+        }
+    };
 
     let addr: SocketAddr = format!("{}:{}", cli.host, cli.port)
         .parse()
@@ -35,7 +51,7 @@ async fn main() {
 
     println!("collapse-api listening on {addr}");
 
-    axum::serve(listener, build_router(cli.max_upload_mb))
+    axum::serve(listener, build_app(storage_dir, cli.max_upload_mb))
         .await
         .expect("Server error");
 }
