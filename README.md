@@ -112,6 +112,7 @@ anything.
 ```bash
 make docker/up        # then http://localhost:8080 for the web app,
                       # or http://localhost:8000/docs for the API
+make docker/aio       # the same, as a single all-in-one container
 make docker/logs      # follow the logs
 make docker/smoke     # build, start, run a real compression through the port, stop
 make docker/down      # stop it (the job volume survives)
@@ -189,6 +190,7 @@ apps/
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   server-backend/  collapse-server-backend — compression server (lib + bin)
   server-frontend/ collapse-server-frontend — Vue web app for that server
+  server-aio/      both of the above in one container (packaging only)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md

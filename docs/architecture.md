@@ -17,6 +17,7 @@ apps/
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
   server-backend/  collapse-server-backend — HTTP compression server, lib + bin (src/ + tests/)
   server-frontend/ collapse-server-frontend — Vue web app for that server (src/ + tests/ = Vitest)
+  server-aio/      the two above packaged into one container (a Dockerfile, no code)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, server.md, desktop.md, deployment.md, git_flow.md

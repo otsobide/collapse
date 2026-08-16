@@ -6,6 +6,9 @@ Collapse can compress on another machine. Two apps make that up:
   the compression engine and the job flow.
 - **`apps/server-frontend`** (`collapse-server-frontend`) — a Vue web app for
   it, so a browser can compress without installing anything.
+- **`apps/server-aio`** — both of the above in **one container**, which is
+  usually the thing you actually want to deploy. It builds no new code: the
+  same binary, the same bundle, the same nginx template.
 
 Three clients talk to the backend: this web app, the CLI's `--server` flag and
 the desktop app's destination picker. The two native ones share
@@ -40,6 +43,35 @@ COLLAPSE_PORT=9000 COLLAPSE_WEB_PORT=9090 make docker/up
 
 Both containers publish to **127.0.0.1 only**. That is deliberate: see
 [Exposure](#exposure).
+
+### One container instead of two
+
+```bash
+make docker/aio       # same two ports, same URLs, one container
+```
+
+`apps/server-aio` packs the API and the web app together: nginx serves the app
+and proxies to a backend on the container's own loopback, and both ports are
+published, so `:8080` is the web app and `:8000` is the API directly.
+
+It is **packaging only**. The Dockerfile builds the same
+`collapse-server-backend` binary and the same frontend bundle the split images
+build, and copies the frontend's own `nginx.conf`. That matters: the reference
+implementation grew a second, near-identical `main` for its all-in-one build,
+and this deliberately does not.
+
+Two consequences of running two processes under one roof:
+
+- The entrypoint **traps `SIGTERM` and passes it to both**. Without that, PID 1
+  ignores the signal and every `docker stop` waits out its grace period before
+  killing the container. It stops instantly instead.
+- If either process exits, the container exits, so a restart policy can bring
+  the pair back together rather than leaving half a server answering.
+
+It lives behind a compose profile because it claims the same ports as the pair
+it replaces, so `make docker/up` and `make docker/aio` never collide. Check it
+with `make server-aio/smoke`, which drives a real compression through **both**
+published ports.
 
 ## Running without Docker
 
@@ -121,6 +153,7 @@ a tar someone sent it, is in [threat_model.md](threat_model.md#the-api-server).
 ```bash
 make server-backend/test     # 78 Rust tests, including a hostile-tar suite
 make server-frontend/test    # 40 Vitest cases
+make server-aio/smoke        # the packaged container, both ports (needs Docker)
 ```
 
 The backend's suite drives the whole app in-process with no sockets; the
