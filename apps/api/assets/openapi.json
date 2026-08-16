@@ -106,7 +106,8 @@
             "required": false,
             "description": "Whether the body is a plain file (`none`, the default) or a tar holding one directory to unpack and compress as a tree (`tar`). With `tar`, send the directory's own name as `name`: the tar's single top-level entry must match it, and the archive is named after it.",
             "schema": {
-              "$ref": "#/components/schemas/Envelope"
+              "$ref": "#/components/schemas/Envelope",
+              "default": "none"
             }
           }
         ],

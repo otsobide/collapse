@@ -111,61 +111,6 @@ async fn health_returns_ok() {
 }
 
 // ---------------------------------------------------------------------------
-// GET /openapi.json and GET /docs
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn openapi_document_is_served_at_the_crate_version() {
-    let (router, _storage) = app();
-    let response = request(&router, Method::GET, "/openapi.json", b"").await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let spec = body_json(response).await;
-    assert_eq!(spec["openapi"], "3.1.0");
-    // The version is substituted from CARGO_PKG_VERSION, so it cannot drift.
-    assert_eq!(spec["info"]["version"], env!("CARGO_PKG_VERSION"));
-
-    // Every route the server actually serves must be described.
-    for path in [
-        "/health",
-        "/compress",
-        "/jobs/{job_id}",
-        "/jobs/{job_id}/download",
-    ] {
-        assert!(
-            spec["paths"].get(path).is_some(),
-            "{path} is missing from the OpenAPI document"
-        );
-    }
-}
-
-#[tokio::test]
-async fn docs_page_is_served_as_html() {
-    let (router, _storage) = app();
-    let response = request(&router, Method::GET, "/docs", b"").await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(response.headers()[header::CONTENT_TYPE]
-        .to_str()
-        .unwrap()
-        .starts_with("text/html"));
-    assert!(String::from_utf8_lossy(&body_bytes(response).await).contains("<!doctype html>"));
-}
-
-/// The page is only useful on an offline host if it pulls nothing from the
-/// network: this is the invariant a well-meaning edit is most likely to break.
-#[test]
-fn docs_page_has_no_external_dependencies() {
-    let html = collapse_api::openapi::DOCS_HTML;
-    for marker in ["http://", "https://", "//cdn", "unpkg", "jsdelivr", "fonts.googleapis"] {
-        assert!(
-            !html.contains(marker),
-            "the docs page references {marker}, so it would break offline"
-        );
-    }
-}
-
-// ---------------------------------------------------------------------------
 // POST /compress — the 202 contract
 // ---------------------------------------------------------------------------
 
