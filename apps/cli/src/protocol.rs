@@ -28,17 +28,27 @@ pub enum Progress {
 }
 
 /// Decide whether to keep polling, stop, or give up, from a job's JSON.
+///
+/// Only the two in-progress states mean "wait". Anything else — an unknown
+/// status, or a body with no status at all — is an error: a server answering
+/// that is not speaking this protocol, and treating it as in-progress would
+/// poll until the user kills the command.
 pub fn progress_of(job: &serde_json::Value) -> Result<Progress, CliError> {
-    match job["status"].as_str().unwrap_or("") {
-        "completed" => Ok(Progress::Ready),
-        "failed" => {
+    match job["status"].as_str() {
+        Some("queued") | Some("compressing") => Ok(Progress::Waiting),
+        Some("completed") => Ok(Progress::Ready),
+        Some("failed") => {
             let message = job["error_message"]
                 .as_str()
                 .unwrap_or("compression failed on the server");
             Err(CliError::Remote(format!("server-side error: {message}")))
         }
-        // queued / compressing: keep waiting.
-        _ => Ok(Progress::Waiting),
+        Some(other) => Err(CliError::Remote(format!(
+            "unexpected job status from the server: {other:?}"
+        ))),
+        None => Err(CliError::Remote(
+            "malformed server response: no status".to_string(),
+        )),
     }
 }
 
