@@ -23,11 +23,17 @@ fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
     }
 }
 
-/// Serve the real API router on an OS-assigned port, returning its base URL.
-/// The server thread lives for the rest of the test process.
-fn start_server() -> String {
+/// Serve the real API app on an OS-assigned port, returning its base URL and
+/// its staging directory (to observe server-side cleanup). The server thread
+/// (which keeps the staging TempDir alive) lives for the rest of the test
+/// process.
+fn start_server() -> (String, std::path::PathBuf) {
+    let storage = tempfile::TempDir::new().unwrap();
+    let storage_path = storage.path().to_path_buf();
+    let app_storage = storage_path.clone();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
+        let _storage = storage; // keep the staging dir alive with the server
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -35,11 +41,12 @@ fn start_server() -> String {
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            let router = collapse_api::build_router(collapse_api::DEFAULT_MAX_UPLOAD_MB);
-            axum::serve(listener, router).await.unwrap();
+            let app =
+                collapse_api::build_app(app_storage, collapse_api::DEFAULT_MAX_UPLOAD_MB);
+            axum::serve(listener, app).await.unwrap();
         });
     });
-    format!("http://{}", rx.recv().unwrap())
+    (format!("http://{}", rx.recv().unwrap()), storage_path)
 }
 
 // A port from the "unassigned" range nothing listens on in practice: the
@@ -63,7 +70,7 @@ fn server_flag_parses() {
 
 #[test]
 fn remote_compress_round_trips_for_every_format() {
-    let server = start_server();
+    let (server, _storage) = start_server();
     for (fmt, ext) in [("zip", "zip"), ("7z", "7z"), ("tar", "tar")] {
         let dir = tempfile::TempDir::new().unwrap();
         let src = dir.path().join("notes.txt");
@@ -93,7 +100,8 @@ fn remote_compress_round_trips_for_every_format() {
 #[test]
 fn remote_compress_defaults_output_beside_source() {
     // Trailing slash on the URL must not produce a double-slash request path.
-    let server = format!("{}/", start_server());
+    let (base, _storage) = start_server();
+    let server = format!("{base}/");
     let dir = tempfile::TempDir::new().unwrap();
     let src = dir.path().join("notes.txt");
     std::fs::write(&src, b"remote default output").unwrap();
@@ -105,6 +113,21 @@ fn remote_compress_defaults_output_beside_source() {
 
     let out = dir.path().join("out");
     assert_eq!(collapse_core::extract(&output, &out).unwrap(), vec!["notes.txt"]);
+}
+
+#[test]
+fn remote_compress_cleans_up_the_job_server_side() {
+    let (server, storage) = start_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"leave nothing behind").unwrap();
+
+    run_ok(&["collapse", "compress", src.to_str().unwrap(), "--server", &server]);
+
+    // The CLI deletes the job after downloading, so no job directory (input
+    // or archive) survives in the server's staging area.
+    let leftovers: Vec<_> = std::fs::read_dir(&storage).unwrap().collect();
+    assert!(leftovers.is_empty(), "job files left behind: {leftovers:?}");
 }
 
 // ---------------------------------------------------------------- rejections --
@@ -160,7 +183,7 @@ fn remote_compress_refuses_existing_output_without_force() {
 
 #[test]
 fn remote_compress_force_overwrites_existing_output() {
-    let server = start_server();
+    let (server, _storage) = start_server();
     let dir = tempfile::TempDir::new().unwrap();
     let src = dir.path().join("notes.txt");
     std::fs::write(&src, b"fresh content").unwrap();
