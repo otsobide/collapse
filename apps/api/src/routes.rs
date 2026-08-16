@@ -10,6 +10,7 @@ use collapse_core::Algorithm;
 
 use crate::error::ApiError;
 use crate::models::{Job, JobStatus};
+use crate::validate::{header_safe, is_bare_file_name};
 use crate::AppState;
 
 /// Query parameters for `POST /compress`. An unparseable `level` (or a
@@ -166,26 +167,11 @@ pub(crate) async fn delete_job(
 /// verbatim and the staging path joins it onto the job directory, so
 /// separators, `..` and empty names are rejected before anything touches disk.
 fn validated_name(name: &str) -> Result<String, ApiError> {
-    let bare = !name.is_empty()
-        && name != "."
-        && name != ".."
-        && !name.contains('/')
-        && !name.contains('\\')
-        && !name.contains('\0');
-    if bare {
+    if is_bare_file_name(name) {
         Ok(name.to_string())
     } else {
         Err(ApiError::BadRequest(format!(
             "Invalid file name: {name:?}. Must be a bare file name."
         )))
     }
-}
-
-/// Strip the characters that could break out of the quoted
-/// Content-Disposition filename.
-fn header_safe(filename: &str) -> String {
-    filename
-        .chars()
-        .filter(|c| !matches!(c, '"' | '\\' | '\n' | '\r'))
-        .collect()
 }

@@ -15,6 +15,7 @@ mod queue;
 mod registry;
 mod routes;
 mod storage;
+pub mod validate;
 
 use std::path::PathBuf;
 use std::sync::Arc;
