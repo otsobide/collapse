@@ -9,7 +9,7 @@ use uuid::Uuid;
 use collapse_core::Algorithm;
 
 use crate::error::ApiError;
-use crate::models::{Job, JobStatus};
+use crate::models::{Envelope, Job, JobStatus};
 use crate::validate::{header_safe, is_bare_file_name};
 use crate::AppState;
 
@@ -24,6 +24,9 @@ pub(crate) struct CompressParams {
     algorithm: Option<String>,
     /// Compression level 1–5; defaults to 3, like the CLI.
     level: Option<u32>,
+    /// How to read the body: `none` (a plain file, the default) or `tar`
+    /// (a tar holding one directory, to unpack and compress as a tree).
+    envelope: Option<String>,
 }
 
 fn job_or_404(state: &AppState, job_id: &str) -> Result<Job, ApiError> {
@@ -76,6 +79,11 @@ pub(crate) async fn compress_create(
         )));
     }
 
+    let envelope = match params.envelope.as_deref() {
+        Some(text) => text.parse::<Envelope>().map_err(ApiError::BadRequest)?,
+        None => Envelope::None,
+    };
+
     let job_id = Uuid::new_v4().simple().to_string();
 
     // Persist the upload before registering the job, so a job never exists
@@ -88,7 +96,7 @@ pub(crate) async fn compress_create(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))??;
 
-    let job = Job::new(job_id.clone(), name, algorithm, level);
+    let job = Job::new(job_id.clone(), name, algorithm, level, envelope);
     state.registry.add(job.clone());
     state
         .queue_tx

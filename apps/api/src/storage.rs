@@ -37,6 +37,12 @@ impl Storage {
             .join(format!("archive.{}", algorithm.extension()))
     }
 
+    /// Where a tar envelope is unpacked, kept apart from both the upload and
+    /// the archive so the three can never collide.
+    pub fn tree_path(&self, job_id: &str) -> PathBuf {
+        self.job_dir(job_id).join("tree")
+    }
+
     /// Persist an uploaded input, creating the job directory.
     pub fn save_input(&self, job_id: &str, name: &str, data: &[u8]) -> io::Result<()> {
         let path = self.input_path(job_id, name);
@@ -46,10 +52,43 @@ impl Storage {
         fs::write(path, data)
     }
 
-    /// Remove a job's directory (input and archive). Returns `true` if it
-    /// existed.
+    /// Remove a job's directory (input, unpacked tree and archive). Returns
+    /// `true` if it existed.
     pub fn delete_job(&self, job_id: &str) -> bool {
         let dir = self.job_dir(job_id);
         Path::new(&dir).exists() && fs::remove_dir_all(&dir).is_ok()
     }
+}
+
+/// The single top-level directory an unpacked tar envelope must contain.
+///
+/// The tar arrives from a client, so nothing about its shape is taken on
+/// trust: it has to hold exactly one entry, that entry has to be a directory,
+/// and it has to be the name the job was created for. Anything else is
+/// reported instead of compressing whatever happens to be there.
+pub fn single_root_dir(tree: &Path, expected: &str) -> Result<PathBuf, String> {
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(tree).map_err(|e| format!("cannot read the unpacked upload: {e}"))? {
+        entries.push(entry.map_err(|e| format!("cannot read the unpacked upload: {e}"))?);
+    }
+
+    let [only] = entries.as_slice() else {
+        return Err(format!(
+            "the tar envelope must hold exactly one directory, found {}",
+            entries.len()
+        ));
+    };
+
+    let name = only.file_name().to_string_lossy().into_owned();
+    if !only.path().is_dir() {
+        return Err(format!(
+            "the tar envelope must hold a directory, found the file {name:?}"
+        ));
+    }
+    if name != expected {
+        return Err(format!(
+            "the tar envelope holds {name:?} but the job was created for {expected:?}"
+        ));
+    }
+    Ok(only.path())
 }

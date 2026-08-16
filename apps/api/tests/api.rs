@@ -272,6 +272,109 @@ async fn compress_a_file_named_like_the_archive() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// POST /compress?envelope=tar — directory uploads
+// ---------------------------------------------------------------------------
+
+/// Pack a directory tree the way a client does, returning the tar bytes.
+fn tar_envelope(build: impl Fn(&std::path::Path)) -> (tempfile::TempDir, Vec<u8>) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(&root).unwrap();
+    build(&root);
+
+    let tar = dir.path().join("upload.tar");
+    collapse_core::compression::compress_tar_dir(&root, &tar).unwrap();
+    let bytes = std::fs::read(&tar).unwrap();
+    (dir, bytes)
+}
+
+#[tokio::test]
+async fn a_tar_envelope_is_unwrapped_and_compressed_as_a_tree() {
+    let (router, _storage) = app();
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"second").unwrap();
+    });
+
+    let response =
+        compress_and_download(&router, "name=photos&algorithm=zip&envelope=tar", &tar).await;
+
+    // The archive is named after the directory, not after the envelope.
+    assert_eq!(
+        response.headers()[header::CONTENT_DISPOSITION],
+        "attachment; filename=\"photos.zip\""
+    );
+
+    let mut extracted = extract_archive(&body_bytes(response).await, "zip");
+    extracted.sort();
+    assert_eq!(
+        extracted,
+        vec![
+            ("photos/a.txt".to_string(), b"first".to_vec()),
+            ("photos/sub/b.txt".to_string(), b"second".to_vec()),
+        ]
+    );
+}
+
+/// Without the flag the same bytes are just a file to compress, which is why
+/// the flag exists: a real .tar upload must stay compressible as itself.
+#[tokio::test]
+async fn without_the_flag_a_tar_is_compressed_as_a_file() {
+    let (router, _storage) = app();
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+    });
+
+    let response = compress_and_download(&router, "name=photos.tar&algorithm=zip", &tar).await;
+
+    let extracted = extract_archive(&body_bytes(response).await, "zip");
+    assert_eq!(extracted, vec![("photos.tar".to_string(), tar)]);
+}
+
+#[tokio::test]
+async fn compress_rejects_an_unknown_envelope() {
+    let (router, _storage) = app();
+    let response = post_compress(&router, "name=a.txt&envelope=zip", b"x").await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(error_detail(response).await.contains("envelope"));
+}
+
+#[tokio::test]
+async fn a_tar_envelope_that_is_not_a_tar_fails_the_job() {
+    let (router, _storage) = app();
+    let accepted = post_compress(&router, "name=photos&envelope=tar", b"not a tar at all").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+
+    let done = wait_for_job(&router, &job_id).await;
+    assert_eq!(done["status"], "failed");
+    assert!(!done["error_message"].as_str().unwrap().is_empty());
+
+    // A failed job refuses to serve an archive rather than serving a broken one.
+    let download =
+        request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    assert_eq!(download.status(), StatusCode::CONFLICT);
+}
+
+/// The name the job was created for has to be the tree that arrives.
+#[tokio::test]
+async fn a_tar_envelope_holding_another_directory_fails_the_job() {
+    let (router, _storage) = app();
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+    });
+
+    let accepted = post_compress(&router, "name=somethingelse&envelope=tar", &tar).await;
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+
+    let done = wait_for_job(&router, &job_id).await;
+    assert_eq!(done["status"], "failed");
+    assert!(done["error_message"].as_str().unwrap().contains("photos"));
+}
+
 #[tokio::test]
 async fn download_can_be_repeated_until_deleted() {
     let (router, _storage) = app();

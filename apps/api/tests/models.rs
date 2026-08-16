@@ -1,10 +1,16 @@
 //! Unit tests for the job model, including the JSON shape clients parse.
 
-use collapse_api::models::{Job, JobStatus};
+use collapse_api::models::{Envelope, Job, JobStatus};
 use collapse_core::Algorithm;
 
 fn job(name: &str, algorithm: Algorithm) -> Job {
-    Job::new("abc123".to_string(), name.to_string(), algorithm, 3)
+    Job::new(
+        "abc123".to_string(),
+        name.to_string(),
+        algorithm,
+        3,
+        Envelope::None,
+    )
 }
 
 // ------------------------------------------------------------- construction --
@@ -61,6 +67,7 @@ fn job_serializes_the_expected_fields() {
         vec![
             "algorithm",
             "archive_name",
+            "envelope",
             "error_message",
             "job_id",
             "level",
@@ -75,6 +82,7 @@ fn job_serializes_the_expected_fields() {
     assert_eq!(value["algorithm"], "7z");
     assert_eq!(value["level"], 3);
     assert_eq!(value["status"], "queued");
+    assert_eq!(value["envelope"], "none");
     assert_eq!(value["error_message"], serde_json::Value::Null);
 }
 

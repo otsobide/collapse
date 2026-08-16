@@ -1,6 +1,6 @@
 //! Unit tests for the per-job on-disk staging.
 
-use collapse_api::storage::Storage;
+use collapse_api::storage::{single_root_dir, Storage};
 use collapse_core::Algorithm;
 
 fn storage() -> (Storage, tempfile::TempDir) {
@@ -125,6 +125,65 @@ fn delete_job_leaves_other_jobs_alone() {
 
     assert!(!storage.input_path("job1", "notes.txt").exists());
     assert_eq!(std::fs::read(storage.input_path("job2", "notes.txt")).unwrap(), b"second");
+}
+
+// ------------------------------------------------- unpacked tar envelopes --
+
+/// The tar comes from a client, so the shape of what it unpacked to is
+/// checked rather than assumed.
+#[test]
+fn single_root_dir_accepts_the_expected_directory() {
+    let tree = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(tree.path().join("photos")).unwrap();
+
+    assert_eq!(
+        single_root_dir(tree.path(), "photos").unwrap(),
+        tree.path().join("photos")
+    );
+}
+
+#[test]
+fn single_root_dir_rejects_a_file() {
+    let tree = tempfile::TempDir::new().unwrap();
+    std::fs::write(tree.path().join("photos"), b"not a directory").unwrap();
+
+    let error = single_root_dir(tree.path(), "photos").unwrap_err();
+    assert!(error.contains("must hold a directory"), "got {error:?}");
+}
+
+/// A tar whose top-level entry is not what the job was created for would make
+/// the archive's contents disagree with its name.
+#[test]
+fn single_root_dir_rejects_a_mismatched_name() {
+    let tree = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(tree.path().join("something-else")).unwrap();
+
+    let error = single_root_dir(tree.path(), "photos").unwrap_err();
+    assert!(error.contains("something-else"), "got {error:?}");
+    assert!(error.contains("photos"), "got {error:?}");
+}
+
+#[test]
+fn single_root_dir_rejects_anything_but_one_entry() {
+    let empty = tempfile::TempDir::new().unwrap();
+    assert!(single_root_dir(empty.path(), "photos")
+        .unwrap_err()
+        .contains("exactly one"));
+
+    let two = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(two.path().join("photos")).unwrap();
+    std::fs::create_dir(two.path().join("extra")).unwrap();
+    assert!(single_root_dir(two.path(), "photos")
+        .unwrap_err()
+        .contains("exactly one"));
+}
+
+#[test]
+fn tree_path_is_apart_from_the_upload_and_the_archive() {
+    let (storage, _base) = storage();
+    let tree = storage.tree_path("job1");
+    assert_ne!(tree, storage.input_path("job1", "photos"));
+    assert_ne!(tree, storage.output_path("job1", Algorithm::Zip));
 }
 
 #[test]

@@ -28,7 +28,9 @@
   "paths": {
     "/health": {
       "get": {
-        "tags": ["health"],
+        "tags": [
+          "health"
+        ],
         "summary": "Liveness probe",
         "description": "Reports that the server is up and serving. It touches neither the job registry nor the staging directory, so a healthy answer says nothing about pending jobs or free disk space. Use it for load balancer and container health checks.",
         "operationId": "getHealth",
@@ -56,9 +58,11 @@
     },
     "/compress": {
       "post": {
-        "tags": ["compress"],
+        "tags": [
+          "compress"
+        ],
         "summary": "Upload a file and queue a compression job",
-        "description": "Step 1 of the asynchronous flow. The request body is the **raw bytes of the file** to compress: not multipart, not JSON, not base64. Everything else travels in the query string.\n\nThe server validates the parameters, writes the upload to the job's staging directory, registers the job and hands it to the background worker, then answers `202 Accepted` immediately with the job in its `queued` state. Compression has not started yet when the response arrives, so the job in the body always reads `\"status\": \"queued\"` and `\"error_message\": null`.\n\nExactly one file goes into the archive, stored under `name`. The archive itself is named `archive_name`, which is `<name>.<extension>` for the chosen algorithm. An empty body is accepted and produces an archive holding an empty file.\n\nContinue with `GET /jobs/{job_id}` to poll the job.",
+        "description": "Step 1 of the asynchronous flow. The request body is the **raw bytes of the file** to compress: not multipart, not JSON, not base64. Everything else travels in the query string.\n\nThe server validates the parameters, writes the upload to the job's staging directory, registers the job and hands it to the background worker, then answers `202 Accepted` immediately with the job in its `queued` state. Compression has not started yet when the response arrives, so the job in the body always reads `\"status\": \"queued\"` and `\"error_message\": null`.\n\nExactly one file goes into the archive, stored under `name`. The archive itself is named `archive_name`, which is `<name>.<extension>` for the chosen algorithm. An empty body is accepted and produces an archive holding an empty file.\n\nContinue with `GET /jobs/{job_id}` to poll the job.\n\n**Directories.** HTTP has no notion of a folder, so a client packs one into a tar and sets `envelope=tar`; the server unpacks it and compresses the tree, giving the same archive a local run would produce. Tar is the envelope because it does not compress: the CPU work still happens here, and the upload cap still bounds how much can be unpacked.",
         "operationId": "createCompressionJob",
         "parameters": [
           {
@@ -95,6 +99,15 @@
               "default": 3
             },
             "example": 4
+          },
+          {
+            "name": "envelope",
+            "in": "query",
+            "required": false,
+            "description": "Whether the body is a plain file (`none`, the default) or a tar holding one directory to unpack and compress as a tree (`tar`). With `tar`, send the directory's own name as `name`: the tar's single top-level entry must match it, and the archive is named after it.",
+            "schema": {
+              "$ref": "#/components/schemas/Envelope"
+            }
           }
         ],
         "requestBody": {
@@ -235,7 +248,9 @@
         }
       ],
       "get": {
-        "tags": ["jobs"],
+        "tags": [
+          "jobs"
+        ],
         "summary": "Poll a compression job",
         "description": "Step 2 of the asynchronous flow. Returns the job's current state. Poll this until `status` leaves `queued`/`compressing`.\n\nThe lifecycle is `queued` then `compressing` then either `completed` or `failed`, and it never moves backwards. On `completed` the archive is ready at `GET /jobs/{job_id}/download`. On `failed`, `error_message` carries the reason and no archive exists; the job should be deleted.\n\nThe job disappears (and this becomes a `404`) once it is deleted or the server restarts.",
         "operationId": "getJob",
@@ -294,7 +309,9 @@
         }
       },
       "delete": {
-        "tags": ["jobs"],
+        "tags": [
+          "jobs"
+        ],
         "summary": "Delete a job and its staged files",
         "description": "Step 4 and last of the asynchronous flow. Removes the job from the registry and deletes its staging directory, which holds both the upload and the archive. Nothing else reclaims that space, so call this once the archive has been downloaded, and also for jobs that ended `failed`.\n\nIt is refused with `409` while the job is `queued` or `compressing`; wait for a terminal state first. After a successful delete every endpoint answers `404` for that `job_id`.\n\nThe `deleted` flag in the response reports whether files were actually removed from disk. It is `false` when the job had no staging directory left, for instance if it was already cleaned up externally; the job is dropped from the registry either way.",
         "operationId": "deleteJob",
@@ -374,7 +391,9 @@
         }
       ],
       "get": {
-        "tags": ["jobs"],
+        "tags": [
+          "jobs"
+        ],
         "summary": "Download the finished archive",
         "description": "Step 3 of the asynchronous flow. Streams back the archive bytes for a `completed` job.\n\nThe response `Content-Type` follows the job's `algorithm`: `application/zip` for zip, `application/x-7z-compressed` for 7z, `application/x-tar` for tar. `Content-Disposition` suggests the file name from the job's `archive_name`, with the characters that could break out of the quoted value stripped.\n\nThe download is idempotent and may be repeated until the job is deleted. Calling it too early is a `409`, not a wait: poll `GET /jobs/{job_id}` first. Finish with `DELETE /jobs/{job_id}`.",
         "operationId": "downloadArchive",
@@ -502,15 +521,37 @@
         "title": "Algorithm",
         "description": "Archive format. `7z` and `zip` compress and honour `level`; `tar` only bundles the file without compressing it.",
         "type": "string",
-        "enum": ["7z", "tar", "zip"],
-        "examples": ["zip"]
+        "enum": [
+          "7z",
+          "tar",
+          "zip"
+        ],
+        "examples": [
+          "zip"
+        ]
+      },
+      "Envelope": {
+        "type": "string",
+        "enum": [
+          "none",
+          "tar"
+        ],
+        "default": "none",
+        "description": "How the request body should be read. `none` means the body is the file to compress, as it is. `tar` means the body is a tar holding exactly one directory, which the server unpacks and compresses as a tree.\n\nThe flag is required rather than inferred: a `.tar` upload may equally be a file the caller wants compressed as itself, and guessing would make that impossible to ask for."
       },
       "JobStatus": {
         "title": "JobStatus",
         "description": "Lifecycle state of a compression job. It advances `queued` to `compressing` to either `completed` or `failed`, and never moves backwards. `completed` and `failed` are terminal: only then may the job be downloaded or deleted.",
         "type": "string",
-        "enum": ["queued", "compressing", "completed", "failed"],
-        "examples": ["completed"]
+        "enum": [
+          "queued",
+          "compressing",
+          "completed",
+          "failed"
+        ],
+        "examples": [
+          "completed"
+        ]
       },
       "Job": {
         "title": "Job",
@@ -522,6 +563,7 @@
           "archive_name",
           "algorithm",
           "level",
+          "envelope",
           "status",
           "error_message"
         ],
@@ -530,17 +572,23 @@
             "type": "string",
             "description": "Server generated identifier: a version 4 UUID in its 32 character hexadecimal form, without dashes. Use it in every follow up call.",
             "pattern": "^[0-9a-f]{32}$",
-            "examples": ["3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"]
+            "examples": [
+              "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"
+            ]
           },
           "name": {
             "type": "string",
             "description": "The `name` query parameter as given: the file name stored inside the archive.",
-            "examples": ["notes.txt"]
+            "examples": [
+              "notes.txt"
+            ]
           },
           "archive_name": {
             "type": "string",
             "description": "Name of the produced archive, `<name>.<extension>` for the chosen algorithm. It is what `Content-Disposition` suggests on download.",
-            "examples": ["notes.txt.7z"]
+            "examples": [
+              "notes.txt.7z"
+            ]
           },
           "algorithm": {
             "$ref": "#/components/schemas/Algorithm"
@@ -550,15 +598,31 @@
             "minimum": 1,
             "maximum": 5,
             "description": "Compression level in effect, defaulting to 3. Recorded even for `tar`, which ignores it.",
-            "examples": [4]
+            "examples": [
+              4
+            ]
+          },
+          "envelope": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Envelope"
+              }
+            ],
+            "description": "How the upload was read for this job."
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
           },
           "error_message": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Why the job failed. Always `null` unless `status` is `failed`.",
-            "examples": [null, "Compression failed: unexpected end of file"]
+            "examples": [
+              null,
+              "Compression failed: unexpected end of file"
+            ]
           }
         }
       },
@@ -566,17 +630,24 @@
         "title": "DeleteJobResult",
         "description": "Outcome of `DELETE /jobs/{job_id}`.",
         "type": "object",
-        "required": ["job_id", "deleted"],
+        "required": [
+          "job_id",
+          "deleted"
+        ],
         "properties": {
           "job_id": {
             "type": "string",
             "description": "The job that was dropped from the registry.",
-            "examples": ["3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"]
+            "examples": [
+              "3f2b8c1d9a5e4f6b8c0d2e4f6a8b0c1d"
+            ]
           },
           "deleted": {
             "type": "boolean",
             "description": "Whether the job's staging directory existed and was removed. `false` means there was nothing left on disk; the job is gone from the registry either way.",
-            "examples": [true]
+            "examples": [
+              true
+            ]
           }
         }
       },
@@ -584,7 +655,9 @@
         "title": "HealthStatus",
         "description": "Body of the liveness probe.",
         "type": "object",
-        "required": ["status"],
+        "required": [
+          "status"
+        ],
         "properties": {
           "status": {
             "type": "string",
@@ -602,12 +675,16 @@
         "title": "Error",
         "description": "Every error raised by the application uses this shape. The two rejections produced by the web framework before the handler runs (an unparseable query string, an oversized body) are plain text instead.",
         "type": "object",
-        "required": ["detail"],
+        "required": [
+          "detail"
+        ],
         "properties": {
           "detail": {
             "type": "string",
             "description": "Human readable explanation of what went wrong. The wording is not a stable contract; branch on the status code, not on this text.",
-            "examples": ["Job not found."]
+            "examples": [
+              "Job not found."
+            ]
           }
         },
         "examples": [

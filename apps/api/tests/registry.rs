@@ -1,11 +1,17 @@
 //! Unit tests for the in-memory job registry.
 
-use collapse_api::models::{Job, JobStatus};
+use collapse_api::models::{Envelope, Job, JobStatus};
 use collapse_api::registry::Registry;
 use collapse_core::Algorithm;
 
 fn job(id: &str) -> Job {
-    Job::new(id.to_string(), "notes.txt".to_string(), Algorithm::Zip, 3)
+    Job::new(
+        id.to_string(),
+        "notes.txt".to_string(),
+        Algorithm::Zip,
+        3,
+        Envelope::None,
+    )
 }
 
 // -------------------------------------------------------------- add and get --
