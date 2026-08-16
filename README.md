@@ -89,6 +89,12 @@ cargo run -p collapse-api -- --host 0.0.0.0 --port 8000    # on the server
 collapse compress notes.txt -f 7z --server http://myserver:8000
 ```
 
+The server documents itself: open **`/docs`** for an interactive page that
+describes every endpoint and can run them (upload a file, watch the job, save
+the archive) with no other tool, and **`/openapi.json`** for the OpenAPI 3.1
+description. Both are built into the binary and load nothing from the network,
+so they work offline.
+
 ### Desktop
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
@@ -124,7 +130,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run the full test suite (187 Rust tests + the desktop Vitest suite)
+make test              # run the full test suite (190 Rust tests + the desktop Vitest suite)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and

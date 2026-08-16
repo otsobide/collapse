@@ -164,6 +164,17 @@ the server stops.
 
 The surface:
 
+- `GET /docs` — interactive documentation, the role FastAPI's `/docs` plays.
+  It renders itself from `/openapi.json`, so a new endpoint in the document
+  documents itself, and it can execute every call (file picker included),
+  plus run the whole job flow end to end. Unlike FastAPI's default, which
+  pulls Swagger UI from a CDN, the page is embedded in the binary with
+  `include_str!` and loads **nothing** from the network, so it works on an
+  offline or air-gapped host. A test asserts that invariant.
+- `GET /openapi.json` — the OpenAPI 3.1 document (`apps/api/assets/openapi.json`,
+  hand-written; `info.version` is substituted from `CARGO_PKG_VERSION` so it
+  cannot drift from the crate). Point Swagger UI, Postman or a client
+  generator at it if you prefer.
 - `GET /health` — liveness probe, returns `{"status":"ok"}`.
 - `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]` — the body is
   the raw file content; answers **202 Accepted** with the queued job as JSON
