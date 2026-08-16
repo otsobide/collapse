@@ -13,6 +13,11 @@ read outside the directory you chose as the extraction target. Compression is
 lower-risk (you own the input tree), but it must not silently pull data from
 **outside** that tree into the archive.
 
+That framing assumes the machine doing the work owns its input, which is true
+of the CLI and the desktop app. It is **not** true of `collapse-api`, which
+compresses what a client sends and, for directory uploads, extracts it first:
+see [The API server](#the-api-server).
+
 The trust boundary is the **output directory** on extraction, and the
 **source directory** on compression. Every measure below defends one of those
 boundaries.
@@ -127,6 +132,58 @@ backends are only ever reached with a validated level.
 
 **Covered by** `compress_invalid_level_zero`, `compress_invalid_level_six`,
 `compress_dir_invalid_level_is_rejected` (in `apps/core/tests/compression.rs`).
+
+---
+
+## The API server
+
+`collapse-api` (and therefore the CLI's `--server`, and any front-end that
+uses `collapse-remote`) moves the trust boundary: the server acts on bytes
+someone else sent it.
+
+### 8. The server extracts an untrusted archive
+
+**Attack.** `POST /compress?envelope=tar` hands the server a tar that it
+unpacks before compressing the tree inside. That is the extraction direction,
+on input the server did not create, which is exactly the dangerous case this
+document opens with.
+
+**Prevention.** The unpacking goes through the same `extract_tar` every other
+caller uses, so it inherits every guarantee in measures #1 to #4: `unpack_in`
+refuses entries with `..`, strips root components, and blocks writing through
+a pre-existing symlink, while entries that are not regular files or
+directories (symlinks, hardlinks, device nodes) are skipped rather than
+created. The destination is the job's own staging directory, one per job.
+
+On top of that, the shape of what was unpacked is checked before compressing:
+it must be exactly one entry, it must be a directory, and its name must match
+the `name` the job was created for. A mismatch fails the job instead of
+compressing whatever happened to arrive.
+
+**Choice of envelope.** Tar is used *because it does not compress*. An archive
+that expands could turn a small upload into an unbounded write; a tar cannot,
+so the existing `--max-upload-mb` cap also bounds what reaches the disk. A zip
+or 7z envelope would have introduced a decompression bomb where there is none
+today, which is why it is not offered.
+
+### 9. What the server does not defend against
+
+Stated plainly, because deploying it assumes these:
+
+- **No authentication and no rate limiting.** Anyone who can reach the port can
+  submit jobs, and jobs consume CPU, memory and disk. Bind it to localhost (the
+  default, and what the container image publishes) or put it behind something
+  that authenticates.
+- **No transport security.** The server speaks plain HTTP, so uploaded content
+  and downloaded archives travel in the clear. Do not send anything sensitive
+  across a network you do not trust; terminate TLS in front of it if you must.
+- **Uploads are held in memory.** The request body is buffered before staging,
+  and the zip/7z backends buffer whole files, so concurrent large uploads
+  multiply. The upload cap and a container memory limit are the only ceilings;
+  the compose file sets one for that reason.
+- **Staging is only cleaned on request.** A job's files live until `DELETE
+  /jobs/{id}` (or the process exits, with the default temporary directory).
+  Abandoned jobs accumulate.
 
 ---
 

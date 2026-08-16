@@ -130,13 +130,12 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
    - refuse an existing output unless `--force`;
    - reject a source that is neither a regular file nor a directory (e.g. a FIFO).
 5. Dispatch to `compress_dir` (directory) or `compress` (file). With
-   `--server <URL>`, files are instead compressed by a remote
-   [`collapse-api`](#collapse-api--the-compression-server): the CLI queues the
-   job, polls its status, downloads the archive to the same output path the
-   local mode would use, and deletes the job server-side. The safety guards in
-   step 4 run before any network I/O, and directories are rejected client-side
-   (remote directory compression does not exist yet). Extraction has no remote
-   mode.
+   `--server <URL>`, the source is instead compressed by a remote
+   [`collapse-api`](#collapse-api--the-compression-server) through
+   [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server), which
+   handles files and directories alike; the archive lands at the same output
+   path local mode would use. The safety guards in step 4 run before any
+   network I/O. Extraction has no remote mode.
 
 Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
@@ -145,9 +144,16 @@ as needed.
 ## collapse-remote — the client for a remote server
 
 A small crate holding the client side of the server's job flow:
-[`compress_file`] uploads a file's bytes, polls the job until it settles,
-downloads the archive and deletes the job, returning the archive bytes. It is
-the only place that exchange is written.
+`compress_path` uploads the bytes, polls the job until it settles, downloads
+the archive and deletes the job, returning the archive bytes. It is the only
+place that exchange is written.
+
+It takes files and directories alike. HTTP carries no notion of a folder, so a
+directory is packed into a **tar envelope** first and the server is told to
+unwrap it (`envelope=tar`). Tar is the envelope precisely because it does *not*
+compress: the CPU work still happens on the server, and because the envelope
+cannot expand, the server's upload cap also bounds how much it can unpack. The
+price is bandwidth, since what travels is uncompressed.
 
 It exists as its own crate rather than living inside the CLI because more than
 one front-end needs it: the CLI's `--server` flag today, the desktop app next.
@@ -204,10 +210,15 @@ The surface:
   cannot drift from the crate). Point Swagger UI, Postman or a client
   generator at it if you prefer.
 - `GET /health` — liveness probe, returns `{"status":"ok"}`.
-- `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]` — the body is
-  the raw file content; answers **202 Accepted** with the queued job as JSON
-  (`job_id`, `status`, `archive_name`, …). Defaults mirror the CLI (zip,
-  level 3).
+- `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5][&envelope=none|tar]`
+  — the body is the raw file content; answers **202 Accepted** with the queued
+  job as JSON (`job_id`, `status`, `archive_name`, …). Defaults mirror the CLI
+  (zip, level 3). With `envelope=tar` the body is instead a tar holding one
+  directory, which the server unpacks and compresses as a tree; `name` is then
+  the directory's own name. The flag is explicit rather than sniffed, because a
+  `.tar` upload may equally be a file the caller wants compressed as itself.
+  What the tar unpacks to is validated (exactly one entry, a directory, named
+  as the job says) before anything is compressed.
 - `GET /jobs/{job_id}` — the job's current state:
   `queued` → `compressing` → `completed` | `failed` (with `error_message`
   when failed).

@@ -77,16 +77,19 @@ cargo build -p collapse-cli --release      # binary at target/release/collapse
 
 #### Remote compression
 
-Compression (files only, for now) can be offloaded to a remote Collapse
-server: run `collapse-api` somewhere and point the CLI at it with `--server`.
-The file's bytes are sent over, compressed there, and the archive is written
-locally, with the same defaults and safety guards as local mode; under the
-hood the CLI follows the server's job flow (queue, poll, download, delete).
-Extraction stays local.
+Compression can be offloaded to a remote Collapse server: run `collapse-api`
+somewhere and point the CLI at it with `--server`. The bytes are sent over,
+compressed there, and the archive is written locally, with the same defaults
+and safety guards as local mode; under the hood the CLI follows the server's
+job flow (queue, poll, download, delete). Folders work too: HTTP cannot carry
+a directory, so one is packed into an uncompressed **tar envelope** the server
+unpacks, which keeps the actual compression on the far side. Extraction stays
+local.
 
 ```bash
 cargo run -p collapse-api -- --host 0.0.0.0 --port 8000    # on the server
 collapse compress notes.txt -f 7z --server http://myserver:8000
+collapse compress photos/  -f 7z --server http://myserver:8000
 ```
 
 The server documents itself: open **`/docs`** for an interactive page that
