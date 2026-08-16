@@ -16,9 +16,18 @@ path = "src/lib.rs"
 collapse-core = { path = "../core" }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
+# Remote compression (--server): ureq posts the bytes, serde_json reads the
+# server's {"detail": ...} error bodies.
+ureq = "2"
+serde_json = "1"
 
-# Integration tests (tests/) drive the real clap parser and verify with core.
+# Integration tests (tests/) drive the real clap parser and verify with core;
+# the remote tests (tests/remote.rs) serve the real collapse-api router
+# in-process on an ephemeral port.
 [dev-dependencies]
 collapse-core = { path = "../core" }
+collapse-api = { path = "../api" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+tokio = { version = "1", features = ["rt", "net"] }
+axum = "0.8"
