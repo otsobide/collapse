@@ -162,6 +162,14 @@ end-to-end tests, drive in-process; `main.rs` only parses `--host` / `--port`
 default, and the default staging dir is a temporary directory removed when
 the server stops.
 
+It also ships a container image (`apps/api/Dockerfile`, plus the root
+`docker-compose.yml` and the `make docker/*` targets). Two details there are
+load-bearing: the build context is the **repository root**, because the crate
+depends on `collapse-core` through a path dependency and cargo needs every
+workspace member's manifest; and `--host 0.0.0.0` is baked into the image's
+`ENTRYPOINT` rather than left to the operator, since the server's loopback
+default would make a published port reach nothing from the host.
+
 The surface:
 
 - `GET /docs` — interactive documentation, the role FastAPI's `/docs` plays.

@@ -95,6 +95,23 @@ the archive) with no other tool, and **`/openapi.json`** for the OpenAPI 3.1
 description. Both are built into the binary and load nothing from the network,
 so they work offline.
 
+##### In Docker
+
+```bash
+make docker/up        # build and start it, then open http://localhost:8000/docs
+make docker/logs      # follow the logs
+make docker/smoke     # build, start, run a real compression through the port, stop
+make docker/down      # stop it (the job volume survives)
+make docker/clean     # remove the container, its volume and the image
+```
+
+The image is defined in [apps/api/Dockerfile](apps/api/Dockerfile) and the stack
+in [docker-compose.yml](docker-compose.yml); both are built from the repository
+root, since the API depends on `collapse-core` by path. The container runs as a
+non-root user and publishes to **localhost only** by default, matching the
+server's own posture (it has no authentication). Override the port with
+`COLLAPSE_PORT=9000 make docker/up`.
+
 ### Desktop
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
