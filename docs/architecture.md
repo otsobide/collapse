@@ -213,9 +213,12 @@ Each app carries its own tests, in that ecosystem's conventional place:
 - `apps/cli/tests/` — drives the real clap parser and `run` in-process; the
   remote-mode tests (`tests/remote.rs`) serve the real `collapse-api` router on
   an ephemeral port and go through it end-to-end.
-- `apps/api/tests/` — drives the app in-process (tower `oneshot`, no sockets)
-  through the full job flow, verifying round-trips by feeding the downloaded
-  bytes back through the core extractors.
+- `apps/api/tests/` — one file per source module (`validate`, `models`,
+  `registry`, `storage`, `error`) plus `api.rs`, which drives the whole app
+  in-process (tower `oneshot`, no sockets) through the full job flow and
+  verifies round-trips by feeding the downloaded bytes back through the core
+  extractors. The building-block modules are `pub` for the same reason core's
+  backends are: the test crate can only see the public surface.
 - `apps/desktop/tests/` — Vitest suite (unit + component tests, Tauri IPC mocked).
 
 The Rust integration tests compile as separate crates, so they only see each

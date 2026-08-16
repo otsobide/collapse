@@ -124,7 +124,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run the full test suite (130 Rust tests + the desktop Vitest suite)
+make test              # run the full test suite (173 Rust tests + the desktop Vitest suite)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
