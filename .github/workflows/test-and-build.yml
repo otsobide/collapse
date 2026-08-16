@@ -113,6 +113,43 @@ jobs:
       - name: Test collapse-server-backend
         run: make server-backend/test
 
+  # The web frontend is Node only: it talks to the backend over HTTP and
+  # mocks that in tests, so it needs no Rust at all.
+  web:
+    name: vitest (server-frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/server-frontend/package-lock.json
+
+      - name: Run Vitest
+        run: make server-frontend/test
+
+  build-web:
+    name: build (server-frontend)
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/server-frontend/package-lock.json
+
+      - name: Build the web frontend
+        run: make server-frontend/build
+
   # Runs only if core passed; parallel with cli. Frontend tests mock the Tauri
   # IPC, so this needs Node only — no Tauri system dependencies.
   vitest:
