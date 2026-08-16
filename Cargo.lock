@@ -322,11 +322,10 @@ dependencies = [
  "clap",
  "collapse-api",
  "collapse-core",
- "serde_json",
+ "collapse-remote",
  "tempfile",
  "thiserror",
  "tokio",
- "ureq",
 ]
 
 [[package]]
@@ -340,6 +339,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "zip",
+]
+
+[[package]]
+name = "collapse-remote"
+version = "0.4.0"
+dependencies = [
+ "collapse-core",
+ "serde_json",
+ "thiserror",
+ "ureq",
 ]
 
 [[package]]

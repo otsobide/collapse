@@ -2,12 +2,6 @@
 //! an archive, on top of `collapse-core` — or, with `--server`, through a
 //! remote collapse-api instance.
 
-mod remote;
-
-// Public so the test crate can exercise the protocol decisions directly; the
-// HTTP plumbing in `remote` stays private.
-pub mod protocol;
-
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -127,8 +121,8 @@ pub enum CliError {
     #[error("directories cannot be compressed on a remote server yet: {}", .0.display())]
     RemoteDirectory(PathBuf),
 
-    #[error("{0}")]
-    Remote(String),
+    #[error(transparent)]
+    Remote(#[from] collapse_remote::RemoteError),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -196,7 +190,8 @@ fn run_compress(
             .into_owned();
         match server.as_deref() {
             Some(server) => {
-                let archive = remote::compress_remote(server, &source, &arcname, algorithm, level)?;
+                let archive =
+                    collapse_remote::compress_file(server, &source, &arcname, algorithm, level)?;
                 std::fs::write(&output, archive)?;
             }
             None => compress(&source, &output, &arcname, algorithm, level)?,

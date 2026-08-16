@@ -1,11 +1,11 @@
 //! Unit tests for the pure remote protocol helpers: URL building, reading
 //! the server's JSON, and the poll loop's decision on each job status.
 
-use collapse_cli::protocol::{base_url, job_id_of, progress_of, rejection_message, Progress};
-use collapse_cli::CliError;
+use collapse_remote::protocol::{base_url, job_id_of, progress_of, rejection_message, Progress};
+use collapse_remote::RemoteError;
 use serde_json::json;
 
-fn message_of(error: CliError) -> String {
+fn message_of(error: RemoteError) -> String {
     error.to_string()
 }
 

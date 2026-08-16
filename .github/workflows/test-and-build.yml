@@ -34,6 +34,33 @@ jobs:
       - name: Test collapse-core
         run: make core/test
 
+  # The remote client sits between core and the front-ends that talk to a
+  # server, so it gates nothing but is tested alongside them.
+  remote:
+    name: remote
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Test collapse-remote
+        run: make remote/test
+
   # Runs only if core passed; parallel with vitest.
   cli:
     name: cli
@@ -133,6 +160,31 @@ jobs:
 
       - name: Build collapse-core
         run: make core/build
+
+  build-remote:
+    name: build (remote)
+    needs: remote
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build collapse-remote
+        run: make remote/build
 
   build-cli:
     name: build (cli)

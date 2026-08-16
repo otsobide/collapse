@@ -1,9 +1,9 @@
 //! The pure half of the remote protocol: URL building, reading the server's
-//! JSON, and the decision the poll loop makes on each job status. Split out
-//! of `remote.rs` (which does the HTTP) so the test crate can exercise it
-//! without a server: source files here carry no inline `mod tests`.
+//! JSON, and the decision the poll loop makes on each job status. Kept apart
+//! from the HTTP plumbing so the test crate can exercise it without a server:
+//! source files here carry no inline `mod tests`.
 
-use crate::CliError;
+use crate::RemoteError;
 
 /// Normalize the user-supplied server URL into a base the endpoints are
 /// joined onto, so `http://host:8000/` does not yield `//compress`.
@@ -12,10 +12,10 @@ pub fn base_url(server: &str) -> &str {
 }
 
 /// The `job_id` out of the 202 body.
-pub fn job_id_of(job: &serde_json::Value) -> Result<&str, CliError> {
+pub fn job_id_of(job: &serde_json::Value) -> Result<&str, RemoteError> {
     job["job_id"]
         .as_str()
-        .ok_or_else(|| CliError::Remote("malformed server response: no job_id".to_string()))
+        .ok_or_else(|| RemoteError::Malformed("malformed server response: no job_id".to_string()))
 }
 
 /// What the client should do after reading a job's status.
@@ -32,8 +32,8 @@ pub enum Progress {
 /// Only the two in-progress states mean "wait". Anything else — an unknown
 /// status, or a body with no status at all — is an error: a server answering
 /// that is not speaking this protocol, and treating it as in-progress would
-/// poll until the user kills the command.
-pub fn progress_of(job: &serde_json::Value) -> Result<Progress, CliError> {
+/// poll until the caller gives up.
+pub fn progress_of(job: &serde_json::Value) -> Result<Progress, RemoteError> {
     match job["status"].as_str() {
         Some("queued") | Some("compressing") => Ok(Progress::Waiting),
         Some("completed") => Ok(Progress::Ready),
@@ -41,18 +41,18 @@ pub fn progress_of(job: &serde_json::Value) -> Result<Progress, CliError> {
             let message = job["error_message"]
                 .as_str()
                 .unwrap_or("compression failed on the server");
-            Err(CliError::Remote(format!("server-side error: {message}")))
+            Err(RemoteError::Failed(message.to_string()))
         }
-        Some(other) => Err(CliError::Remote(format!(
+        Some(other) => Err(RemoteError::Malformed(format!(
             "unexpected job status from the server: {other:?}"
         ))),
-        None => Err(CliError::Remote(
+        None => Err(RemoteError::Malformed(
             "malformed server response: no status".to_string(),
         )),
     }
 }
 
-/// Render an HTTP error response for the user: the server's JSON `detail`
+/// Render an HTTP error response for a human: the server's JSON `detail`
 /// when there is one, else the raw body, else just the status code.
 pub fn rejection_message(code: u16, body: &str) -> String {
     let detail = serde_json::from_str::<serde_json::Value>(body)

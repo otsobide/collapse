@@ -14,12 +14,11 @@ path = "src/lib.rs"
 
 [dependencies]
 collapse-core = { path = "../core" }
+# Remote compression (--server); the exchange itself lives in collapse-remote
+# so the desktop app can reuse it.
+collapse-remote = { path = "../remote" }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
-# Remote compression (--server): ureq posts the bytes, serde_json reads the
-# server's {"detail": ...} error bodies.
-ureq = "2"
-serde_json = "1"
 
 # Integration tests (tests/) drive the real clap parser and verify with core;
 # the remote tests (tests/remote.rs) serve the real collapse-api router

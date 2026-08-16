@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-APPS := core cli api desktop landing
+APPS := core remote cli api desktop landing
 
 # ---------------------------------------------------------------------------
 # Per-app delegation — `make <app>/<target>` runs <target> in apps/<app>/Makefile
@@ -16,13 +16,13 @@ $(foreach app,$(APPS),$(eval $(call APP_DELEGATE,$(app))))
 # Global targets
 # ---------------------------------------------------------------------------
 .PHONY: test
-test: core/test cli/test api/test desktop/test ## Run every test suite
+test: core/test remote/test cli/test api/test desktop/test ## Run every test suite
 
 .PHONY: test/rust
-test/rust: core/test cli/test api/test ## Run only the Rust tests
+test/rust: core/test remote/test cli/test api/test ## Run only the Rust tests
 
 .PHONY: build
-build: core/build cli/build api/build ## Build the Rust crates (debug)
+build: core/build remote/build cli/build api/build ## Build the Rust crates (debug)
 
 .PHONY: fmt
 fmt: ## Format all Rust code

@@ -1,0 +1,16 @@
+[package]
+name = "collapse-remote"
+version = "0.4.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Client for a remote Collapse compression server"
+
+[dependencies]
+collapse-core = { path = "../core" }
+ureq = "2"
+serde_json = "1"
+thiserror = "2"
+
+# Integration tests (tests/) drive the protocol helpers through the public API.
+[dev-dependencies]
+serde_json = "1"
