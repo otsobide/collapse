@@ -161,6 +161,15 @@ it must be exactly one entry, it must be a directory, and its name must match
 the `name` the job was created for. A mismatch fails the job instead of
 compressing whatever happened to arrive.
 
+**Covered by** `apps/api/tests/security.rs`, which posts hostile tars at the
+server itself: `a_traversing_entry_never_escapes_the_staging_area`,
+`an_absolute_entry_never_escapes_the_staging_area`,
+`a_symlink_entry_is_not_materialized`,
+`an_envelope_that_is_not_a_directory_is_refused` and
+`an_empty_envelope_is_refused`. Core's own suite already proves the extractor
+holds; these prove the **server** is wired to it and that a bad envelope fails
+the job rather than producing an archive.
+
 **Choice of envelope.** Tar is used *because it does not compress*. An archive
 that expands could turn a small upload into an unbounded write; a tar cannot,
 so the existing `--max-upload-mb` cap also bounds what reaches the disk. A zip
@@ -225,7 +234,8 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
 
 ## Testing & verification
 
-The extraction and symlink measures above are exercised by
+There are two security suites: `apps/api/tests/security.rs` for what a client
+can send the server (measure 8), and, for the engine itself,
 `apps/core/tests/security.rs` (level validation, measure 7, lives with the
 functional tests in `apps/core/tests/compression.rs`), which
 crafts genuinely malicious archives (smuggling traversal and symlink entries

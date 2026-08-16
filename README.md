@@ -154,7 +154,8 @@ Collapse is at an early stage. Here's exactly what exists today:
   with a destination picker for remote servers.
 - ✅ **API server** (`collapse-api`) — optional remote compression over an
   asynchronous job flow, self-documenting at `/docs`, with a Dockerfile and a
-  compose file. Not shipped in releases yet.
+  compose file, and its own security suite for hostile uploads. Not shipped in
+  releases yet.
 - ✅ **`collapse-remote`** — the client both front-ends use to talk to a server,
   so the exchange is written once.
 
@@ -164,7 +165,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (203 Rust tests + 27 desktop Vitest cases)
+make test              # run every suite (218 Rust tests + 34 desktop Vitest cases)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and

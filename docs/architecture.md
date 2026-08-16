@@ -269,18 +269,29 @@ Each app carries its own tests, in that ecosystem's conventional place:
 - `apps/core/tests/` — Cargo integration tests exercising `collapse-core` through
   its public API (`compress`, `extract`, and the backend functions), including a
   dedicated `security.rs` suite that crafts malicious archives.
-- `apps/remote/tests/` — unit-tests the pure protocol helpers (URL building,
-  response parsing, the poll decision) with no server involved.
+- `apps/remote/tests/` — `protocol.rs` unit-tests the pure helpers (URL
+  building, response parsing, the poll decision) with no server involved;
+  `client.rs` serves a real `collapse-api` in-process to cover what no
+  consumer's own suite reaches, namely the health probe and the mapping of a
+  server rejection.
 - `apps/cli/tests/` — drives the real clap parser and `run` in-process;
   `tests/remote.rs` serves the real `collapse-api` app on an ephemeral port to
   go through remote mode end-to-end.
 - `apps/api/tests/` — one file per source module (`validate`, `models`,
-  `registry`, `storage`, `error`) plus `api.rs`, which drives the whole app
-  in-process (tower `oneshot`, no sockets) through the full job flow and
-  verifies round-trips by feeding the downloaded bytes back through the core
-  extractors. The building-block modules are `pub` for the same reason core's
-  backends are: the test crate can only see the public surface.
-- `apps/desktop/tests/` — Vitest suite (unit + component tests, Tauri IPC mocked).
+  `registry`, `storage`, `error`, `openapi`) plus two cross-cutting suites.
+  `api.rs` drives the whole app in-process (tower `oneshot`, no sockets)
+  through the full job flow and verifies round-trips by feeding the downloaded
+  bytes back through the core extractors. `security.rs` posts hostile tar
+  envelopes and asserts nothing escapes a job's staging directory. The
+  `openapi.rs` suite is there to stop the hand-written document drifting from
+  the server: every documented path must really be routed, every documented
+  enum value accepted, and every documented default the real one. The
+  building-block modules are `pub` for the same reason core's backends are:
+  the test crate can only see the public surface.
+- `apps/desktop/tests/` — Vitest suite (Tauri IPC mocked): `paths` and
+  `sources` cover the pure helpers, including what the app remembers between
+  launches, and `App` mounts the component to check the IPC payloads and the
+  destination picker.
 
 The Rust integration tests compile as separate crates, so they only see each
 crate's **public** surface — anything a test needs must be reachable from
