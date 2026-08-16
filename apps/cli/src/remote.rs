@@ -1,7 +1,8 @@
 //! HTTP client for a remote collapse-api server, following its job flow:
 //! `POST /compress` queues the job (202), the job is polled until it leaves
 //! the in-progress states, the archive is downloaded, and the job is deleted
-//! server-side once the bytes are safely in hand.
+//! server-side once the bytes are safely in hand. The decisions this loop
+//! makes live in [`crate::protocol`]; this module is only the plumbing.
 
 use std::io::Read;
 use std::path::Path;
@@ -9,6 +10,7 @@ use std::time::Duration;
 
 use collapse_core::Algorithm;
 
+use crate::protocol::{self, Progress};
 use crate::CliError;
 
 /// How often the job status is polled while the server compresses.
@@ -22,13 +24,10 @@ pub(crate) fn compress_remote(
     level: u32,
 ) -> Result<Vec<u8>, CliError> {
     let data = std::fs::read(source)?;
-    let base = server.trim_end_matches('/');
+    let base = protocol::base_url(server);
 
     let job = create_job(base, arcname, algorithm, level, &data)?;
-    let job_id = job["job_id"]
-        .as_str()
-        .ok_or_else(|| CliError::Remote("malformed server response: no job_id".to_string()))?
-        .to_string();
+    let job_id = protocol::job_id_of(&job)?.to_string();
 
     wait_for_completion(base, &job_id)?;
     let archive = download(base, &job_id)?;
@@ -57,24 +56,16 @@ fn create_job(
     parse_json(response)
 }
 
-/// Poll `GET /jobs/{id}` until the job is completed (Ok) or failed (Err).
+/// Poll `GET /jobs/{id}` until the job is ready (Ok) or gives up (Err).
 fn wait_for_completion(base: &str, job_id: &str) -> Result<(), CliError> {
     loop {
         let response = ureq::get(&format!("{base}/jobs/{job_id}"))
             .call()
             .map_err(|e| remote_error(base, e))?;
-        let job = parse_json(response)?;
 
-        match job["status"].as_str().unwrap_or("") {
-            "completed" => return Ok(()),
-            "failed" => {
-                let message = job["error_message"]
-                    .as_str()
-                    .unwrap_or("compression failed on the server");
-                return Err(CliError::Remote(format!("server-side error: {message}")));
-            }
-            // queued / compressing: keep waiting.
-            _ => std::thread::sleep(POLL_INTERVAL),
+        match protocol::progress_of(&parse_json(response)?)? {
+            Progress::Ready => return Ok(()),
+            Progress::Waiting => std::thread::sleep(POLL_INTERVAL),
         }
     }
 }
@@ -103,17 +94,7 @@ fn remote_error(server: &str, err: ureq::Error) -> CliError {
     match err {
         ureq::Error::Status(code, response) => {
             let body = response.into_string().unwrap_or_default();
-            let detail = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(String::from))
-                .unwrap_or(body);
-            if detail.is_empty() {
-                CliError::Remote(format!("the server rejected the request (HTTP {code})"))
-            } else {
-                CliError::Remote(format!(
-                    "the server rejected the request (HTTP {code}): {detail}"
-                ))
-            }
+            CliError::Remote(protocol::rejection_message(code, &body))
         }
         other => CliError::Remote(format!("cannot reach the server at {server}: {other}")),
     }

@@ -4,6 +4,10 @@
 
 mod remote;
 
+// Public so the test crate can exercise the protocol decisions directly; the
+// HTTP plumbing in `remote` stays private.
+pub mod protocol;
+
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
