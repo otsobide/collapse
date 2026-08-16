@@ -15,7 +15,8 @@ apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
   remote/      collapse-remote — client for a remote server, shared by the front-ends
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
-  api/         collapse-server-backend  — optional HTTP compression server, lib + bin (src/ + tests/)
+  server-backend/  collapse-server-backend — HTTP compression server, lib + bin (src/ + tests/)
+  server-frontend/ collapse-server-frontend — Vue web app for that server (src/ + tests/ = Vitest)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
@@ -242,6 +243,34 @@ it becomes both the arcname inside the archive and the staging path on disk.
 Uploads beyond the configurable cap get a 413. There is no CORS layer: the
 server targets non-browser clients.
 
+## collapse-server-frontend — the web app
+
+A Vue 3 single-page app for people who will not install anything: the same
+shape as the desktop app (drop a file, pick a format and a level, watch it
+happen, save the archive), except the engine is on the other end of the
+network. It ships in the compose stack next to the backend.
+
+Three things are worth knowing about it:
+
+- **One origin, no CORS.** nginx serves the built app and proxies `/compress`,
+  `/jobs`, `/health` and the documentation paths to the backend, so every
+  request the browser makes is same-origin. That is what lets the backend keep
+  no CORS layer, rather than opening it up the way the reference implementation
+  did. Vite's dev server proxies the same paths, so development matches
+  production.
+- **Folders are tarred in the browser.** HTTP carries no directory, and the
+  backend already unwraps a tar envelope, so `src/tar.js` writes one by hand
+  from a `webkitdirectory` selection. It implements enough ustar to be correct,
+  including the `prefix` field for paths past 100 bytes, and its output is
+  verified against the real Rust extractor.
+- **The job flow is the interface.** A local run can only show a spinner; here
+  every state the worker passes through is listed with the time it took, which
+  is the one thing a server does that a desktop app cannot show.
+
+Extraction is **not** offered: the backend compresses only, so there is nothing
+to call. Adding it would mean a new endpoint and a new answer to what
+"extracting" means when the result is a tree and the client is a browser.
+
 ## collapse-desktop — the desktop app
 
 A **Tauri v2** app: a Vue 3 frontend (`src/App.vue` is the UI; `src/paths.js`
@@ -288,6 +317,10 @@ Each app carries its own tests, in that ecosystem's conventional place:
   enum value accepted, and every documented default the real one. The
   building-block modules are `pub` for the same reason core's backends are:
   the test crate can only see the public surface.
+- `apps/server-frontend/tests/` — Vitest suite: the pure helpers (the tar
+  writer, the formatters, the poll decision) plus a component test that mounts
+  the app with `fetch` stubbed and drives a folder selection, which is the one
+  path a real browser cannot be made to simulate.
 - `apps/desktop/tests/` — Vitest suite (Tauri IPC mocked): `paths` and
   `sources` cover the pure helpers, including what the app remembers between
   launches, and `App` mounts the component to check the IPC payloads and the

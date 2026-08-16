@@ -103,22 +103,29 @@ the archive) with no other tool, and **`/openapi.json`** for the OpenAPI 3.1
 description. Both are built into the binary and load nothing from the network,
 so they work offline.
 
-##### In Docker
+##### In Docker, with a web app
+
+Compose brings up the server **and a web frontend** for it: the same compress
+flow as the desktop app, in a browser, for people who will not install
+anything.
 
 ```bash
-make docker/up        # build and start it, then open http://localhost:8000/docs
+make docker/up        # then http://localhost:8080 for the web app,
+                      # or http://localhost:8000/docs for the API
 make docker/logs      # follow the logs
 make docker/smoke     # build, start, run a real compression through the port, stop
 make docker/down      # stop it (the job volume survives)
 make docker/clean     # remove the container, its volume and the image
 ```
 
-The image is defined in [apps/server-backend/Dockerfile](apps/server-backend/Dockerfile) and the stack
-in [docker-compose.yml](docker-compose.yml); both are built from the repository
-root, since the API depends on `collapse-core` by path. The container runs as a
-non-root user and publishes to **localhost only** by default, matching the
-server's own posture (it has no authentication). Override the port with
-`COLLAPSE_PORT=9000 make docker/up`.
+The images are defined in [apps/server-backend/Dockerfile](apps/server-backend/Dockerfile)
+and [apps/server-frontend/Dockerfile](apps/server-frontend/Dockerfile), the stack
+in [docker-compose.yml](docker-compose.yml); both build from the repository root,
+since the backend depends on `collapse-core` by path. nginx serves the web app
+and proxies the API through it, so the browser stays on one origin and the
+backend needs no CORS layer. Both publish to **localhost only** by default,
+matching the server's own posture (it has no authentication). Override the ports
+with `COLLAPSE_PORT=9000 COLLAPSE_WEB_PORT=9090 make docker/up`.
 
 ### Desktop
 
@@ -156,8 +163,10 @@ Collapse is at an early stage. Here's exactly what exists today:
   asynchronous job flow, self-documenting at `/docs`, with a Dockerfile and a
   compose file, and its own security suite for hostile uploads. Not shipped in
   releases yet.
-- ✅ **`collapse-remote`** — the client both front-ends use to talk to a server,
-  so the exchange is written once.
+- ✅ **Web app** (`collapse-server-frontend`) — a Vue frontend for the server,
+  shipped in the compose stack, so a browser can compress too.
+- ✅ **`collapse-remote`** — the client both native front-ends use to talk to a
+  server, so the exchange is written once.
 
 ## Getting started
 
@@ -165,7 +174,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (218 Rust tests + 34 desktop Vitest cases)
+make test              # run every suite (218 Rust tests + 74 Vitest cases)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
@@ -178,7 +187,8 @@ apps/
   core/        collapse-core — the shared compression engine
   remote/      collapse-remote — client for a remote server, shared by front-ends
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
-  api/         collapse-server-backend  — optional compression server (lib + bin)
+  server-backend/  collapse-server-backend — compression server (lib + bin)
+  server-frontend/ collapse-server-frontend — Vue web app for that server
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
@@ -202,7 +212,7 @@ A root `Makefile` fans out to a `Makefile` in each app. Run `make help` for the
 list; a few common ones:
 
 ```bash
-make test            # run every test suite (core, remote, cli, api, desktop)
+make test            # run every test suite (all seven apps)
 make core/test       # a single app's tests (also remote/test, cli/test, api/test, desktop/test)
 make desktop/dev     # run an app target (here: the Tauri app in dev mode)
 make fmt  make lint  # format / clippy the Rust workspace
