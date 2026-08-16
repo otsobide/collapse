@@ -12,6 +12,7 @@ This document describes what exists today: the `collapse-core` engine, the
 ```
 apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
+  remote/      collapse-remote — client for a remote server, shared by the front-ends
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
   api/         collapse-api  — optional HTTP compression server, lib + bin (src/ + tests/)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
@@ -19,7 +20,7 @@ apps/
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
-`apps/core`, `apps/cli` and `apps/api` are members of the **root Cargo workspace**; each keeps
+`apps/core`, `apps/remote`, `apps/cli` and `apps/api` are members of the **root Cargo workspace**; each keeps
 its Cargo integration tests in its own `tests/` directory (the Rust convention).
 `apps/desktop/src-tauri` is a **separate workspace** (empty `[workspace]` in its
 `Cargo.toml`) so a plain `cargo test` at the root doesn't need the Tauri system
@@ -30,9 +31,9 @@ no Rust at all, outside the Cargo workspace entirely — see
 ## Dependency graph
 
 ```
-collapse-core  ◄──  collapse-cli   ── HTTP (opt-in, --server) ──►  collapse-api
-             ◄──  collapse-desktop (apps/desktop/src-tauri)              │
-             ◄────────────────────────────────────────────────────────────┘
+collapse-core  ◄──  collapse-cli  ──►  collapse-remote ── HTTP (opt-in) ──►  collapse-api
+             ◄──  collapse-desktop (apps/desktop/src-tauri)                       │
+             ◄─────────────────────────────────────────────────────────────────────┘
 ```
 
 Everything flows from `collapse-core`. Interfaces call it directly as a Rust
@@ -141,6 +142,25 @@ Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
 as needed.
 
+## collapse-remote — the client for a remote server
+
+A small crate holding the client side of the server's job flow:
+[`compress_file`] uploads a file's bytes, polls the job until it settles,
+downloads the archive and deletes the job, returning the archive bytes. It is
+the only place that exchange is written.
+
+It exists as its own crate rather than living inside the CLI because more than
+one front-end needs it: the CLI's `--server` flag today, the desktop app next.
+`apps/desktop/src-tauri` is a separate Cargo workspace, but a path dependency
+crosses that boundary fine.
+
+The split inside mirrors the one the rest of the project uses for testability:
+`protocol.rs` is **public and pure** (URL normalization, reading the server's
+JSON, and `progress_of`, which decides whether a status means keep polling,
+download, or give up), while the HTTP plumbing in `client.rs` stays private.
+Errors are a `RemoteError` of its own, so the crate does not depend on any
+front-end's error type; the CLI absorbs it into `CliError`.
+
 ## collapse-api — the compression server
 
 `collapse-api` (`apps/api`) lets a client compress on another machine; it is
@@ -229,11 +249,11 @@ Each app carries its own tests, in that ecosystem's conventional place:
 - `apps/core/tests/` — Cargo integration tests exercising `collapse-core` through
   its public API (`compress`, `extract`, and the backend functions), including a
   dedicated `security.rs` suite that crafts malicious archives.
+- `apps/remote/tests/` — unit-tests the pure protocol helpers (URL building,
+  response parsing, the poll decision) with no server involved.
 - `apps/cli/tests/` — drives the real clap parser and `run` in-process;
-  `tests/protocol.rs` unit-tests the pure remote-protocol helpers (URL
-  building, response parsing, the poll decision), and `tests/remote.rs`
-  serves the real `collapse-api` app on an ephemeral port to go through
-  remote mode end-to-end.
+  `tests/remote.rs` serves the real `collapse-api` app on an ephemeral port to
+  go through remote mode end-to-end.
 - `apps/api/tests/` — one file per source module (`validate`, `models`,
   `registry`, `storage`, `error`) plus `api.rs`, which drives the whole app
   in-process (tower `oneshot`, no sockets) through the full job flow and

@@ -158,6 +158,7 @@ running the apps.
 ```
 apps/
   core/        collapse-core — the shared compression engine
+  remote/      collapse-remote — client for a remote server, shared by front-ends
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
   api/         collapse-api  — optional compression server (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
