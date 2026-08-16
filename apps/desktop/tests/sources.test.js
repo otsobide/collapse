@@ -1,12 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import {
   LOCAL,
   labelFor,
   labelFromUrl,
+  loadDestination,
+  loadSources,
   makeSource,
   normalizeUrl,
   parseSources,
   removeSource,
+  saveDestination,
+  saveSources,
   upsertSource,
   urlFor,
 } from '../src/sources.js'
@@ -106,5 +110,91 @@ describe('parseSources', () => {
 describe('labelFromUrl', () => {
   it('uses the host', () => {
     expect(labelFromUrl('http://box.local:8000')).toBe('box.local:8000')
+  })
+})
+
+// The test environment does not provide localStorage, so the storage helpers
+// are driven against a fake one. That also lets the "storage is unavailable"
+// path be exercised, which is the one a real webview can hit.
+describe('remembering what the user set up', () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+
+  function fakeStorage(initial = {}) {
+    const data = { ...initial }
+    return {
+      getItem: (k) => (k in data ? data[k] : null),
+      setItem: (k, v) => {
+        data[k] = String(v)
+      },
+      data,
+    }
+  }
+
+  function install(storage) {
+    Object.defineProperty(globalThis, 'localStorage', {
+      value: storage,
+      configurable: true,
+      writable: true,
+    })
+  }
+
+  beforeEach(() => install(fakeStorage()))
+  afterEach(() => {
+    if (original) Object.defineProperty(globalThis, 'localStorage', original)
+    else delete globalThis.localStorage
+  })
+
+  it('round-trips the server list', () => {
+    const list = [makeSource('Box', 'box.local:8000')]
+    saveSources(list)
+    expect(loadSources()).toEqual(list)
+  })
+
+  it('starts empty when nothing was ever saved', () => {
+    expect(loadSources()).toEqual([])
+    expect(loadDestination([])).toBe(LOCAL)
+  })
+
+  it('round-trips the chosen destination', () => {
+    const box = makeSource('Box', 'box.local:8000')
+    saveSources([box])
+    saveDestination(box.id)
+    expect(loadDestination([box])).toBe(box.id)
+  })
+
+  /// The rule that matters: a destination pointing at a server that is no
+  /// longer in the list must not survive a restart, or the app would boot
+  /// aimed at a server the user removed.
+  it('forgets a destination whose server is gone', () => {
+    const box = makeSource('Box', 'box.local:8000')
+    saveDestination(box.id)
+    expect(loadDestination([])).toBe(LOCAL)
+    expect(loadDestination([makeSource('Other', 'other.local:8000')])).toBe(LOCAL)
+  })
+
+  it('survives junk left in storage', () => {
+    install(fakeStorage({ 'collapse.sources': 'not json at all' }))
+    expect(loadSources()).toEqual([])
+  })
+
+  /// A webview with storage disabled must degrade to an app that forgets, not
+  /// one that fails to start.
+  it('degrades to forgetting when storage is unavailable', () => {
+    delete globalThis.localStorage
+    expect(loadSources()).toEqual([])
+    expect(loadDestination([])).toBe(LOCAL)
+    expect(() => saveSources([makeSource('Box', 'box.local:8000')])).not.toThrow()
+    expect(() => saveDestination('anything')).not.toThrow()
+  })
+
+  it('survives storage that throws on write', () => {
+    install({
+      getItem: () => null,
+      setItem: () => {
+        throw new Error('quota exceeded')
+      },
+    })
+    expect(() => saveSources([makeSource('Box', 'box.local:8000')])).not.toThrow()
+    expect(() => saveDestination('anything')).not.toThrow()
   })
 })
