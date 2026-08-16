@@ -1,7 +1,9 @@
 //! Unit tests for the pure remote protocol helpers: URL building, reading
 //! the server's JSON, and the poll loop's decision on each job status.
 
-use collapse_remote::protocol::{base_url, job_id_of, progress_of, rejection_message, Progress};
+use collapse_remote::protocol::{
+    base_url, healthy, job_id_of, progress_of, rejection_message, Progress,
+};
 use collapse_remote::RemoteError;
 use serde_json::json;
 
@@ -101,6 +103,28 @@ fn a_body_without_a_status_is_an_error() {
     for job in [json!({ "job_id": "a" }), json!({ "status": 7 }), json!({})] {
         let message = message_of(progress_of(&job).expect_err("should fail"));
         assert!(message.contains("no status"), "got {message:?}");
+    }
+}
+
+// ------------------------------------------------------------ health probe --
+
+#[test]
+fn a_healthy_server_is_accepted() {
+    assert!(healthy(&json!({ "status": "ok" })).is_ok());
+}
+
+/// Something answered, but it is not a Collapse server: worth catching while
+/// the user is still typing the address rather than after an upload.
+#[test]
+fn anything_else_is_not_a_collapse_server() {
+    for body in [
+        json!({ "status": "degraded" }),
+        json!({ "ok": true }),
+        json!({}),
+        json!("ok"),
+    ] {
+        let message = message_of(healthy(&body).expect_err("should be rejected"));
+        assert!(message.contains("does not look like"), "got {message:?}");
     }
 }
 

@@ -52,6 +52,19 @@ pub fn progress_of(job: &serde_json::Value) -> Result<Progress, RemoteError> {
     }
 }
 
+/// Read a `GET /health` body: it must say the server is ok.
+///
+/// Anything else means something answered, but not a Collapse server, which
+/// is worth catching when a user is typing a URL into a settings dialog.
+pub fn healthy(body: &serde_json::Value) -> Result<(), RemoteError> {
+    match body["status"].as_str() {
+        Some("ok") => Ok(()),
+        _ => Err(RemoteError::Malformed(
+            "the address answered but does not look like a Collapse server".to_string(),
+        )),
+    }
+}
+
 /// Render an HTTP error response for a human: the server's JSON `detail`
 /// when there is one, else the raw body, else just the status code.
 pub fn rejection_message(code: u16, body: &str) -> String {

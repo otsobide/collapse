@@ -19,5 +19,5 @@ mod error;
 
 pub mod protocol;
 
-pub use client::compress_path;
+pub use client::{check_health, compress_path};
 pub use error::RemoteError;

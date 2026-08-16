@@ -90,6 +90,19 @@ fn upload_and_collect(
     Ok(archive)
 }
 
+/// Check that a Collapse server is reachable and speaking this protocol.
+///
+/// Used before adding a server to a UI's list, so a typo shows up there
+/// instead of at the end of an upload.
+pub fn check_health(server: &str) -> Result<(), RemoteError> {
+    let base = protocol::base_url(server);
+    let response = ureq::get(&format!("{base}/health"))
+        .call()
+        .map_err(|e| remote_error(base, e))?;
+
+    protocol::healthy(&parse_json(response)?)
+}
+
 /// `POST /compress`: send the bytes, get the queued job back (202).
 fn create_job(
     base: &str,
