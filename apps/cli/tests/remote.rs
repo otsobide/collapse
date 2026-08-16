@@ -1,5 +1,5 @@
 //! Tests for the CLI's remote compression path (`--server`), driven against
-//! the real collapse-api router served in-process on an ephemeral port.
+//! the real collapse-server-backend router served in-process on an ephemeral port.
 
 use clap::Parser;
 use collapse_cli::{run, Cli, CliError, Command, Outcome};
@@ -42,7 +42,7 @@ fn start_server() -> (String, std::path::PathBuf) {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
             let app =
-                collapse_api::build_app(app_storage, collapse_api::DEFAULT_MAX_UPLOAD_MB);
+                collapse_server_backend::build_app(app_storage, collapse_server_backend::DEFAULT_MAX_UPLOAD_MB);
             axum::serve(listener, app).await.unwrap();
         });
     });

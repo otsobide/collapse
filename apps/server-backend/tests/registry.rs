@@ -1,7 +1,7 @@
 //! Unit tests for the in-memory job registry.
 
-use collapse_api::models::{Envelope, Job, JobStatus};
-use collapse_api::registry::Registry;
+use collapse_server_backend::models::{Envelope, Job, JobStatus};
+use collapse_server_backend::registry::Registry;
 use collapse_core::Algorithm;
 
 fn job(id: &str) -> Job {

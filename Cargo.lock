@@ -299,31 +299,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "collapse-api"
-version = "0.4.0"
-dependencies = [
- "axum",
- "clap",
- "collapse-core",
- "http-body-util",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "tokio",
- "tower",
- "uuid",
-]
-
-[[package]]
 name = "collapse-cli"
 version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
- "collapse-api",
  "collapse-core",
  "collapse-remote",
+ "collapse-server-backend",
  "tempfile",
  "thiserror",
  "tokio",
@@ -347,13 +330,30 @@ name = "collapse-remote"
 version = "0.4.0"
 dependencies = [
  "axum",
- "collapse-api",
  "collapse-core",
+ "collapse-server-backend",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
  "ureq",
+]
+
+[[package]]
+name = "collapse-server-backend"
+version = "0.4.0"
+dependencies = [
+ "axum",
+ "clap",
+ "collapse-core",
+ "http-body-util",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tower",
+ "uuid",
 ]
 
 [[package]]

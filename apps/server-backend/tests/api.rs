@@ -1,4 +1,4 @@
-//! Integration tests for the collapse-api app, driven in-process with
+//! Integration tests for the collapse-server-backend app, driven in-process with
 //! tower's `oneshot` — no sockets. The full job flow is exercised: upload →
 //! 202, poll the status, download the archive (verified by feeding the bytes
 //! back through the core extractors), delete the job.
@@ -10,7 +10,7 @@ use axum::Router;
 use http_body_util::BodyExt;
 use tower::util::ServiceExt;
 
-use collapse_api::{build_app, DEFAULT_MAX_UPLOAD_MB};
+use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 /// Build the app over its own staging dir; keep the TempDir alive with it.
 fn app() -> (Router, tempfile::TempDir) {

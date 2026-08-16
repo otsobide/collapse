@@ -7,7 +7,7 @@ interface using the cervantic palette (warm cream + terracotta, monospace).
 
 It runs on **macOS, Windows and Linux** from one codebase.
 
-Compression can also be handed to a remote `collapse-api` instance: the
+Compression can also be handed to a remote `collapse-server-backend` instance: the
 compress options carry a **destination picker**, defaulting to this computer,
 and the gear in the header opens a panel to add, test and remove servers. The
 list is remembered between launches. The HTTP happens in Rust through

@@ -14,12 +14,12 @@ thiserror = "2"
 tempfile = "3"
 
 # Integration tests (tests/) drive the protocol helpers through the public
-# API, and tests/client.rs serves a real collapse-api in-process to cover the
+# API, and tests/client.rs serves a real collapse-server-backend in-process to cover the
 # paths no consumer's own suite reaches (the health probe, the rejection
-# mapping). collapse-api does not depend on this crate, so there is no cycle.
+# mapping). collapse-server-backend does not depend on this crate, so there is no cycle.
 [dev-dependencies]
 serde_json = "1"
-collapse-api = { path = "../api" }
+collapse-server-backend = { path = "../server-backend" }
 collapse-core = { path = "../core" }
 tokio = { version = "1", features = ["rt", "net"] }
 axum = "0.8"

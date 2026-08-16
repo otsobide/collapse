@@ -1,6 +1,6 @@
 //! Unit tests for the job model, including the JSON shape clients parse.
 
-use collapse_api::models::{Envelope, Job, JobStatus};
+use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_core::Algorithm;
 
 fn job(name: &str, algorithm: Algorithm) -> Job {

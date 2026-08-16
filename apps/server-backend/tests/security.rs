@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 use tar::{Builder, Header};
 use tower::util::ServiceExt;
 
-use collapse_api::{build_app, DEFAULT_MAX_UPLOAD_MB};
+use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();

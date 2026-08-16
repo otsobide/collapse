@@ -4,7 +4,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
 
-use collapse_api::error::ApiError;
+use collapse_server_backend::error::ApiError;
 
 async fn detail_of(response: Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();

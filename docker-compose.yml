@@ -1,4 +1,4 @@
-# Bring up collapse-api locally:
+# Bring up collapse-server-backend locally:
 #
 #   make docker/up      then open http://localhost:8000/docs
 #
@@ -12,12 +12,12 @@ name: collapse
 services:
   api:
     build:
-      # The context is the repository root: collapse-api depends on
+      # The context is the repository root: collapse-server-backend depends on
       # collapse-core through a path dependency.
       context: .
-      dockerfile: apps/api/Dockerfile
-    image: collapse-api:dev
-    container_name: collapse-api
+      dockerfile: apps/server-backend/Dockerfile
+    image: collapse-server-backend:dev
+    container_name: collapse-server-backend
 
     # Appended to the image's ENTRYPOINT, which already pins --host 0.0.0.0.
     command:

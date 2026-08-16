@@ -1,5 +1,5 @@
-# The Docker build context is the repository root (collapse-api depends on
-# collapse-core by path), so everything the API does not need is excluded here.
+# The Docker build context is the repository root (the backend depends on
+# collapse-core by path), so everything it does not need is excluded here.
 # Keep this honest: dropping something cargo reads turns into a build failure,
 # not a smaller image.
 
@@ -27,5 +27,5 @@ docker-compose.yml
 
 # Note what deliberately stays: Cargo.toml, Cargo.lock, apps/core, apps/cli
 # (a workspace member, so its manifest and the source files its manifest
-# declares must exist) and apps/api including apps/api/assets, which is
+# declares must exist) and apps/server-backend including its assets/, which are
 # embedded into the binary with include_str! at compile time.

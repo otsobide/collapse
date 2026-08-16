@@ -3,11 +3,11 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use collapse_api::{build_app, DEFAULT_MAX_UPLOAD_MB};
+use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 /// Collapse compression API server.
 #[derive(Parser)]
-#[command(name = "collapse-api", version, about)]
+#[command(name = "collapse-server-backend", version, about)]
 struct Cli {
     /// Host address to bind to.
     #[arg(long, default_value = "127.0.0.1")]
@@ -49,7 +49,7 @@ async fn main() {
         .await
         .expect("Failed to bind");
 
-    println!("collapse-api listening on {addr}");
+    println!("collapse-server-backend listening on {addr}");
 
     axum::serve(listener, build_app(storage_dir, cli.max_upload_mb))
         .await

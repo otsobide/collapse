@@ -6,13 +6,13 @@
 # It fails loudly on the first problem, so it is a real check rather than a
 # "container started" formality.
 #
-# Usage: apps/api/smoke.sh [port] [image]
+# Usage: apps/server-backend/smoke.sh [port] [image]
 
 set -euo pipefail
 
 PORT="${1:-8000}"
-IMAGE="${2:-collapse-api:dev}"
-NAME="collapse-api-smoke-$$"
+IMAGE="${2:-collapse-server-backend:dev}"
+NAME="collapse-server-backend-smoke-$$"
 BASE="http://127.0.0.1:${PORT}"
 WORK="$(mktemp -d)"
 
@@ -26,7 +26,7 @@ step() { printf '\n\033[36m==> %s\033[0m\n' "$1"; }
 fail() { printf '\033[31mFAIL: %s\033[0m\n' "$1" >&2; exit 1; }
 
 step "Building $IMAGE"
-docker build -f apps/api/Dockerfile -t "$IMAGE" .
+docker build -f apps/server-backend/Dockerfile -t "$IMAGE" .
 
 step "Starting a container on port $PORT"
 docker run -d --rm --name "$NAME" -p "127.0.0.1:${PORT}:8000" "$IMAGE" > /dev/null

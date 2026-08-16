@@ -235,7 +235,7 @@ onUnmounted(() => {
             <button class="ghost small" @click="showSources = false">Done</button>
           </div>
           <p class="sheet-hint">
-            Compress on another machine running <code>collapse-api</code>. Files and folders
+            Compress on another machine running <code>collapse-server-backend</code>. Files and folders
             are sent over the network, so only add servers you trust.
           </p>
 

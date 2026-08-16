@@ -1,6 +1,6 @@
 //! Command-line interface for Collapse: compress a file or folder, or extract
 //! an archive, on top of `collapse-core` — or, with `--server`, through a
-//! remote collapse-api instance.
+//! remote collapse-server-backend instance.
 
 use std::path::{Path, PathBuf};
 

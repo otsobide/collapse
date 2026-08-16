@@ -1,4 +1,4 @@
-//! Client for a remote Collapse compression server (`collapse-api`).
+//! Client for a remote Collapse compression server (`collapse-server-backend`).
 //!
 //! The server compresses asynchronously: uploading answers `202 Accepted` with
 //! a job, the job is polled until it settles, the archive is downloaded and the

@@ -88,8 +88,8 @@ jobs:
         run: make cli/test
 
   # Runs only if core passed; parallel with cli and vitest.
-  api:
-    name: api
+  server-backend:
+    name: server-backend
     needs: core
     runs-on: ubuntu-latest
     steps:
@@ -110,8 +110,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Test collapse-api
-        run: make api/test
+      - name: Test collapse-server-backend
+        run: make server-backend/test
 
   # Runs only if core passed; parallel with cli. Frontend tests mock the Tauri
   # IPC, so this needs Node only — no Tauri system dependencies.
@@ -211,9 +211,9 @@ jobs:
       - name: Build collapse-cli
         run: make cli/build
 
-  build-api:
-    name: build (api)
-    needs: api
+  build-server-backend:
+    name: build (server-backend)
+    needs: server-backend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -233,8 +233,8 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build collapse-api
-        run: make api/build
+      - name: Build collapse-server-backend
+        run: make server-backend/build
 
   # Compiles the whole desktop app (frontend + the src-tauri Rust crate,
   # which no other CI job compiles) without bundling installers. Needs the

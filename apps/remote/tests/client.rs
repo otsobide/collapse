@@ -1,4 +1,4 @@
-//! Tests for the HTTP client, against a real collapse-api served in-process.
+//! Tests for the HTTP client, against a real collapse-server-backend served in-process.
 //!
 //! These deliberately do NOT re-do the round trips that `apps/cli/tests/remote.rs`
 //! already drives through a consumer. They cover what no consumer's suite can
@@ -30,12 +30,12 @@ fn serve(build: impl FnOnce() -> axum::Router + Send + 'static) -> String {
     format!("http://{}", rx.recv().unwrap())
 }
 
-/// A real collapse-api, with its own staging directory.
+/// A real collapse-server-backend, with its own staging directory.
 fn collapse_server() -> String {
     let storage = tempfile::TempDir::new().unwrap();
     let path = storage.path().to_path_buf();
     std::mem::forget(storage); // the server outlives the test that started it
-    serve(move || collapse_api::build_app(path, collapse_api::DEFAULT_MAX_UPLOAD_MB))
+    serve(move || collapse_server_backend::build_app(path, collapse_server_backend::DEFAULT_MAX_UPLOAD_MB))
 }
 
 // A port from the unassigned range: nothing listens there.

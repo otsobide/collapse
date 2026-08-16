@@ -1,6 +1,6 @@
 //! Unit tests for the pure input validators.
 
-use collapse_api::validate::{header_safe, is_bare_file_name};
+use collapse_server_backend::validate::{header_safe, is_bare_file_name};
 
 // ------------------------------------------------------------ bare names --
 

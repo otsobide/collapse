@@ -1,6 +1,6 @@
 //! Unit tests for the per-job on-disk staging.
 
-use collapse_api::storage::{single_root_dir, Storage};
+use collapse_server_backend::storage::{single_root_dir, Storage};
 use collapse_core::Algorithm;
 
 fn storage() -> (Storage, tempfile::TempDir) {

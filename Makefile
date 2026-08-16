@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-APPS := core remote cli api desktop landing
+APPS := core remote cli server-backend desktop landing
 
 # ---------------------------------------------------------------------------
 # Per-app delegation — `make <app>/<target>` runs <target> in apps/<app>/Makefile
@@ -16,13 +16,13 @@ $(foreach app,$(APPS),$(eval $(call APP_DELEGATE,$(app))))
 # Global targets
 # ---------------------------------------------------------------------------
 .PHONY: test
-test: core/test remote/test cli/test api/test desktop/test ## Run every test suite
+test: core/test remote/test cli/test server-backend/test desktop/test ## Run every test suite
 
 .PHONY: test/rust
-test/rust: core/test remote/test cli/test api/test ## Run only the Rust tests
+test/rust: core/test remote/test cli/test server-backend/test ## Run only the Rust tests
 
 .PHONY: build
-build: core/build remote/build cli/build api/build ## Build the Rust crates (debug)
+build: core/build remote/build cli/build server-backend/build ## Build the Rust crates (debug)
 
 .PHONY: fmt
 fmt: ## Format all Rust code
@@ -37,24 +37,24 @@ clean: ## Remove Rust build artifacts (per-app: `make desktop/clean`)
 	cargo clean
 
 # ---------------------------------------------------------------------------
-# Docker — collapse-api in a container (see docker-compose.yml)
+# Docker — collapse-server-backend in a container (see docker-compose.yml)
 #
 # "docker" is not in APPS, so these do not collide with the <app>/<target>
 # pattern rules above. Override the port or the image name inline, e.g.
 # `COLLAPSE_PORT=9000 make docker/up`.
 # ---------------------------------------------------------------------------
 COLLAPSE_PORT ?= 8000
-IMAGE ?= collapse-api:dev
+IMAGE ?= collapse-server-backend:dev
 COMPOSE ?= docker compose
 
 .PHONY: docker/build
-docker/build: ## Build the collapse-api image
-	docker build -f apps/api/Dockerfile -t $(IMAGE) .
+docker/build: ## Build the collapse-server-backend image
+	docker build -f apps/server-backend/Dockerfile -t $(IMAGE) .
 
 .PHONY: docker/up
 docker/up: ## Start the API in the background and print its docs URL
 	COLLAPSE_PORT=$(COLLAPSE_PORT) $(COMPOSE) up -d --build
-	@echo "collapse-api is up — docs at http://localhost:$(COLLAPSE_PORT)/docs"
+	@echo "collapse-server-backend is up — docs at http://localhost:$(COLLAPSE_PORT)/docs"
 
 .PHONY: docker/down
 docker/down: ## Stop the API and remove its container
@@ -74,7 +74,7 @@ docker/run: docker/build ## Run a throwaway container — ARGS="--max-upload-mb 
 
 .PHONY: docker/smoke
 docker/smoke: ## Build, start, drive a real compression through the published port, stop
-	@apps/api/smoke.sh $(COLLAPSE_PORT) $(IMAGE)
+	@apps/server-backend/smoke.sh $(COLLAPSE_PORT) $(IMAGE)
 
 .PHONY: docker/clean
 docker/clean: ## Remove the API container, its volume and the image

@@ -9,7 +9,7 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
 
 > **MVP scope.** Collapse is being built incrementally. The release artifacts
 > are two front-ends — a **CLI** and a **desktop app** — both powered by the
-> `collapse-core` library. The repo also carries **`collapse-api`**, an optional
+> `collapse-core` library. The repo also carries **`collapse-server-backend`**, an optional
 > compression server that either front-end can offload work to, and
 > **`collapse-remote`**, the client they share to talk to it. The server is not
 > shipped in releases yet. A web UI is out of scope for now.
@@ -82,7 +82,7 @@ cargo build -p collapse-cli --release      # binary at target/release/collapse
 
 #### Remote compression
 
-Compression can be offloaded to a remote Collapse server: run `collapse-api`
+Compression can be offloaded to a remote Collapse server: run `collapse-server-backend`
 somewhere and point the CLI at it with `--server`. The bytes are sent over,
 compressed there, and the archive is written locally, with the same defaults
 and safety guards as local mode; under the hood the CLI follows the server's
@@ -92,7 +92,7 @@ unpacks, which keeps the actual compression on the far side. Extraction stays
 local.
 
 ```bash
-cargo run -p collapse-api -- --host 0.0.0.0 --port 8000    # on the server
+cargo run -p collapse-server-backend -- --host 0.0.0.0 --port 8000    # on the server
 collapse compress notes.txt -f 7z --server http://myserver:8000
 collapse compress photos/  -f 7z --server http://myserver:8000
 ```
@@ -113,7 +113,7 @@ make docker/down      # stop it (the job volume survives)
 make docker/clean     # remove the container, its volume and the image
 ```
 
-The image is defined in [apps/api/Dockerfile](apps/api/Dockerfile) and the stack
+The image is defined in [apps/server-backend/Dockerfile](apps/server-backend/Dockerfile) and the stack
 in [docker-compose.yml](docker-compose.yml); both are built from the repository
 root, since the API depends on `collapse-core` by path. The container runs as a
 non-root user and publishes to **localhost only** by default, matching the
@@ -125,7 +125,7 @@ server's own posture (it has no authentication). Override the port with
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
 CLI: drag in a file or folder to compress, or an archive to extract, in a calm
 interface using the cervantic palette. Compression can also be sent to a remote
-`collapse-api` server: the compress options carry a destination picker (this
+`collapse-server-backend` server: the compress options carry a destination picker (this
 computer by default) and the header gear manages the list of servers.
 
 Every release ships an unsigned
@@ -152,7 +152,7 @@ Collapse is at an early stage. Here's exactly what exists today:
   or on a remote server with `--server`.
 - ✅ **Desktop app** — Tauri v2 (macOS / Windows / Linux), compress & extract,
   with a destination picker for remote servers.
-- ✅ **API server** (`collapse-api`) — optional remote compression over an
+- ✅ **API server** (`collapse-server-backend`) — optional remote compression over an
   asynchronous job flow, self-documenting at `/docs`, with a Dockerfile and a
   compose file, and its own security suite for hostile uploads. Not shipped in
   releases yet.
@@ -178,7 +178,7 @@ apps/
   core/        collapse-core — the shared compression engine
   remote/      collapse-remote — client for a remote server, shared by front-ends
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
-  api/         collapse-api  — optional compression server (lib + bin)
+  api/         collapse-server-backend  — optional compression server (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md

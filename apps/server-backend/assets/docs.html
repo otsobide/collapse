@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>collapse-api</title>
+<title>collapse-server-backend</title>
 <style>
 /* ---------------------------------------------------------------------------
-   collapse-api documentation. Self-contained on purpose: no fonts, scripts or
+   collapse-server-backend documentation. Self-contained on purpose: no fonts, scripts or
    stylesheets from anywhere but this file, so the page works air-gapped.
    Palette taken from the desktop app (apps/desktop/src/App.vue).
 --------------------------------------------------------------------------- */
@@ -523,7 +523,7 @@ details[open].about > summary { border-bottom: 1px solid var(--border); }
 <header class="top">
   <div class="wrap">
     <div class="top-row">
-      <h1>collapse-api</h1>
+      <h1>collapse-server-backend</h1>
       <span class="version" id="spec-version">loading</span>
       <span class="top-meta" id="origin-note"></span>
     </div>
@@ -1907,14 +1907,14 @@ details[open].about > summary { border-bottom: 1px solid var(--border); }
 
   function renderHeader(info) {
     byId('spec-version').textContent = info.version ? 'v' + info.version : 'no version';
-    document.title = 'collapse-api' + (info.version ? ' ' + info.version : '');
+    document.title = 'collapse-server-backend' + (info.version ? ' ' + info.version : '');
     byId('spec-tagline').textContent = info.summary
       || (info.description ? info.description.split('\n')[0] : '');
 
     var originLabel = (location.origin && location.origin !== 'null')
       ? location.origin : location.href;
     var meta = clear(byId('origin-note'));
-    if (info.title && info.title !== 'collapse-api') {
+    if (info.title && info.title !== 'collapse-server-backend') {
       meta.appendChild(el('span', { text: info.title }));
     }
     if (info.license && info.license.name) {

@@ -21,11 +21,11 @@ clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 
 # Integration tests (tests/) drive the real clap parser and verify with core;
-# the remote tests (tests/remote.rs) serve the real collapse-api router
+# the remote tests (tests/remote.rs) serve the real collapse-server-backend router
 # in-process on an ephemeral port.
 [dev-dependencies]
 collapse-core = { path = "../core" }
-collapse-api = { path = "../api" }
+collapse-server-backend = { path = "../server-backend" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "net"] }

@@ -5,7 +5,7 @@ with thin interfaces on top. Everything lives under `apps/`, each app carrying
 its own tests in that ecosystem's conventional place.
 
 This document describes what exists today: the `collapse-core` engine, the
-`collapse` CLI, the `collapse-api` server and the `collapse-remote` client that
+`collapse` CLI, the `collapse-server-backend` server and the `collapse-remote` client that
 lets a front-end offload work to it, and the Tauri desktop app.
 
 ## Workspace layout
@@ -15,13 +15,13 @@ apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
   remote/      collapse-remote — client for a remote server, shared by the front-ends
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
-  api/         collapse-api  — optional HTTP compression server, lib + bin (src/ + tests/)
+  api/         collapse-server-backend  — optional HTTP compression server, lib + bin (src/ + tests/)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
-`apps/core`, `apps/remote`, `apps/cli` and `apps/api` are members of the **root Cargo workspace**; each keeps
+`apps/core`, `apps/remote`, `apps/cli` and `apps/server-backend` are members of the **root Cargo workspace**; each keeps
 its Cargo integration tests in its own `tests/` directory (the Rust convention).
 `apps/desktop/src-tauri` is a **separate workspace** (empty `[workspace]` in its
 `Cargo.toml`) so a plain `cargo test` at the root doesn't need the Tauri system
@@ -32,7 +32,7 @@ no Rust at all, outside the Cargo workspace entirely — see
 ## Dependency graph
 
 ```
-collapse-core  ◄──  collapse-cli  ──►  collapse-remote ── HTTP (opt-in) ──►  collapse-api
+collapse-core  ◄──  collapse-cli  ──►  collapse-remote ── HTTP (opt-in) ──►  collapse-server-backend
              ◄──  collapse-desktop (apps/desktop/src-tauri)                       │
              ◄─────────────────────────────────────────────────────────────────────┘
 ```
@@ -43,7 +43,7 @@ the engine. New interfaces depend on `collapse-core`; they never reach into each
 other.
 
 The one networked path is **opt-in and shared**: both front-ends can hand a
-compression to a `collapse-api` instance, and both do it through the same
+compression to a `collapse-server-backend` instance, and both do it through the same
 `collapse-remote` crate rather than each growing its own client. The server
 calls the very same engine on its side, so a remote archive is byte-for-byte
 what a local run would have produced (a test asserts exactly that). Extraction
@@ -137,7 +137,7 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
    - reject a source that is neither a regular file nor a directory (e.g. a FIFO).
 5. Dispatch to `compress_dir` (directory) or `compress` (file). With
    `--server <URL>`, the source is instead compressed by a remote
-   [`collapse-api`](#collapse-api--the-compression-server) through
+   [`collapse-server-backend`](#collapse-server-backend--the-compression-server) through
    [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server), which
    handles files and directories alike; the archive lands at the same output
    path local mode would use. The safety guards in step 4 run before any
@@ -173,9 +173,9 @@ download, or give up), while the HTTP plumbing in `client.rs` stays private.
 Errors are a `RemoteError` of its own, so the crate does not depend on any
 front-end's error type; the CLI absorbs it into `CliError`.
 
-## collapse-api — the compression server
+## collapse-server-backend — the compression server
 
-`collapse-api` (`apps/api`) lets a client compress on another machine; it is
+`collapse-server-backend` (`apps/server-backend`) lets a client compress on another machine; it is
 what the CLI's `--server` flag talks to, and it is compression-only
 (extraction stays client-side). The flow is **asynchronous, job-based**,
 following the reference implementation's process: uploading answers
@@ -194,7 +194,7 @@ end-to-end tests, drive in-process; `main.rs` only parses `--host` / `--port`
 default, and the default staging dir is a temporary directory removed when
 the server stops.
 
-It also ships a container image (`apps/api/Dockerfile`, plus the root
+It also ships a container image (`apps/server-backend/Dockerfile`, plus the root
 `docker-compose.yml` and the `make docker/*` targets). Two details there are
 load-bearing: the build context is the **repository root**, because the crate
 depends on `collapse-core` through a path dependency and cargo needs every
@@ -211,7 +211,7 @@ The surface:
   pulls Swagger UI from a CDN, the page is embedded in the binary with
   `include_str!` and loads **nothing** from the network, so it works on an
   offline or air-gapped host. A test asserts that invariant.
-- `GET /openapi.json` — the OpenAPI 3.1 document (`apps/api/assets/openapi.json`,
+- `GET /openapi.json` — the OpenAPI 3.1 document (`apps/server-backend/assets/openapi.json`,
   hand-written; `info.version` is substituted from `CARGO_PKG_VERSION` so it
   cannot drift from the crate). Point Swagger UI, Postman or a client
   generator at it if you prefer.
@@ -271,13 +271,13 @@ Each app carries its own tests, in that ecosystem's conventional place:
   dedicated `security.rs` suite that crafts malicious archives.
 - `apps/remote/tests/` — `protocol.rs` unit-tests the pure helpers (URL
   building, response parsing, the poll decision) with no server involved;
-  `client.rs` serves a real `collapse-api` in-process to cover what no
+  `client.rs` serves a real `collapse-server-backend` in-process to cover what no
   consumer's own suite reaches, namely the health probe and the mapping of a
   server rejection.
 - `apps/cli/tests/` — drives the real clap parser and `run` in-process;
-  `tests/remote.rs` serves the real `collapse-api` app on an ephemeral port to
+  `tests/remote.rs` serves the real `collapse-server-backend` app on an ephemeral port to
   go through remote mode end-to-end.
-- `apps/api/tests/` — one file per source module (`validate`, `models`,
+- `apps/server-backend/tests/` — one file per source module (`validate`, `models`,
   `registry`, `storage`, `error`, `openapi`) plus two cross-cutting suites.
   `api.rs` drives the whole app in-process (tower `oneshot`, no sockets)
   through the full job flow and verifies round-trips by feeding the downloaded

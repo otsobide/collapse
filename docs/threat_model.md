@@ -15,7 +15,7 @@ lower-risk (you own the input tree), but it must not silently pull data from
 **outside** that tree into the archive.
 
 That framing assumes the machine doing the work owns its input, which is true
-of the CLI and the desktop app. It is **not** true of `collapse-api`, which
+of the CLI and the desktop app. It is **not** true of `collapse-server-backend`, which
 compresses what a client sends and, for directory uploads, extracts it first:
 see [The API server](#the-api-server).
 
@@ -138,7 +138,7 @@ backends are only ever reached with a validated level.
 
 ## The API server
 
-`collapse-api` (and therefore the CLI's `--server`, and any front-end that
+`collapse-server-backend` (and therefore the CLI's `--server`, and any front-end that
 uses `collapse-remote`) moves the trust boundary: the server acts on bytes
 someone else sent it.
 
@@ -161,7 +161,7 @@ it must be exactly one entry, it must be a directory, and its name must match
 the `name` the job was created for. A mismatch fails the job instead of
 compressing whatever happened to arrive.
 
-**Covered by** `apps/api/tests/security.rs`, which posts hostile tars at the
+**Covered by** `apps/server-backend/tests/security.rs`, which posts hostile tars at the
 server itself: `a_traversing_entry_never_escapes_the_staging_area`,
 `an_absolute_entry_never_escapes_the_staging_area`,
 `a_symlink_entry_is_not_materialized`,
@@ -234,7 +234,7 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
 
 ## Testing & verification
 
-There are two security suites: `apps/api/tests/security.rs` for what a client
+There are two security suites: `apps/server-backend/tests/security.rs` for what a client
 can send the server (measure 8), and, for the engine itself,
 `apps/core/tests/security.rs` (level validation, measure 7, lives with the
 functional tests in `apps/core/tests/compression.rs`), which

@@ -11,7 +11,7 @@ use axum::Router;
 use http_body_util::BodyExt;
 use tower::util::ServiceExt;
 
-use collapse_api::{build_app, DEFAULT_MAX_UPLOAD_MB};
+use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
@@ -76,7 +76,7 @@ async fn the_docs_page_is_served_as_html() {
 /// network: the invariant a well-meaning edit is most likely to break.
 #[test]
 fn the_docs_page_has_no_external_dependencies() {
-    let html = collapse_api::openapi::DOCS_HTML;
+    let html = collapse_server_backend::openapi::DOCS_HTML;
     for marker in ["http://", "https://", "//cdn", "unpkg", "jsdelivr", "fonts.googleapis"] {
         assert!(
             !html.contains(marker),
