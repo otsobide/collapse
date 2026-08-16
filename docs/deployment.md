@@ -1,7 +1,9 @@
 # Deployment
 
 This covers how the **landing page** (`apps/landing`, a Nuxt static site) is
-built and published. Distribution of the apps themselves — the CLI tarballs and
+built and published. The web app that ships with the compression server is a
+different thing entirely, deployed as a container next to the backend: see
+[server.md](server.md). Distribution of the apps themselves — the CLI tarballs and
 the desktop `.dmg` that `release.yml` attaches to each GitHub release — is a
 separate topic: see [git_flow.md](git_flow.md#releasing) for the release
 pipeline and [desktop.md](desktop.md) for the desktop bundle specifics.

@@ -202,6 +202,7 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 
 - [Architecture](docs/architecture.md) — the engine, the CLI, the server, the desktop app, and how they fit together.
 - [Security](docs/threat_model.md) — threat model, measures, and the attacks they prevent.
+- [Server](docs/server.md) — running the compression server and its web app.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
 - [Deployment](docs/deployment.md) — how the landing site is built and published.
 - [Git flow](docs/git_flow.md) — branching model (including deploy branches) and commits.

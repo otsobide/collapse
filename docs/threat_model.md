@@ -184,6 +184,11 @@ Stated plainly, because deploying it assumes these:
   submit jobs, and jobs consume CPU, memory and disk. Bind it to localhost (the
   default, and what the container image publishes) or put it behind something
   that authenticates.
+- **The web frontend proxies the API, so its port exposes the API too.** nginx
+  forwards `/compress` and `/jobs` to the backend, which is what keeps the
+  browser same-origin; the consequence is that publishing the web port to a
+  network publishes the whole unauthenticated API to it as well. Both default
+  to localhost for this reason. See [server.md](server.md#exposure).
 - **No transport security.** The server speaks plain HTTP, so uploaded content
   and downloaded archives travel in the clear. Do not send anything sensitive
   across a network you do not trust; terminate TLS in front of it if you must.

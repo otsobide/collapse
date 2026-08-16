@@ -19,7 +19,7 @@ apps/
   server-frontend/ collapse-server-frontend — Vue web app for that server (src/ + tests/ = Vitest)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
-docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
+docs/          architecture.md, threat_model.md, server.md, desktop.md, deployment.md, git_flow.md
 ```
 
 `apps/core`, `apps/remote`, `apps/cli` and `apps/server-backend` are members of the **root Cargo workspace**; each keeps
