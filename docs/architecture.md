@@ -210,9 +210,11 @@ Each app carries its own tests, in that ecosystem's conventional place:
 - `apps/core/tests/` — Cargo integration tests exercising `collapse-core` through
   its public API (`compress`, `extract`, and the backend functions), including a
   dedicated `security.rs` suite that crafts malicious archives.
-- `apps/cli/tests/` — drives the real clap parser and `run` in-process; the
-  remote-mode tests (`tests/remote.rs`) serve the real `collapse-api` router on
-  an ephemeral port and go through it end-to-end.
+- `apps/cli/tests/` — drives the real clap parser and `run` in-process;
+  `tests/protocol.rs` unit-tests the pure remote-protocol helpers (URL
+  building, response parsing, the poll decision), and `tests/remote.rs`
+  serves the real `collapse-api` app on an ephemeral port to go through
+  remote mode end-to-end.
 - `apps/api/tests/` — one file per source module (`validate`, `models`,
   `registry`, `storage`, `error`) plus `api.rs`, which drives the whole app
   in-process (tower `oneshot`, no sockets) through the full job flow and
