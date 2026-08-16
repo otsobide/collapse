@@ -9,13 +9,17 @@
 //! deleted afterwards. Jobs are staged on disk under a per-job directory and
 //! tracked in memory (nothing survives a restart).
 
-mod error;
-mod models;
-mod queue;
-mod registry;
-mod routes;
-mod storage;
+// The building blocks are public because the integration tests are a separate
+// crate and source files here carry no inline `mod tests`; only the wiring
+// (handlers and the worker) stays private.
+pub mod error;
+pub mod models;
+pub mod registry;
+pub mod storage;
 pub mod validate;
+
+mod queue;
+mod routes;
 
 use std::path::PathBuf;
 use std::sync::Arc;

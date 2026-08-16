@@ -4,7 +4,7 @@ use serde::Serialize;
 /// Lifecycle states of a compression job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub(crate) enum JobStatus {
+pub enum JobStatus {
     Queued,
     Compressing,
     Completed,
@@ -14,7 +14,7 @@ pub(crate) enum JobStatus {
 /// One compression job tracked by the in-memory registry. Serialized as-is
 /// in the 202 response and by the status endpoint.
 #[derive(Debug, Clone, Serialize)]
-pub(crate) struct Job {
+pub struct Job {
     pub job_id: String,
     /// Original file name; also the arcname inside the archive.
     pub name: String,
@@ -27,7 +27,7 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    pub(crate) fn new(job_id: String, name: String, algorithm: Algorithm, level: u32) -> Self {
+    pub fn new(job_id: String, name: String, algorithm: Algorithm, level: u32) -> Self {
         let archive_name = format!("{name}.{}", algorithm.extension());
         Self {
             job_id,
