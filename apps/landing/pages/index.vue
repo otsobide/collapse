@@ -53,7 +53,7 @@ const systems = computed(() => [
 ])
 
 const features = computed(() =>
-  ['folders', 'formats', 'both', 'safe'].map((key) => ({
+  ['folders', 'formats', 'both', 'modes', 'interfaces', 'safe'].map((key) => ({
     key,
     title: t(`features.items.${key}.title`),
     body: t(`features.items.${key}.body`),
