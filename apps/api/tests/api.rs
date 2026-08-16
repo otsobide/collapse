@@ -199,6 +199,24 @@ async fn compress_accepts_empty_body() {
     assert_eq!(extracted, vec![("empty.txt".to_string(), Vec::new())]);
 }
 
+/// A file whose name matches the archive's own file name must still
+/// round-trip: the upload is staged apart from the output path, so the
+/// backends that create the output before reading the source cannot truncate
+/// their own input.
+#[tokio::test]
+async fn compress_a_file_named_like_the_archive() {
+    let (router, _storage) = app();
+    let content = b"not clobbered by its own output";
+    let response =
+        compress_and_download(&router, "name=archive.zip&algorithm=zip", content).await;
+
+    let extracted = extract_archive(&body_bytes(response).await, "zip");
+    assert_eq!(
+        extracted,
+        vec![("archive.zip".to_string(), content.to_vec())]
+    );
+}
+
 #[tokio::test]
 async fn download_can_be_repeated_until_deleted() {
     let (router, _storage) = app();

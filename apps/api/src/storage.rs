@@ -22,8 +22,13 @@ impl Storage {
 
     /// Where a job's uploaded input lives. `name` is validated upstream to be
     /// a bare file name, so the join cannot escape the job directory.
+    ///
+    /// The upload gets its own subdirectory so it can never land on the
+    /// archive path: an upload called `archive.zip` compressed to zip would
+    /// otherwise be its own output, and the backends that create the output
+    /// before reading the source would truncate it to nothing.
     pub fn input_path(&self, job_id: &str, name: &str) -> PathBuf {
-        self.job_dir(job_id).join(name)
+        self.job_dir(job_id).join("input").join(name)
     }
 
     /// Where a job's produced archive lives.
@@ -34,9 +39,11 @@ impl Storage {
 
     /// Persist an uploaded input, creating the job directory.
     pub fn save_input(&self, job_id: &str, name: &str, data: &[u8]) -> io::Result<()> {
-        let dir = self.job_dir(job_id);
-        fs::create_dir_all(&dir)?;
-        fs::write(self.input_path(job_id, name), data)
+        let path = self.input_path(job_id, name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(path, data)
     }
 
     /// Remove a job's directory (input and archive). Returns `true` if it
