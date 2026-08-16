@@ -9,6 +9,12 @@ pub struct Registry {
     jobs: Mutex<HashMap<String, Job>>,
 }
 
+impl Default for Registry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Registry {
     pub fn new() -> Self {
         Self {
