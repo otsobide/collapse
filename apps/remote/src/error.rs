@@ -25,6 +25,11 @@ pub enum RemoteError {
     #[error("{0}")]
     Malformed(String),
 
+    /// The source could not be prepared for upload: no usable name, or the
+    /// directory could not be packed into the tar envelope.
+    #[error("cannot prepare {path} for upload: {reason}")]
+    Packing { path: String, reason: String },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }

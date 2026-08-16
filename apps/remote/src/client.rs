@@ -8,6 +8,7 @@ use std::io::Read;
 use std::path::Path;
 use std::time::Duration;
 
+use collapse_core::compression::compress_tar_dir;
 use collapse_core::Algorithm;
 
 use crate::protocol::{self, Progress};
@@ -16,23 +17,67 @@ use crate::RemoteError;
 /// How often the job status is polled while the server compresses.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
-/// Compress one file on a remote server and return the archive bytes.
+/// Compress a file or a whole directory on a remote server and return the
+/// archive bytes.
 ///
-/// `arcname` is the name the content will carry inside the archive, and must
-/// be a bare file name: the server rejects anything else. Blocks until the
-/// job settles, so callers that need to stay responsive should run it off
-/// their main thread.
-pub fn compress_file(
+/// A file is uploaded as it is. A directory cannot be expressed over HTTP, so
+/// it is packed into a **tar envelope** first and the server is told to unwrap
+/// it: tar is the right envelope precisely because it does not compress, so
+/// the CPU work still happens on the far side and the server's upload cap
+/// still bounds how much can be unpacked.
+///
+/// The name stored inside the archive is the source's own file or directory
+/// name. Blocks until the job settles, so callers that must stay responsive
+/// should run it off their main thread.
+pub fn compress_path(
     server: &str,
     source: &Path,
-    arcname: &str,
     algorithm: Algorithm,
     level: u32,
 ) -> Result<Vec<u8>, RemoteError> {
-    let data = std::fs::read(source)?;
+    let name = source
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .ok_or_else(|| RemoteError::Packing {
+            path: source.display().to_string(),
+            reason: "it has no file name".to_string(),
+        })?;
+
+    let (data, envelope) = if source.is_dir() {
+        (pack_directory(source, &name)?, "tar")
+    } else {
+        (std::fs::read(source)?, "none")
+    };
+
+    upload_and_collect(server, &name, algorithm, level, envelope, &data)
+}
+
+/// Pack a directory into a tar, on disk, and hand back its bytes. The archive
+/// carries the directory's own name as its single top-level entry, which is
+/// what the server checks the upload against.
+fn pack_directory(source: &Path, name: &str) -> Result<Vec<u8>, RemoteError> {
+    let staging = tempfile::tempdir()?;
+    let tar = staging.path().join(format!("{name}.tar"));
+
+    compress_tar_dir(source, &tar).map_err(|e| RemoteError::Packing {
+        path: source.display().to_string(),
+        reason: e.to_string(),
+    })?;
+
+    Ok(std::fs::read(&tar)?)
+}
+
+fn upload_and_collect(
+    server: &str,
+    name: &str,
+    algorithm: Algorithm,
+    level: u32,
+    envelope: &str,
+    data: &[u8],
+) -> Result<Vec<u8>, RemoteError> {
     let base = protocol::base_url(server);
 
-    let job = create_job(base, arcname, algorithm, level, &data)?;
+    let job = create_job(base, name, algorithm, level, envelope, data)?;
     let job_id = protocol::job_id_of(&job)?.to_string();
 
     wait_for_completion(base, &job_id)?;
@@ -48,15 +93,17 @@ pub fn compress_file(
 /// `POST /compress`: send the bytes, get the queued job back (202).
 fn create_job(
     base: &str,
-    arcname: &str,
+    name: &str,
     algorithm: Algorithm,
     level: u32,
+    envelope: &str,
     data: &[u8],
 ) -> Result<serde_json::Value, RemoteError> {
     let response = ureq::post(&format!("{base}/compress"))
-        .query("name", arcname)
+        .query("name", name)
         .query("algorithm", algorithm.extension())
         .query("level", &level.to_string())
+        .query("envelope", envelope)
         .send_bytes(data)
         .map_err(|e| remote_error(base, e))?;
     parse_json(response)

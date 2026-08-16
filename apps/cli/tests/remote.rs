@@ -132,18 +132,75 @@ fn remote_compress_cleans_up_the_job_server_side() {
 
 // ---------------------------------------------------------------- rejections --
 
+/// A directory travels as a tar envelope, and the archive that comes back
+/// must be indistinguishable from one produced locally.
 #[test]
-fn remote_compress_rejects_directories() {
+fn remote_compress_a_directory_matches_the_local_result() {
+    let (server, _storage) = start_server();
     let dir = tempfile::TempDir::new().unwrap();
     let root = dir.path().join("photos");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::write(root.join("a.txt"), b"a").unwrap();
+    std::fs::create_dir_all(root.join("sub/deeper")).unwrap();
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    std::fs::write(root.join("a.txt"), b"first").unwrap();
+    std::fs::write(root.join("sub/b.txt"), b"second").unwrap();
+    std::fs::write(root.join("sub/deeper/c.txt"), b"third").unwrap();
 
-    // Rejected client-side: the unreachable server proves no request is made.
-    assert!(matches!(
-        run_err(&["collapse", "compress", root.to_str().unwrap(), "--server", UNREACHABLE]),
-        CliError::RemoteDirectory(_)
-    ));
+    let remote_archive = dir.path().join("remote.zip");
+    run_ok(&[
+        "collapse", "compress",
+        root.to_str().unwrap(),
+        "-o", remote_archive.to_str().unwrap(),
+        "--server", &server,
+    ]);
+
+    let local_archive = dir.path().join("local.zip");
+    run_ok(&[
+        "collapse", "compress",
+        root.to_str().unwrap(),
+        "-o", local_archive.to_str().unwrap(),
+    ]);
+
+    let extract_all = |archive: &std::path::Path, into: &str| {
+        let out = dir.path().join(into);
+        let mut files = collapse_core::extract(archive, &out).unwrap();
+        files.sort();
+        let contents: Vec<Vec<u8>> = files
+            .iter()
+            .map(|f| std::fs::read(out.join(f)).unwrap())
+            .collect();
+        (files, contents)
+    };
+
+    assert_eq!(extract_all(&remote_archive, "r"), extract_all(&local_archive, "l"));
+    let (files, _) = extract_all(&remote_archive, "r2");
+    assert_eq!(
+        files,
+        vec!["photos/a.txt", "photos/sub/b.txt", "photos/sub/deeper/c.txt"]
+    );
+}
+
+/// tar is both the envelope and a target format, so this is the case where
+/// the server tars, untars and tars again. It must still match local output.
+#[test]
+fn remote_compress_a_directory_to_tar_round_trips() {
+    let (server, _storage) = start_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("docs");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"tar inside tar").unwrap();
+
+    let archive = dir.path().join("docs.tar");
+    run_ok(&[
+        "collapse", "compress",
+        root.to_str().unwrap(),
+        "-f", "tar",
+        "-o", archive.to_str().unwrap(),
+        "--server", &server,
+    ]);
+
+    let out = dir.path().join("out");
+    assert_eq!(collapse_core::extract(&archive, &out).unwrap(), vec!["docs/a.txt"]);
+    assert_eq!(std::fs::read(out.join("docs/a.txt")).unwrap(), b"tar inside tar");
 }
 
 #[test]

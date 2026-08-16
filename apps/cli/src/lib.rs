@@ -41,7 +41,7 @@ pub enum Command {
         force: bool,
 
         /// Compress on a remote Collapse server instead of locally
-        /// (e.g. http://localhost:8000). Files only for now.
+        /// (e.g. http://localhost:8000).
         #[arg(long, value_name = "URL")]
         server: Option<String>,
     },
@@ -118,9 +118,6 @@ pub enum CliError {
     #[error("invalid path: {}", .0.display())]
     InvalidPath(PathBuf),
 
-    #[error("directories cannot be compressed on a remote server yet: {}", .0.display())]
-    RemoteDirectory(PathBuf),
-
     #[error(transparent)]
     Remote(#[from] collapse_remote::RemoteError),
 
@@ -177,27 +174,26 @@ fn run_compress(
         }
     }
 
-    if source.is_dir() {
-        if server.is_some() {
-            return Err(CliError::RemoteDirectory(source));
-        }
-        compress_dir(&source, &output, algorithm, level)?;
-    } else if source.is_file() {
-        let arcname = source
-            .file_name()
-            .ok_or_else(|| CliError::InvalidPath(source.clone()))?
-            .to_string_lossy()
-            .into_owned();
-        match server.as_deref() {
-            Some(server) => {
-                let archive =
-                    collapse_remote::compress_file(server, &source, &arcname, algorithm, level)?;
-                std::fs::write(&output, archive)?;
-            }
-            None => compress(&source, &output, &arcname, algorithm, level)?,
-        }
-    } else {
+    if !source.is_dir() && !source.is_file() {
         return Err(CliError::UnsupportedSource(source));
+    }
+
+    match server.as_deref() {
+        // Remote handles both shapes: a file goes as-is, a directory travels
+        // as a tar envelope the server unwraps.
+        Some(server) => {
+            let archive = collapse_remote::compress_path(server, &source, algorithm, level)?;
+            std::fs::write(&output, archive)?;
+        }
+        None if source.is_dir() => compress_dir(&source, &output, algorithm, level)?,
+        None => {
+            let arcname = source
+                .file_name()
+                .ok_or_else(|| CliError::InvalidPath(source.clone()))?
+                .to_string_lossy()
+                .into_owned();
+            compress(&source, &output, &arcname, algorithm, level)?;
+        }
     }
 
     Ok(Outcome::Compressed { output })
