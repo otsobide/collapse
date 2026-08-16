@@ -13,12 +13,13 @@ This document describes what exists today: the `collapse-core` engine, the
 apps/
   core/        collapse-core — the shared engine (src/ + tests/ integration tests)
   cli/         collapse-cli  — the `collapse` CLI, lib + bin (src/ + tests/)
+  api/         collapse-api  — optional HTTP compression server, lib + bin (src/ + tests/)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
 ```
 
-`apps/core` and `apps/cli` are members of the **root Cargo workspace**; each keeps
+`apps/core`, `apps/cli` and `apps/api` are members of the **root Cargo workspace**; each keeps
 its Cargo integration tests in its own `tests/` directory (the Rust convention).
 `apps/desktop/src-tauri` is a **separate workspace** (empty `[workspace]` in its
 `Cargo.toml`) so a plain `cargo test` at the root doesn't need the Tauri system
@@ -29,14 +30,17 @@ no Rust at all, outside the Cargo workspace entirely — see
 ## Dependency graph
 
 ```
-collapse-core  ◄──  collapse-cli
-             ◄──  collapse-desktop (apps/desktop/src-tauri)
+collapse-core  ◄──  collapse-cli   ── HTTP (opt-in, --server) ──►  collapse-api
+             ◄──  collapse-desktop (apps/desktop/src-tauri)              │
+             ◄────────────────────────────────────────────────────────────┘
 ```
 
 Everything flows from `collapse-core`. Interfaces call it directly as a Rust
 library — there is no HTTP, IPC, or subprocess boundary between an interface and
 the engine. New interfaces depend on `collapse-core`; they never reach into each
-other. (Each crate's tests live inside it — see [Testing](#testing).)
+other. The one networked path is opt-in: `collapse compress --server` sends the
+file's bytes to a `collapse-api` instance, which calls the same engine on its
+side. (Each crate's tests live inside it — see [Testing](#testing).)
 
 ## collapse-core — the engine
 
@@ -104,7 +108,7 @@ effects — no subprocess needed.
 ### Command surface
 
 ```
-collapse compress <file|dir> [-f 7z|zip|tar] [-l 1-5] [-o <path>] [--force]
+collapse compress <file|dir> [-f 7z|zip|tar] [-l 1-5] [-o <path>] [--force] [--server <URL>]
 collapse extract  <archive>  [-o <dir>]
 ```
 
@@ -124,11 +128,49 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
      the source before it is read — data loss);
    - refuse an existing output unless `--force`;
    - reject a source that is neither a regular file nor a directory (e.g. a FIFO).
-5. Dispatch to `compress_dir` (directory) or `compress` (file).
+5. Dispatch to `compress_dir` (directory) or `compress` (file). With
+   `--server <URL>`, files are instead sent to a remote
+   [`collapse-api`](#collapse-api--the-compression-server): the bytes go out,
+   the archive comes back, and it is written to the same output path the local
+   mode would use. The safety guards in step 4 run before any network I/O, and
+   directories are rejected client-side (remote directory compression does not
+   exist yet). Extraction has no remote mode.
 
 Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
 as needed.
+
+## collapse-api — the compression server
+
+`collapse-api` (`apps/api`) lets a client compress on another machine: the
+CLI's `--server` flag posts a file's bytes and receives the archive in the
+response. It is compression-only, and deliberately **synchronous and
+stateless**, unlike the job-queue design of the reference implementation
+(whose polling model served a web UI): each request is staged in its own
+temporary directory, compressed with the same `collapse-core` engine, and the
+temp dir vanishes once the response is built. No job registry, no persistent
+storage, no cleanup endpoints.
+
+Like the CLI it is a **library + binary**: `build_router()` lives in the lib
+(which is what the tests, and the CLI's end-to-end tests, drive in-process);
+`main.rs` only parses `--host` / `--port` / `--max-upload-mb` and serves. It
+binds `127.0.0.1` by default.
+
+The surface is two routes:
+
+- `GET /health` — liveness probe, returns `{"status":"ok"}`.
+- `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]` — the body is
+  the raw file content; the response body is the archive, with the matching
+  `Content-Type` and a `Content-Disposition` filename. Defaults mirror the CLI
+  (zip, level 3).
+
+Errors are JSON `{"detail": "..."}` with a 4xx/5xx status. Input is validated,
+never coerced: an unparseable or out-of-range `level` is a 400 (the reference
+implementation silently coerced it), an unknown `algorithm` is a 400, and
+`name` must be a **bare file name** (no separators, no `..`, not empty), since
+it becomes both the arcname inside the archive and the staging path on disk.
+Uploads beyond the configurable cap get a 413. There is no CORS layer: the
+server targets non-browser clients.
 
 ## collapse-desktop — the desktop app
 
@@ -154,7 +196,12 @@ Each app carries its own tests, in that ecosystem's conventional place:
 - `apps/core/tests/` — Cargo integration tests exercising `collapse-core` through
   its public API (`compress`, `extract`, and the backend functions), including a
   dedicated `security.rs` suite that crafts malicious archives.
-- `apps/cli/tests/` — drives the real clap parser and `run` in-process.
+- `apps/cli/tests/` — drives the real clap parser and `run` in-process; the
+  remote-mode tests (`tests/remote.rs`) serve the real `collapse-api` router on
+  an ephemeral port and go through it end-to-end.
+- `apps/api/tests/` — drives the router in-process (tower `oneshot`, no
+  sockets), verifying round-trips by feeding the response bytes back through
+  the core extractors.
 - `apps/desktop/tests/` — Vitest suite (unit + component tests, Tauri IPC mocked).
 
 The Rust integration tests compile as separate crates, so they only see each
@@ -165,9 +212,10 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 
 `.github/workflows/test-and-build.yml` runs on every push to `main`/`dev` and
 on pull requests, entirely on Linux runners. Per app, tests gate the build: a
-`core` job (`make core/test`) gates a `cli` job and a `vitest` job (the
-desktop suite, Tauri IPC mocked), and each app's build job runs only after
-its own tests pass — `build (core)`, `build (cli)`, and `build (desktop)`,
+`core` job (`make core/test`) gates a `cli` job, an `api` job and a `vitest`
+job (the desktop suite, Tauri IPC mocked), and each app's build job runs only
+after its own tests pass — `build (core)`, `build (cli)`, `build (api)`, and
+`build (desktop)`,
 the last compiling the whole Tauri app (frontend + the `src-tauri` crate,
 which no other CI job compiles) via `make desktop/compile`
 (`tauri build --no-bundle`), with the webkit system libraries installed on

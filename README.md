@@ -8,8 +8,9 @@ with safe extraction that refuses path-traversal ("ZIP Slip") archives.
 
 > **MVP scope.** Collapse is being built incrementally. The first release targets
 > two front-ends only — a **CLI** and a **desktop app** — both powered by the
-> `collapse-core` library. Other interfaces (HTTP API, web UI) are out of scope
-> for now.
+> `collapse-core` library. The repo also carries **`collapse-api`**, a minimal
+> compression server the CLI can target with `--server`; it is not part of the
+> release artifacts yet. A web UI is out of scope for now.
 
 ## Why Collapse
 
@@ -74,6 +75,19 @@ cargo run -p collapse-cli -- compress notes.txt -f 7z
 cargo build -p collapse-cli --release      # binary at target/release/collapse
 ```
 
+#### Remote compression
+
+Compression (files only, for now) can be offloaded to a remote Collapse
+server: run `collapse-api` somewhere and point the CLI at it with `--server`.
+The file's bytes are sent over, compressed there, and the archive is written
+locally, with the same defaults and safety guards as local mode. Extraction
+stays local.
+
+```bash
+cargo run -p collapse-api -- --host 0.0.0.0 --port 8000    # on the server
+collapse compress notes.txt -f 7z --server http://myserver:8000
+```
+
 ### Desktop
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
@@ -100,6 +114,8 @@ Collapse is at an early stage. Here's exactly what exists today:
   including a dedicated security suite for malicious archives.
 - ✅ **CLI** (`collapse`) — compress files/folders and extract archives.
 - ✅ **Desktop app** — Tauri v2 (macOS / Windows / Linux), compress & extract.
+- ✅ **API server** (`collapse-api`) — optional remote compression, the endpoint
+  behind the CLI's `--server` flag. Not shipped in releases yet.
 
 ## Getting started
 
@@ -107,7 +123,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run the full test suite (108 Rust tests + the desktop Vitest suite)
+make test              # run the full test suite (130 Rust tests + the desktop Vitest suite)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
@@ -119,6 +135,7 @@ running the apps.
 apps/
   core/        collapse-core — the shared compression engine
   cli/         collapse-cli  — the `collapse` command-line tool (lib + bin)
+  api/         collapse-api  — optional compression server (lib + bin)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
 docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
