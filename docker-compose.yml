@@ -1,16 +1,17 @@
-# Bring up collapse-server-backend locally:
+# Bring Collapse up locally:
 #
-#   make docker/up      then open http://localhost:8000/docs
+#   make docker/up      then open http://localhost:8080 for the web app,
+#                       or http://localhost:8000/docs for the API itself
 #
-# Override the host port or the upload cap without editing this file:
+# Override the ports or the upload cap without editing this file:
 #
-#   COLLAPSE_PORT=9000 make docker/up
+#   COLLAPSE_PORT=9000 COLLAPSE_WEB_PORT=9090 make docker/up
 #   COLLAPSE_MAX_UPLOAD_MB=50 make docker/up
 
 name: collapse
 
 services:
-  api:
+  backend:
     build:
       # The context is the repository root: collapse-server-backend depends on
       # collapse-core through a path dependency.
@@ -50,6 +51,32 @@ services:
       timeout: 3s
       retries: 3
       start_period: 5s
+
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/server-frontend/Dockerfile
+    image: collapse-server-frontend:dev
+    container_name: collapse-server-frontend
+
+    # nginx serves the app AND proxies the API to the backend, so the browser
+    # only ever talks to one origin. That is what lets the backend keep no
+    # CORS layer, rather than opening it up the way the reference
+    # implementation did.
+    environment:
+      COLLAPSE_BACKEND: backend:8000
+
+    ports:
+      - "127.0.0.1:${COLLAPSE_WEB_PORT:-8080}:8080"
+
+    # Only waits for the port to accept connections, not for a healthy
+    # backend: the app loads regardless and tells the user if the server is
+    # unreachable.
+    depends_on:
+      backend:
+        condition: service_started
 
     restart: unless-stopped
 

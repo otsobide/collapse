@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-APPS := core remote cli server-backend desktop landing
+APPS := core remote cli server-backend server-frontend desktop landing
 
 # ---------------------------------------------------------------------------
 # Per-app delegation — `make <app>/<target>` runs <target> in apps/<app>/Makefile
@@ -16,7 +16,7 @@ $(foreach app,$(APPS),$(eval $(call APP_DELEGATE,$(app))))
 # Global targets
 # ---------------------------------------------------------------------------
 .PHONY: test
-test: core/test remote/test cli/test server-backend/test desktop/test ## Run every test suite
+test: core/test remote/test cli/test server-backend/test server-frontend/test desktop/test ## Run every test suite
 
 .PHONY: test/rust
 test/rust: core/test remote/test cli/test server-backend/test ## Run only the Rust tests
@@ -44,29 +44,33 @@ clean: ## Remove Rust build artifacts (per-app: `make desktop/clean`)
 # `COLLAPSE_PORT=9000 make docker/up`.
 # ---------------------------------------------------------------------------
 COLLAPSE_PORT ?= 8000
+COLLAPSE_WEB_PORT ?= 8080
 IMAGE ?= collapse-server-backend:dev
+WEB_IMAGE ?= collapse-server-frontend:dev
 COMPOSE ?= docker compose
 
 .PHONY: docker/build
-docker/build: ## Build the collapse-server-backend image
+docker/build: ## Build both images (backend and web frontend)
 	docker build -f apps/server-backend/Dockerfile -t $(IMAGE) .
+	docker build -f apps/server-frontend/Dockerfile -t $(WEB_IMAGE) .
 
 .PHONY: docker/up
-docker/up: ## Start the API in the background and print its docs URL
-	COLLAPSE_PORT=$(COLLAPSE_PORT) $(COMPOSE) up -d --build
-	@echo "collapse-server-backend is up — docs at http://localhost:$(COLLAPSE_PORT)/docs"
+docker/up: ## Start the stack in the background and print its URLs
+	COLLAPSE_PORT=$(COLLAPSE_PORT) COLLAPSE_WEB_PORT=$(COLLAPSE_WEB_PORT) $(COMPOSE) up -d --build
+	@echo "web app at http://localhost:$(COLLAPSE_WEB_PORT)"
+	@echo "API docs at http://localhost:$(COLLAPSE_PORT)/docs"
 
 .PHONY: docker/down
-docker/down: ## Stop the API and remove its container
+docker/down: ## Stop the stack and remove its containers
 	$(COMPOSE) down
 
 .PHONY: docker/logs
-docker/logs: ## Follow the API container logs
-	$(COMPOSE) logs -f api
+docker/logs: ## Follow the container logs
+	$(COMPOSE) logs -f
 
 .PHONY: docker/shell
-docker/shell: ## Open a shell inside the running API container
-	$(COMPOSE) exec api /bin/bash
+docker/shell: ## Open a shell inside the running backend container
+	$(COMPOSE) exec backend /bin/bash
 
 .PHONY: docker/run
 docker/run: docker/build ## Run a throwaway container — ARGS="--max-upload-mb 50"
@@ -77,9 +81,9 @@ docker/smoke: ## Build, start, drive a real compression through the published po
 	@apps/server-backend/smoke.sh $(COLLAPSE_PORT) $(IMAGE)
 
 .PHONY: docker/clean
-docker/clean: ## Remove the API container, its volume and the image
+docker/clean: ## Remove the containers, the volume and the images
 	-$(COMPOSE) down -v
-	-docker image rm $(IMAGE)
+	-docker image rm $(IMAGE) $(WEB_IMAGE)
 
 .PHONY: help
 help: ## Show this help
