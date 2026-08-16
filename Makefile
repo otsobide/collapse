@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-APPS := core remote cli server-backend server-frontend desktop landing
+APPS := core remote cli server-backend server-frontend server-aio desktop landing
 
 # ---------------------------------------------------------------------------
 # Per-app delegation — `make <app>/<target>` runs <target> in apps/<app>/Makefile
@@ -47,6 +47,7 @@ COLLAPSE_PORT ?= 8000
 COLLAPSE_WEB_PORT ?= 8080
 IMAGE ?= collapse-server-backend:dev
 WEB_IMAGE ?= collapse-server-frontend:dev
+AIO_IMAGE ?= collapse-server-aio:dev
 COMPOSE ?= docker compose
 
 .PHONY: docker/build
@@ -60,9 +61,15 @@ docker/up: ## Start the stack in the background and print its URLs
 	@echo "web app at http://localhost:$(COLLAPSE_WEB_PORT)"
 	@echo "API docs at http://localhost:$(COLLAPSE_PORT)/docs"
 
+.PHONY: docker/aio
+docker/aio: ## Start the all-in-one container (same ports, one image)
+	COLLAPSE_PORT=$(COLLAPSE_PORT) COLLAPSE_WEB_PORT=$(COLLAPSE_WEB_PORT) $(COMPOSE) --profile aio up -d --build aio
+	@echo "web app at http://localhost:$(COLLAPSE_WEB_PORT)"
+	@echo "API docs at http://localhost:$(COLLAPSE_PORT)/docs"
+
 .PHONY: docker/down
 docker/down: ## Stop the stack and remove its containers
-	$(COMPOSE) down
+	$(COMPOSE) --profile aio down
 
 .PHONY: docker/logs
 docker/logs: ## Follow the container logs
@@ -82,8 +89,8 @@ docker/smoke: ## Build, start, drive a real compression through the published po
 
 .PHONY: docker/clean
 docker/clean: ## Remove the containers, the volume and the images
-	-$(COMPOSE) down -v
-	-docker image rm $(IMAGE) $(WEB_IMAGE)
+	-$(COMPOSE) --profile aio down -v
+	-docker image rm $(IMAGE) $(WEB_IMAGE) $(AIO_IMAGE)
 
 .PHONY: help
 help: ## Show this help

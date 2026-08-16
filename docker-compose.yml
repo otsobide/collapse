@@ -7,6 +7,10 @@
 #
 #   COLLAPSE_PORT=9000 COLLAPSE_WEB_PORT=9090 make docker/up
 #   COLLAPSE_MAX_UPLOAD_MB=50 make docker/up
+#
+# Or run the whole thing as a single container instead:
+#
+#   make docker/aio     same two ports, one image
 
 name: collapse
 
@@ -78,6 +82,35 @@ services:
       backend:
         condition: service_started
 
+    restart: unless-stopped
+
+  # The same server and web app in ONE container, which is what most people
+  # actually want to deploy. It publishes the same two ports, so it sits
+  # behind a profile and never starts alongside the pair above:
+  #
+  #   make docker/aio
+  #
+  # It is packaging only: the binary and the bundle are the very ones the
+  # split images use, and it reuses the frontend's nginx template.
+  aio:
+    profiles: ["aio"]
+    build:
+      context: .
+      dockerfile: apps/server-aio/Dockerfile
+    image: collapse-server-aio:dev
+    container_name: collapse-server-aio
+
+    environment:
+      COLLAPSE_MAX_UPLOAD_MB: "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+
+    ports:
+      - "127.0.0.1:${COLLAPSE_WEB_PORT:-8080}:8080"
+      - "127.0.0.1:${COLLAPSE_PORT:-8000}:8000"
+
+    volumes:
+      - jobs:/var/lib/collapse
+
+    mem_limit: 2g
     restart: unless-stopped
 
 volumes:
