@@ -87,6 +87,35 @@ fn job_serializes_the_expected_fields() {
 }
 
 #[test]
+fn a_status_prints_and_parses_what_the_wire_carries() {
+    // The database column, the log line and the JSON all use this spelling,
+    // and the registry parses rows back through it, so a mismatch would make
+    // a job unreadable after a restart.
+    for status in [
+        JobStatus::Queued,
+        JobStatus::Compressing,
+        JobStatus::Completed,
+        JobStatus::Failed,
+    ] {
+        let text = serde_json::to_value(status).unwrap();
+        let text = text.as_str().unwrap();
+        assert_eq!(status.to_string(), text);
+        assert_eq!(text.parse::<JobStatus>().unwrap(), status);
+    }
+
+    assert!("half-done".parse::<JobStatus>().is_err());
+}
+
+#[test]
+fn only_finished_jobs_are_terminal() {
+    // What the reconciliation keys off: the worker owns everything else.
+    assert!(JobStatus::Completed.is_terminal());
+    assert!(JobStatus::Failed.is_terminal());
+    assert!(!JobStatus::Queued.is_terminal());
+    assert!(!JobStatus::Compressing.is_terminal());
+}
+
+#[test]
 fn an_envelope_prints_what_the_wire_carries() {
     // Logs quote the envelope, and an operator reads them against the request
     // that produced them, so the two spellings have to agree.
