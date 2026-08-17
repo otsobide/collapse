@@ -67,6 +67,7 @@ takes flags. Everything has a working default.
 | `COLLAPSE_PORT` | `8000` | Host port for the API (compose only) |
 | `COLLAPSE_WEB_PORT` | `8080` | Host port for the web app (compose only) |
 | `COLLAPSE_BACKEND` | `127.0.0.1:8000` | Where nginx proxies the API to. Only worth changing in the split setup, where it is `backend:8000`. |
+| `RUST_LOG` | `info` | Log level, or a per-target spec like `collapse_server_backend=debug,tower_http=warn`. See [Logs](#logs). |
 
 The API binary's own flags, for a deployment without containers or for
 overriding what the image pins:
@@ -335,13 +336,49 @@ docker inspect --format '{{.State.Health.Status}}' collapse
 
 ### Logs
 
-Modest today: the API prints one line at startup and nginx logs its accesses.
-Individual jobs are not logged, so a failed compression is visible in the job's
-`error_message` and nowhere else.
+The API logs through [`tracing`](https://docs.rs/tracing), so every line
+carries an RFC 3339 timestamp, a level and the module that emitted it, on
+stdout:
 
 ```bash
 docker logs -f collapse
 ```
+
+```
+2026-08-17T18:56:48.325814Z  INFO collapse_server_backend: collapse-server-backend listening version="0.5.1" addr=0.0.0.0:8000 max_upload_mb=500 storage_dir=/var/lib/collapse
+2026-08-17T18:56:48.651681Z  INFO request{method=POST uri=/compress?name=notes.txt&algorithm=zip&level=5}: collapse_server_backend::routes: queued job=7b6015d0 name=notes.txt algorithm=zip level=5 envelope=none bytes=45000
+2026-08-17T18:56:48.651818Z  INFO request{method=POST uri=/compress?name=notes.txt&algorithm=zip&level=5}: tower_http::trace::on_response: finished processing request latency=0 ms status=202
+2026-08-17T18:56:48.651887Z  INFO collapse_server_backend::queue: compressing job=7b6015d0 name=notes.txt algorithm=zip level=5
+2026-08-17T18:56:48.653465Z  INFO collapse_server_backend::queue: completed job=7b6015d0 bytes=233 elapsed_ms=1
+2026-08-17T18:56:48.719158Z  INFO request{method=DELETE uri=/jobs/7b6015d0}: collapse_server_backend::routes: deleted job=7b6015d0 files_removed=true
+```
+
+What you get at the default level:
+
+- **One line per HTTP request**, with its method, path, status and latency.
+- **The job lifecycle**: `queued` (with the upload size), `compressing`,
+  and then `completed` (with the archive size and how long it took) or
+  `failed`. Every line carries `job=<id>`, so one job's story greps out of a
+  busy log in one go.
+- **Failures at the level they deserve**: a rejected upload or a hostile tar is
+  a `WARN`, because it is the client's problem; a worker that dies mid-job is
+  an `ERROR`, because it is ours.
+
+`GET /health` is deliberately **not** logged: a container probes it every ten
+seconds and those lines would bury everything worth reading. Its failures show
+up in the container's health status instead.
+
+Turn the volume up or down with `RUST_LOG`, the usual spelling:
+
+```bash
+RUST_LOG=debug docker compose up -d              # everything
+RUST_LOG=collapse_server_backend=info,tower_http=warn docker compose up -d   # jobs, no requests
+```
+
+An unparseable `RUST_LOG` is ignored with a warning rather than taken as
+"log nothing", so a typo cannot silence the server.
+
+The web app's nginx logs its own accesses separately, in the same stream.
 
 ### What lives in the volume
 
@@ -430,7 +467,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 78 Rust tests, including a hostile-tar suite
+make server-backend/test     # 84 Rust tests, including a hostile-tar suite
 make server-frontend/test    # 40 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
 make docker/smoke            # the split stack through its published port
