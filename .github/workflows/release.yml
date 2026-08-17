@@ -2,7 +2,8 @@ name: Release
 
 # Publish a GitHub release whenever a version tag (vX.Y.Z) is pushed: the CLI
 # binaries (per-arch macOS tarballs) and the desktop app (one universal macOS
-# .dmg, plus Linux .deb/.rpm packages for x86_64). Tags belong on main's
+# .dmg, Linux .deb/.rpm/.AppImage for x86_64, and Windows .msi + NSIS setup
+# .exe for x64). Tags belong on main's
 # release merge commits (see docs/git_flow.md), and the "tag is on main" job
 # enforces it: a tag whose commit is not on main fails the run and nothing is
 # published. Everything unsigned for now; signing as we iterate.
@@ -226,9 +227,55 @@ jobs:
           overwrite: true
           path: apps/desktop/src-tauri/target/release/bundle/staging/*
 
+  # Windows desktop installers for x64 — an .msi and an NSIS setup .exe —
+  # built on the Windows runner. Tauri names them from productName + version
+  # (Collapse_X.Y.Z_x64_en-US.msi, Collapse_X.Y.Z_x64-setup.exe). Unsigned
+  # for now: SmartScreen warns on first run until we sign with Authenticode.
+  build-desktop-windows:
+    name: build (desktop, msi + nsis)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # bash, not pwsh: the make targets assume a POSIX shell (touch, cd),
+      # and the runner's Git Bash provides one alongside its GNU make.
+      - name: Build the installers
+        shell: bash
+        run: make desktop/bundle-windows
+
+      # Flatten msi/ and nsis/ into one staging dir, checksums computed
+      # inside it so each .sha256 records the bare filename (same reasoning
+      # as the Linux leg).
+      - name: Stage and checksum the installers
+        shell: bash
+        working-directory: apps/desktop/src-tauri/target/release/bundle
+        run: |
+          mkdir staging
+          cp msi/*.msi nsis/*-setup.exe staging/
+          cd staging
+          for PKG in *; do sha256sum "$PKG" > "$PKG.sha256"; done
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows
+          overwrite: true
+          path: apps/desktop/src-tauri/target/release/bundle/staging/*
+
   release:
     name: publish release
-    needs: [verify, build, build-desktop, build-desktop-linux]
+    needs: [verify, build, build-desktop, build-desktop-linux, build-desktop-windows]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
