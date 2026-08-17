@@ -1,0 +1,2004 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>collapse-server-backend</title>
+<style>
+/* ---------------------------------------------------------------------------
+   collapse-server-backend documentation. Self-contained on purpose: no fonts, scripts or
+   stylesheets from anywhere but this file, so the page works air-gapped.
+   Palette taken from the desktop app (apps/desktop/src/App.vue).
+--------------------------------------------------------------------------- */
+:root {
+  --bg: #ece4d5;
+  --surface: #f5efe3;
+  --surface-2: #efe7d8;
+  --border: #e1d9c8;
+  --border-2: #d3c9b5;
+  --dashed: #c3b9a5;
+  --text: #3e362b;
+  --muted: #6e6456;
+  --faint: #a99e8b;
+  --accent: #bc5a38;
+  --accent-hover: #a54e30;
+  --accent-dim: rgba(188, 90, 56, 0.12);
+  --cream: #f7f1e6;
+  --success: #6f7a4a;
+  --success-dim: rgba(111, 122, 74, 0.16);
+  --danger: #9e3b2a;
+  --danger-dim: rgba(158, 59, 42, 0.10);
+  --warn: #8f6a1e;
+  --warn-dim: rgba(143, 106, 30, 0.14);
+  --r: 16px;
+  --r-sm: 11px;
+  --font: 'SF Mono', ui-monospace, 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  --tok-key: #8a4a2c;
+  --tok-str: #566338;
+  --tok-num: #3d5a6b;
+  --tok-lit: #7a6a55;
+  color-scheme: light;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  font-family: var(--font);
+  font-size: 14px;
+  line-height: 1.6;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-dim); }
+a:hover { color: var(--accent-hover); border-bottom-color: var(--accent-hover); }
+
+.wrap { max-width: 1180px; margin: 0 auto; padding: 0 20px; }
+
+/* -------------------------------- header -------------------------------- */
+
+header.top {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(236, 228, 213, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-2);
+}
+.top-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 14px;
+  padding: 15px 0 13px;
+}
+h1 { font-size: 20px; letter-spacing: -0.02em; font-weight: 700; }
+.version {
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  border: 1px solid rgba(188, 90, 56, 0.28);
+  white-space: nowrap;
+}
+.top-meta {
+  margin-left: auto;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  display: flex;
+  gap: 9px;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+.top-meta > *:not(:first-child)::before { content: '\00B7'; color: var(--faint); margin-right: 9px; }
+.tagline {
+  color: var(--muted);
+  font-size: 12.5px;
+  max-width: 84ch;
+  padding-bottom: 14px;
+  overflow-wrap: anywhere;
+}
+
+/* -------------------------------- layout -------------------------------- */
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 26px;
+  padding: 24px 0 90px;
+  align-items: start;
+}
+@media (min-width: 940px) {
+  .layout { grid-template-columns: 236px minmax(0, 1fr); gap: 34px; }
+  nav.side { position: sticky; top: 86px; max-height: calc(100vh - 112px); overflow-y: auto; }
+}
+main { min-width: 0; }
+nav.side { min-width: 0; }
+
+.nav-group { margin-bottom: 16px; }
+.nav-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+  margin-bottom: 6px;
+}
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  border-bottom: none;
+  color: var(--text);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.nav-link:hover { background: var(--surface); color: var(--text); }
+.nav-tools { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+
+/* -------------------------------- pieces -------------------------------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.badge {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  text-transform: uppercase;
+}
+.badge.get { background: var(--success-dim); color: var(--success); border-color: rgba(111, 122, 74, 0.3); }
+.badge.post { background: var(--accent-dim); color: var(--accent); border-color: rgba(188, 90, 56, 0.3); }
+.badge.delete { background: var(--danger-dim); color: var(--danger); border-color: rgba(158, 59, 42, 0.28); }
+.badge.other { background: var(--surface-2); color: var(--muted); border-color: var(--border-2); }
+.badge.sm { font-size: 9.5px; padding: 2px 6px; }
+
+summary.op-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+summary.op-head::-webkit-details-marker { display: none; }
+summary.op-head:hover { background: var(--surface-2); }
+summary.op-head::after {
+  content: '+';
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 15px;
+  flex: none;
+}
+details[open] > summary.op-head::after { content: '\2212'; }
+details[open] > summary.op-head { border-bottom: 1px solid var(--border); }
+.op-path { font-weight: 600; overflow-wrap: anywhere; }
+.op-path .pvar { color: var(--accent); }
+.op-sum { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  summary.op-head { flex-wrap: wrap; gap: 8px; }
+  .op-sum { flex-basis: 100%; }
+  summary.op-head::after { margin-left: 0; }
+}
+
+.op-body { padding: 16px; display: grid; gap: 18px; }
+.section { min-width: 0; }
+
+.label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+  margin-bottom: 8px;
+}
+
+.scroll-x { overflow-x: auto; max-width: 100%; }
+
+/* Grid items default to min-width:auto, which lets a wide <pre> or table push
+   its container past the viewport instead of scrolling inside it. Every grid
+   used on this page opts out, which is what keeps the page itself from ever
+   scrolling sideways. */
+.op-body, .fold-body, .result, .flow-out, .boot, .binary-note, .steps, .fields,
+.op-body > *, .fold-body > *, .result > *, .flow-out > *, .boot > *,
+.binary-note > *, .steps > *, .fields > * { min-width: 0; }
+
+/* --------------------------- markdown fragments -------------------------- */
+
+.md { max-width: 84ch; overflow-wrap: anywhere; }
+.md p { color: var(--muted); margin-bottom: 9px; }
+.md p:last-child { margin-bottom: 0; }
+.md h4 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text);
+  margin: 14px 0 7px;
+}
+.md ol, .md ul { color: var(--muted); margin: 0 0 9px 1.35em; }
+.md li { margin-bottom: 4px; }
+.md code, code.inline {
+  background: var(--cream);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0 4px;
+  font-family: var(--font);
+  font-size: 0.92em;
+  color: var(--text);
+}
+.md strong { color: var(--text); font-weight: 700; }
+.md.small p, .md.small li { font-size: 12.5px; }
+
+/* --------------------------------- tables -------------------------------- */
+
+table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--muted);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0 14px 6px 0;
+  white-space: nowrap;
+}
+td { padding: 6px 14px 6px 0; vertical-align: top; border-top: 1px solid var(--border); }
+td:last-child, th:last-child { padding-right: 0; }
+.cell-name { font-weight: 600; white-space: nowrap; }
+.cell-desc { color: var(--muted); min-width: 26ch; }
+
+.chip {
+  display: inline-block;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  color: var(--muted);
+  margin: 0 4px 3px 0;
+  white-space: nowrap;
+}
+.chip.req { background: var(--danger-dim); border-color: rgba(158, 59, 42, 0.25); color: var(--danger); }
+.chip.def { background: var(--success-dim); border-color: rgba(111, 122, 74, 0.28); color: var(--success); }
+.chip.media { background: var(--cream); color: var(--text); }
+
+/* ------------------------------- responses ------------------------------- */
+
+.resp { border-top: 1px solid var(--border); padding: 10px 0; }
+.resp:first-of-type { border-top: none; padding-top: 0; }
+.resp-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+.code { font-weight: 700; flex: none; min-width: 3.2em; }
+.code.ok { color: var(--success); }
+.code.warn { color: var(--warn); }
+.code.bad { color: var(--danger); }
+
+details.fold { margin-top: 8px; }
+details.fold > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  list-style: none;
+  user-select: none;
+  display: inline-block;
+}
+details.fold > summary::-webkit-details-marker { display: none; }
+details.fold > summary::before { content: '\25B8 '; color: var(--faint); }
+details[open].fold > summary::before { content: '\25BE '; }
+.fold-body { margin-top: 8px; display: grid; gap: 10px; }
+.example-label { font-size: 11px; color: var(--faint); margin-bottom: 4px; }
+.hname { color: var(--muted); white-space: nowrap; }
+
+/* --------------------------------- forms --------------------------------- */
+
+.try {
+  background: var(--surface-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  padding: 14px;
+}
+.fields { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); }
+.field { min-width: 0; display: grid; gap: 5px; align-content: start; }
+.field .flabel { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.req-star { color: var(--danger); }
+.hint { font-size: 10.5px; color: var(--faint); overflow-wrap: anywhere; }
+.with-side { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.with-side input { flex: 1 1 auto; }
+
+input[type="text"], input[type="number"], select, textarea {
+  font-family: var(--font);
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--cream);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 7px 9px;
+  width: 100%;
+  min-width: 0;
+}
+textarea { min-height: 92px; resize: vertical; white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+input[type="file"] { font-family: var(--font); font-size: 11.5px; color: var(--muted); width: 100%; }
+input[type="file"]::file-selector-button {
+  font-family: var(--font);
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--cream);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-right: 10px;
+  cursor: pointer;
+}
+input[type="file"]::file-selector-button:hover { border-color: var(--accent); color: var(--accent); }
+
+button {
+  font-family: var(--font);
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 9px;
+  border: 1px solid var(--border-2);
+  background: var(--cream);
+  color: var(--text);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--cream); }
+button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--cream); }
+button.tiny { padding: 6px 9px; font-size: 10.5px; font-weight: 600; white-space: nowrap; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+.actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 13px; }
+.actions .note { font-size: 11px; color: var(--faint); overflow-wrap: anywhere; }
+
+/* -------------------------------- results -------------------------------- */
+
+.result { margin-top: 14px; display: grid; gap: 10px; }
+.result:empty { margin-top: 0; }
+.result-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.pill {
+  font-weight: 700;
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-2);
+  background: var(--cream);
+}
+.pill.ok { color: var(--success); border-color: rgba(111, 122, 74, 0.35); background: var(--success-dim); }
+.pill.warn { color: var(--warn); border-color: rgba(143, 106, 30, 0.35); background: var(--warn-dim); }
+.pill.bad { color: var(--danger); border-color: rgba(158, 59, 42, 0.3); background: var(--danger-dim); }
+.req-line { font-size: 11.5px; color: var(--muted); overflow-wrap: anywhere; }
+
+pre {
+  background: var(--cream);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  font-family: var(--font);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  overflow-y: auto;
+  max-width: 100%;
+  max-height: 460px;
+  white-space: pre;
+  tab-size: 2;
+}
+.tok-key { color: var(--tok-key); }
+.tok-str { color: var(--tok-str); }
+.tok-num { color: var(--tok-num); }
+.tok-lit { color: var(--tok-lit); }
+
+.binary-note {
+  background: var(--cream);
+  border: 1px dashed var(--dashed);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  font-size: 12px;
+  color: var(--muted);
+}
+a.save {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--cream);
+  padding: 7px 13px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+a.save:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: var(--cream); }
+
+.error-box {
+  background: var(--danger-dim);
+  border: 1px solid rgba(158, 59, 42, 0.3);
+  border-radius: var(--r-sm);
+  padding: 12px 14px;
+  color: var(--danger);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------- flow --------------------------------- */
+
+.flow {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r);
+  padding: 18px;
+  margin-bottom: 22px;
+}
+.flow h2 { font-size: 15px; margin-bottom: 5px; }
+.flow > p { color: var(--muted); font-size: 12.5px; margin-bottom: 14px; max-width: 84ch; }
+.steps { margin-top: 16px; display: grid; }
+.steps:empty { margin-top: 0; }
+.step {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.step:first-child { border-top: none; }
+.dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--faint); justify-self: center; align-self: center;
+}
+.dot.run { background: var(--warn); }
+.dot.ok { background: var(--success); }
+.dot.bad { background: var(--danger); }
+.step-main { min-width: 0; }
+.step-name { font-weight: 600; }
+.step-detail { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.step-time { color: var(--faint); font-size: 11px; white-space: nowrap; }
+.transitions {
+  display: grid;
+  gap: 2px;
+  margin: 5px 0 3px;
+  padding-left: 12px;
+  border-left: 1px dashed var(--dashed);
+}
+.transition { display: flex; gap: 10px; font-size: 11.5px; color: var(--muted); flex-wrap: wrap; }
+.transition .t-status { font-weight: 600; color: var(--text); }
+.flow-out { margin-top: 14px; display: grid; gap: 8px; justify-items: start; }
+
+/* -------------------------------- messages ------------------------------- */
+
+.boot {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 22px;
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.boot h2 { font-size: 15px; }
+.boot p { color: var(--muted); font-size: 12.5px; max-width: 78ch; overflow-wrap: anywhere; }
+
+details.about > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 13px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
+details.about > summary::-webkit-details-marker { display: none; }
+details.about > summary::before { content: '\25B8  '; color: var(--faint); }
+details[open].about > summary::before { content: '\25BE  '; }
+details[open].about > summary { border-bottom: 1px solid var(--border); }
+.about-body { padding: 14px 16px 16px; }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="top-row">
+      <h1>collapse-server-backend</h1>
+      <span class="version" id="spec-version">loading</span>
+      <span class="top-meta" id="origin-note"></span>
+    </div>
+    <p class="tagline" id="spec-tagline"></p>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="layout">
+    <nav class="side" aria-label="Operations">
+      <div class="nav-tools">
+        <button type="button" id="expand-all">Expand all</button>
+        <button type="button" id="collapse-all">Collapse all</button>
+      </div>
+      <div id="nav-groups"></div>
+    </nav>
+
+    <main>
+      <section id="about"></section>
+
+      <!-- Whole-flow runner. Static shell only: every dynamic value below is
+           written with textContent by the script. -->
+      <section class="flow" id="flow-panel" hidden>
+        <h2>Run the whole flow</h2>
+        <p>
+          Upload a file, poll the job until it settles, download the archive and delete the job.
+          Every step is timed, including each status transition the background worker goes through.
+        </p>
+        <div class="fields">
+          <label class="field">
+            <span class="flabel">File <span class="req-star">*</span></span>
+            <input type="file" id="flow-file">
+          </label>
+          <label class="field">
+            <span class="flabel">name (query)</span>
+            <input type="text" id="flow-name" placeholder="taken from the chosen file">
+          </label>
+          <label class="field">
+            <span class="flabel">algorithm</span>
+            <select id="flow-algorithm"></select>
+          </label>
+          <label class="field">
+            <span class="flabel">level</span>
+            <input type="number" id="flow-level">
+          </label>
+        </div>
+        <div class="actions">
+          <button type="button" class="primary" id="flow-run">Run the flow</button>
+          <button type="button" id="flow-cancel" disabled>Cancel</button>
+          <span class="note" id="flow-note"></span>
+        </div>
+        <div class="steps" id="flow-steps"></div>
+        <div class="flow-out" id="flow-out"></div>
+      </section>
+
+      <section id="ops"></section>
+      <section id="boot"></section>
+    </main>
+  </div>
+</div>
+
+<script>
+/* ---------------------------------------------------------------------------
+   The page builds itself from openapi.json, fetched at load time. Two rules
+   hold throughout:
+
+     1. No request ever leaves this origin. Every URL is resolved against the
+        page's own location and checked before it is fetched.
+     2. Nothing coming from the network or from an input is ever parsed as
+        HTML. The DOM is built with createElement and textContent only, so a
+        job named "<img src=x onerror=alert(1)>" renders as literal text.
+--------------------------------------------------------------------------- */
+(function () {
+  'use strict';
+
+  var SPEC_URL = 'openapi.json';
+  var METHODS = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options'];
+  var POLL_INTERVAL_MS = 250;
+  var FLOW_TIMEOUT_MS = 180000;
+
+  var SPEC = null;
+  var API_BASE = new URL('/', location.href);
+  var openObjectUrls = [];
+
+  // Identifiers harvested from JSON responses (any top level "*_id" string),
+  // offered back as a one click fill for path parameters of the same name.
+  var lastIds = {};
+  var idSubscribers = [];
+
+  // ---------------------------------------------------------------------------
+  // DOM helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Build an element. `text` goes through textContent and attributes through
+   * setAttribute: no HTML is ever parsed, which is what keeps server data
+   * inert.
+   */
+  function el(tag, props, children) {
+    var node = document.createElement(tag);
+    if (props) {
+      Object.keys(props).forEach(function (key) {
+        var value = props[key];
+        if (value === null || value === undefined || value === false) return;
+        if (key === 'class') node.className = value;
+        else if (key === 'text') node.textContent = String(value);
+        else if (key.slice(0, 2) === 'on' && typeof value === 'function') {
+          node.addEventListener(key.slice(2), value);
+        } else if (value === true) node.setAttribute(key, '');
+        else node.setAttribute(key, String(value));
+      });
+    }
+    return appendAll(node, children);
+  }
+
+  function appendAll(node, children) {
+    if (children === null || children === undefined) return node;
+    var list = Array.isArray(children) ? children : [children];
+    for (var i = 0; i < list.length; i++) {
+      var child = list[i];
+      if (child === null || child === undefined || child === false) continue;
+      node.appendChild(typeof child === 'object' ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  function clear(node) {
+    while (node.firstChild) node.removeChild(node.firstChild);
+    return node;
+  }
+
+  function byId(id) { return document.getElementById(id); }
+
+  function has(object, key) {
+    return object !== null && object !== undefined
+      && Object.prototype.hasOwnProperty.call(object, key);
+  }
+
+  function objectUrlFor(blob) {
+    var url = URL.createObjectURL(blob);
+    openObjectUrls.push(url);
+    return url;
+  }
+
+  window.addEventListener('beforeunload', function () {
+    openObjectUrls.forEach(function (url) { URL.revokeObjectURL(url); });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Formatting
+  // ---------------------------------------------------------------------------
+
+  function formatMs(ms) {
+    return ms < 1000 ? Math.round(ms) + ' ms' : (ms / 1000).toFixed(2) + ' s';
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KiB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MiB';
+  }
+
+  function statusClass(code) {
+    if (code >= 200 && code < 300) return 'ok';
+    if (code >= 300 && code < 400) return 'warn';
+    if (code >= 400) return 'bad';
+    return '';
+  }
+
+  function methodClass(method) {
+    var lower = String(method).toLowerCase();
+    return (lower === 'get' || lower === 'post' || lower === 'delete') ? lower : 'other';
+  }
+
+  /** Split "/jobs/{job_id}/download" so the {placeholders} can be coloured. */
+  function pathNodes(path) {
+    var out = [];
+    var re = /\{([^}]*)\}/g;
+    var last = 0;
+    var match;
+    while ((match = re.exec(path)) !== null) {
+      if (match.index > last) out.push(document.createTextNode(path.slice(last, match.index)));
+      out.push(el('span', { class: 'pvar', text: '{' + match[1] + '}' }));
+      last = re.lastIndex;
+    }
+    if (last < path.length) out.push(document.createTextNode(path.slice(last)));
+    return out;
+  }
+
+  // ---------------------------------------------------------------------------
+  // A very small Markdown subset, since OpenAPI descriptions are Markdown.
+  // Only paragraphs, headings, lists, bold and inline code are recognised, and
+  // every piece is a created element with textContent. Anything unrecognised
+  // stays literal text, which is the safe failure mode.
+  // ---------------------------------------------------------------------------
+
+  function appendInlineMarkdown(node, text) {
+    var re = /\*\*([^*]+)\*\*|`([^`]+)`/g;
+    var last = 0;
+    var match;
+    while ((match = re.exec(text)) !== null) {
+      if (match.index > last) node.appendChild(document.createTextNode(text.slice(last, match.index)));
+      if (match[1] !== undefined) node.appendChild(el('strong', { text: match[1] }));
+      else node.appendChild(el('code', { text: match[2] }));
+      last = re.lastIndex;
+    }
+    if (last < text.length) node.appendChild(document.createTextNode(text.slice(last)));
+    return node;
+  }
+
+  function markdown(text, extraClass) {
+    var box = el('div', { class: 'md' + (extraClass ? ' ' + extraClass : '') });
+    if (typeof text !== 'string' || text === '') return box;
+
+    text.split(/\n{2,}/).forEach(function (block) {
+      var trimmed = block.replace(/\s+$/, '');
+      if (trimmed.trim() === '') return;
+
+      var heading = /^\s*(#{1,6})\s+(.*)$/.exec(trimmed);
+      if (heading) {
+        box.appendChild(appendInlineMarkdown(el('h4'), heading[2].trim()));
+        return;
+      }
+
+      var lines = trimmed.split('\n');
+      var ordered = lines.every(function (line) { return /^\s*\d+\.\s+/.test(line); });
+      var bulleted = lines.every(function (line) { return /^\s*[-*]\s+/.test(line); });
+      if (ordered || bulleted) {
+        var list = el(ordered ? 'ol' : 'ul');
+        lines.forEach(function (line) {
+          var body = line.replace(/^\s*(?:\d+\.|[-*])\s+/, '');
+          list.appendChild(appendInlineMarkdown(el('li'), body));
+        });
+        box.appendChild(list);
+        return;
+      }
+
+      box.appendChild(appendInlineMarkdown(el('p'), lines.join(' ').trim()));
+    });
+    return box;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Spec handling
+  // ---------------------------------------------------------------------------
+
+  /** Resolve a local "#/..." reference; anything else is returned untouched. */
+  function deref(node, depth) {
+    depth = depth || 0;
+    if (!node || typeof node !== 'object' || depth > 12) return node;
+    if (typeof node.$ref !== 'string' || node.$ref.slice(0, 2) !== '#/') return node;
+    var target = SPEC;
+    var parts = node.$ref.slice(2).split('/');
+    for (var i = 0; i < parts.length; i++) {
+      var key = decodeURIComponent(parts[i]).replace(/~1/g, '/').replace(/~0/g, '~');
+      if (target === null || typeof target !== 'object') return node;
+      target = target[key];
+    }
+    return target ? deref(target, depth + 1) : node;
+  }
+
+  /**
+   * Same as deref, but keeps the keywords written beside the $ref, which
+   * OpenAPI 3.1 allows: {"$ref": ".../Algorithm", "default": "zip"} must end
+   * up with both the enum and the default.
+   */
+  function resolveSchema(schema, depth) {
+    depth = depth || 0;
+    if (!schema || typeof schema !== 'object' || depth > 12) return schema;
+    if (typeof schema.$ref !== 'string') return schema;
+    var target = deref(schema, depth);
+    if (!target || target === schema || typeof target !== 'object') return schema;
+    var merged = {};
+    Object.keys(target).forEach(function (key) { merged[key] = target[key]; });
+    Object.keys(schema).forEach(function (key) {
+      if (key !== '$ref') merged[key] = schema[key];
+    });
+    return merged;
+  }
+
+  /**
+   * Where the API lives. servers[0].url is honoured only while it stays on
+   * this origin; anything pointing elsewhere is ignored on purpose, because
+   * the page must never talk to another host.
+   */
+  function resolveApiBase(spec) {
+    var fallback = new URL('/', location.href);
+    var servers = spec && spec.servers;
+    if (!Array.isArray(servers) || servers.length === 0) return fallback;
+    var raw = servers[0] && servers[0].url;
+    if (typeof raw !== 'string' || raw === '') return fallback;
+    try {
+      var url = new URL(raw, location.href);
+      if (url.origin !== location.origin) return fallback;
+      if (url.pathname.slice(-1) !== '/') url.pathname += '/';
+      url.search = '';
+      url.hash = '';
+      return url;
+    } catch (err) {
+      return fallback;
+    }
+  }
+
+  function slug(value) {
+    return String(value).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  }
+
+  /** Flatten spec.paths into operations, path level parameters included. */
+  function collectOperations() {
+    var operations = [];
+    var paths = (SPEC && SPEC.paths) || {};
+
+    Object.keys(paths).forEach(function (path) {
+      var item = deref(paths[path]);
+      if (!item || typeof item !== 'object') return;
+      var shared = Array.isArray(item.parameters) ? item.parameters : [];
+
+      METHODS.forEach(function (method) {
+        var op = item[method];
+        if (!op || typeof op !== 'object') return;
+        var own = Array.isArray(op.parameters) ? op.parameters : [];
+
+        var params = shared.concat(own)
+          .map(function (param) { return deref(param); })
+          .filter(function (param) { return param && typeof param === 'object' && param.name; })
+          .map(function (param) {
+            var copy = {};
+            Object.keys(param).forEach(function (key) { copy[key] = param[key]; });
+            copy.schema = resolveSchema(param.schema) || {};
+            return copy;
+          });
+
+        var rawResponses = op.responses || {};
+        var responses = Object.keys(rawResponses).sort().map(function (code) {
+          return { code: code, entry: deref(rawResponses[code]) || {} };
+        });
+
+        operations.push({
+          id: slug(method + '-' + path),
+          method: method.toUpperCase(),
+          path: path,
+          operationId: op.operationId || '',
+          summary: op.summary || '',
+          description: op.description || '',
+          deprecated: op.deprecated === true,
+          params: params,
+          requestBody: deref(op.requestBody),
+          responses: responses,
+          tag: (Array.isArray(op.tags) && op.tags.length ? String(op.tags[0]) : 'operations')
+        });
+      });
+    });
+    return operations;
+  }
+
+  /** Human label for a schema, for instance "integer (1 to 5)". */
+  function schemaLabel(schema) {
+    if (!schema || typeof schema !== 'object') return 'any';
+    var type = schema.type;
+    if (Array.isArray(type)) type = type.join(' or ');
+    if (!type && (schema.enum || schema.const !== undefined)) type = 'string';
+    if (!type) type = schema.title || 'any';
+    if (schema.format) type += ' (' + schema.format + ')';
+    if (schema.minimum !== undefined && schema.maximum !== undefined) {
+      type += ' (' + schema.minimum + ' to ' + schema.maximum + ')';
+    } else if (schema.minLength) {
+      type += ' (min length ' + schema.minLength + ')';
+    }
+    return type;
+  }
+
+  /** First example a media type object offers, as a plain value. */
+  function exampleEntries(media) {
+    if (!media || typeof media !== 'object') return [];
+    var out = [];
+    if (media.examples && typeof media.examples === 'object') {
+      Object.keys(media.examples).forEach(function (key) {
+        var entry = deref(media.examples[key]) || {};
+        out.push({ label: entry.summary || key, value: entry.value });
+      });
+    }
+    if (media.example !== undefined) out.push({ label: 'example', value: media.example });
+    return out;
+  }
+
+  function schemaExample(schema) {
+    if (!schema || typeof schema !== 'object') return undefined;
+    if (Array.isArray(schema.examples) && schema.examples.length) return schema.examples[0];
+    if (schema.example !== undefined) return schema.example;
+    if (schema.default !== undefined) return schema.default;
+    return undefined;
+  }
+
+  function isBinaryMedia(mediaType, schema) {
+    if (schema && (schema.format === 'binary' || schema.format === 'byte')) return true;
+    if (!mediaType) return false;
+    return /octet-stream|^image\/|^audio\/|^video\/|zip|tar|7z|pdf/i.test(mediaType);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Requests. Everything funnels through here, so the same origin rule lives
+  // in exactly one place.
+  // ---------------------------------------------------------------------------
+
+  function buildUrl(path, pathValues, queryPairs) {
+    var filled = String(path).replace(/\{([^}]*)\}/g, function (whole, key) {
+      var value = pathValues && pathValues[key] !== undefined ? pathValues[key] : '';
+      return encodeURIComponent(value);
+    });
+    var url = new URL(filled.replace(/^\/+/, ''), API_BASE);
+    (queryPairs || []).forEach(function (pair) {
+      if (pair[1] === undefined || pair[1] === null || pair[1] === '') return;
+      url.searchParams.set(pair[0], String(pair[1]));
+    });
+    return url;
+  }
+
+  function assertSameOrigin(url) {
+    if (url.origin !== location.origin) {
+      throw new Error('Refusing to call another origin: ' + url.origin);
+    }
+    return url;
+  }
+
+  function callApi(method, url, body, mediaType) {
+    assertSameOrigin(url);
+    var init = { method: method, headers: {}, cache: 'no-store' };
+    if (body !== undefined && body !== null) {
+      init.body = body;
+      if (mediaType) init.headers['content-type'] = mediaType;
+    }
+    var started = performance.now();
+    return fetch(url.href, init).then(function (response) {
+      return { response: response, elapsed: performance.now() - started };
+    });
+  }
+
+  /** Remember any "*_id" a JSON response carries, for the fill buttons. */
+  function captureIds(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    Object.keys(value).forEach(function (key) {
+      if (/_id$/.test(key) && typeof value[key] === 'string' && value[key] !== '') {
+        lastIds[key] = value[key];
+      }
+    });
+    idSubscribers.forEach(function (fn) { fn(lastIds); });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Response rendering
+  // ---------------------------------------------------------------------------
+
+  /** Pretty JSON with token colours, built from text nodes and spans only. */
+  function appendJson(pre, text) {
+    var re = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+    var last = 0;
+    var match;
+    while ((match = re.exec(text)) !== null) {
+      if (match.index > last) pre.appendChild(document.createTextNode(text.slice(last, match.index)));
+      if (match[1] !== undefined) {
+        pre.appendChild(el('span', { class: match[2] ? 'tok-key' : 'tok-str', text: match[1] }));
+        if (match[2]) pre.appendChild(document.createTextNode(match[2]));
+      } else if (match[3] !== undefined) {
+        pre.appendChild(el('span', { class: 'tok-lit', text: match[3] }));
+      } else {
+        pre.appendChild(el('span', { class: 'tok-num', text: match[4] }));
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) pre.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function jsonBlock(value) {
+    var pre = el('pre');
+    appendJson(pre, JSON.stringify(value, null, 2));
+    return pre;
+  }
+
+  function valueBlock(value) {
+    return typeof value === 'string' ? el('pre', { text: value }) : jsonBlock(value);
+  }
+
+  function headersTable(response) {
+    var rows = [];
+    response.headers.forEach(function (value, name) { rows.push([name, value]); });
+    rows.sort(function (a, b) { return a[0] < b[0] ? -1 : 1; });
+    return {
+      count: rows.length,
+      node: el('div', { class: 'scroll-x' }, el('table', null,
+        el('tbody', null, rows.map(function (row) {
+          return el('tr', null, [
+            el('td', { class: 'hname', text: row[0] }),
+            el('td', { text: row[1] })
+          ]);
+        }))
+      ))
+    };
+  }
+
+  function fold(summaryText, children, open) {
+    return el('details', { class: 'fold', open: open === true }, [
+      el('summary', { text: summaryText }),
+      el('div', { class: 'fold-body' }, children)
+    ]);
+  }
+
+  /** Usable file name out of Content-Disposition, path parts stripped. */
+  function filenameFromDisposition(value) {
+    if (!value) return null;
+    var name = null;
+    var star = /filename\*\s*=\s*[^']*'[^']*'([^;]+)/i.exec(value);
+    if (star) {
+      try { name = decodeURIComponent(star[1].trim()); } catch (err) { name = star[1].trim(); }
+    }
+    if (!name) {
+      var quoted = /filename\s*=\s*"([^"]*)"/i.exec(value);
+      if (quoted) name = quoted[1];
+    }
+    if (!name) {
+      var bare = /filename\s*=\s*([^;]+)/i.exec(value);
+      if (bare) name = bare[1].trim();
+    }
+    if (!name) return null;
+    return name.replace(/[\\/]+/g, '_').trim() || null;
+  }
+
+  function saveLink(blob, filename) {
+    return el('a', {
+      class: 'save',
+      href: objectUrlFor(blob),
+      download: filename,
+      text: 'Save ' + filename
+    });
+  }
+
+  /** Status pill, headers and body of a finished call, rendered into target. */
+  function renderResponse(target, url, method, result) {
+    var response = result.response;
+    clear(target);
+
+    target.appendChild(el('div', { class: 'result-head' }, [
+      el('span', {
+        class: 'pill ' + statusClass(response.status),
+        text: response.status + (response.statusText ? ' ' + response.statusText : '')
+      }),
+      el('span', { class: 'req-line', text: method + ' ' + url.pathname + url.search }),
+      el('span', { class: 'req-line', text: formatMs(result.elapsed) })
+    ]));
+
+    var headers = headersTable(response);
+    target.appendChild(fold('Response headers (' + headers.count + ')', headers.node));
+
+    var contentType = response.headers.get('content-type') || '';
+    var bodySlot = el('div');
+    target.appendChild(bodySlot);
+
+    if (/json/i.test(contentType)) {
+      return response.text().then(function (text) {
+        if (text === '') {
+          bodySlot.appendChild(el('div', { class: 'hint', text: 'Empty body.' }));
+          return;
+        }
+        var parsed;
+        try {
+          parsed = JSON.parse(text);
+        } catch (err) {
+          bodySlot.appendChild(el('pre', { text: text }));
+          return;
+        }
+        captureIds(parsed);
+        bodySlot.appendChild(jsonBlock(parsed));
+      });
+    }
+
+    if (/^text\/|xml|javascript|csv|x-www-form-urlencoded/i.test(contentType)) {
+      return response.text().then(function (text) {
+        bodySlot.appendChild(text === ''
+          ? el('div', { class: 'hint', text: 'Empty body.' })
+          : el('pre', { text: text }));
+      });
+    }
+
+    return response.blob().then(function (blob) {
+      if (blob.size === 0) {
+        bodySlot.appendChild(el('div', { class: 'hint', text: 'Empty body.' }));
+        return;
+      }
+      var name = filenameFromDisposition(response.headers.get('content-disposition'))
+        || (url.pathname.split('/').filter(Boolean).pop() || 'response') + '.bin';
+      bodySlot.appendChild(el('div', { class: 'binary-note' }, [
+        el('div', {
+          text: 'Binary response, not shown as text: ' + formatBytes(blob.size)
+            + ' of ' + (contentType || 'an unknown media type') + '.'
+        }),
+        saveLink(blob, name)
+      ]));
+    });
+  }
+
+  function renderCallError(target, error) {
+    clear(target);
+    target.appendChild(el('div', {
+      class: 'error-box',
+      text: 'The request could not be completed: '
+        + (error && error.message ? error.message : String(error))
+    }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Documentation blocks
+  // ---------------------------------------------------------------------------
+
+  function parameterTable(params) {
+    var rows = params.map(function (param) {
+      var schema = param.schema || {};
+      var chips = [el('span', { class: 'chip', text: schemaLabel(schema) })];
+      if (param.required) chips.push(el('span', { class: 'chip req', text: 'required' }));
+      if (schema.default !== undefined) {
+        chips.push(el('span', { class: 'chip def', text: 'default ' + String(schema.default) }));
+      }
+      if (schema.const !== undefined) {
+        chips.push(el('span', { class: 'chip', text: 'const ' + String(schema.const) }));
+      }
+      if (Array.isArray(schema.enum)) {
+        schema.enum.forEach(function (value) {
+          chips.push(el('span', { class: 'chip', text: String(value) }));
+        });
+      }
+      return el('tr', null, [
+        el('td', { class: 'cell-name', text: param.name }),
+        el('td', { text: param['in'] || '' }),
+        el('td', null, chips),
+        el('td', { class: 'cell-desc' }, markdown(param.description || '', 'small'))
+      ]);
+    });
+
+    return el('div', { class: 'scroll-x' }, el('table', null, [
+      el('thead', null, el('tr', null, [
+        el('th', { text: 'Name' }),
+        el('th', { text: 'In' }),
+        el('th', { text: 'Schema' }),
+        el('th', { text: 'Description' })
+      ])),
+      el('tbody', null, rows)
+    ]));
+  }
+
+  /** Property table for an object schema, one level deep. */
+  function schemaFold(rawSchema, fallbackName, prefix) {
+    var schema = resolveSchema(rawSchema);
+    if (!schema || typeof schema !== 'object') return null;
+    // A bare "string/binary" says nothing the media type chip has not said.
+    if (isBinaryMedia(null, schema) && !schema.properties && !schema.description) return null;
+    var title = schema.title || fallbackName || schemaLabel(schema);
+    var body = [];
+
+    if (schema.description) body.push(markdown(schema.description, 'small'));
+
+    if (schema.type === 'object' && schema.properties) {
+      var required = Array.isArray(schema.required) ? schema.required : [];
+      var rows = Object.keys(schema.properties).map(function (name) {
+        var property = resolveSchema(schema.properties[name]) || {};
+        var chips = [el('span', { class: 'chip', text: schemaLabel(property) })];
+        if (required.indexOf(name) !== -1) {
+          chips.push(el('span', { class: 'chip req', text: 'required' }));
+        }
+        if (property.const !== undefined) {
+          chips.push(el('span', { class: 'chip', text: 'const ' + String(property.const) }));
+        }
+        if (Array.isArray(property.enum)) {
+          property.enum.forEach(function (value) {
+            chips.push(el('span', { class: 'chip', text: String(value) }));
+          });
+        }
+        return el('tr', null, [
+          el('td', { class: 'cell-name', text: name }),
+          el('td', null, chips),
+          el('td', { class: 'cell-desc' }, markdown(property.description || '', 'small'))
+        ]);
+      });
+      body.push(el('div', { class: 'scroll-x' }, el('table', null, [
+        el('thead', null, el('tr', null, [
+          el('th', { text: 'Field' }),
+          el('th', { text: 'Schema' }),
+          el('th', { text: 'Description' })
+        ])),
+        el('tbody', null, rows)
+      ])));
+    } else {
+      var chips = [el('span', { class: 'chip', text: schemaLabel(schema) })];
+      if (Array.isArray(schema.enum)) {
+        schema.enum.forEach(function (value) {
+          chips.push(el('span', { class: 'chip', text: String(value) }));
+        });
+      }
+      body.push(el('div', null, chips));
+    }
+
+    if (!body.length) return null;
+    return fold((prefix ? prefix + ' schema: ' : 'Schema: ') + title, body);
+  }
+
+  function examplesFold(media, prefix) {
+    var entries = exampleEntries(media);
+    if (!entries.length) return null;
+    var blocks = entries.map(function (entry) {
+      return el('div', null, [
+        el('div', { class: 'example-label', text: entry.label }),
+        valueBlock(entry.value)
+      ]);
+    });
+    return fold((prefix ? prefix + ' examples (' : 'Examples (') + entries.length + ')', blocks);
+  }
+
+  function requestBodySection(body) {
+    var content = body.content || {};
+    var mediaTypes = Object.keys(content);
+    var bits = [el('div', null, mediaTypes.map(function (type) {
+      return el('span', { class: 'chip media', text: type });
+    }).concat([
+      el('span', {
+        class: 'chip' + (body.required ? ' req' : ''),
+        text: body.required ? 'required' : 'optional'
+      })
+    ]))];
+
+    if (body.description) bits.push(markdown(body.description, 'small'));
+
+    mediaTypes.forEach(function (type) {
+      var media = content[type] || {};
+      var prefix = mediaTypes.length > 1 ? type : null;
+      var schemaNode = schemaFold(media.schema, type, prefix);
+      if (schemaNode) bits.push(schemaNode);
+      var examples = examplesFold(media, prefix);
+      if (examples) bits.push(examples);
+    });
+
+    return el('div', { class: 'section' },
+      [el('div', { class: 'label', text: 'Request body' })].concat(bits));
+  }
+
+  function responseHeadersFold(headers) {
+    var names = Object.keys(headers);
+    if (!names.length) return null;
+    var rows = names.map(function (name) {
+      var entry = deref(headers[name]) || {};
+      return el('tr', null, [
+        el('td', { class: 'hname', text: name }),
+        el('td', { text: schemaLabel(resolveSchema(entry.schema)) }),
+        el('td', { class: 'cell-desc' }, markdown(entry.description || '', 'small'))
+      ]);
+    });
+    return fold('Headers (' + names.length + ')', el('div', { class: 'scroll-x' },
+      el('table', null, el('tbody', null, rows))));
+  }
+
+  function responsesSection(responses) {
+    var blocks = responses.map(function (item) {
+      var entry = item.entry || {};
+      var content = entry.content || {};
+      var mediaTypes = Object.keys(content);
+
+      var block = el('div', { class: 'resp' }, [
+        el('div', { class: 'resp-head' }, [
+          el('span', { class: 'code ' + statusClass(parseInt(item.code, 10)), text: item.code })
+        ].concat(mediaTypes.map(function (type) {
+          return el('span', { class: 'chip media', text: type });
+        })))
+      ]);
+
+      if (entry.description) block.appendChild(markdown(entry.description, 'small'));
+      if (entry.headers) {
+        var headersNode = responseHeadersFold(entry.headers);
+        if (headersNode) block.appendChild(headersNode);
+      }
+      mediaTypes.forEach(function (type) {
+        var media = content[type] || {};
+        var prefix = mediaTypes.length > 1 ? type : null;
+        var schemaNode = schemaFold(media.schema, type, prefix);
+        if (schemaNode) block.appendChild(schemaNode);
+        var examples = examplesFold(media, prefix);
+        if (examples) block.appendChild(examples);
+      });
+      return block;
+    });
+
+    return el('div', { class: 'section' },
+      [el('div', { class: 'label', text: 'Responses' })].concat(blocks));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Try it out
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One input per parameter: a select for enums, a number input for numeric
+   * schemas, a text input otherwise. Parameters named like an identifier the
+   * API already handed back get a button that fills the last one in.
+   */
+  function buildParamFields(op) {
+    var fields = el('div', { class: 'fields' });
+    var getters = [];
+    var byName = {};
+
+    op.params.forEach(function (param) {
+      var schema = param.schema || {};
+      var control;
+
+      if (Array.isArray(schema.enum)) {
+        control = el('select');
+        if (!param.required) {
+          control.appendChild(el('option', {
+            value: '',
+            text: schema.default !== undefined ? 'default (' + schema.default + ')' : '(omit)'
+          }));
+        }
+        schema.enum.forEach(function (value) {
+          control.appendChild(el('option', { value: String(value), text: String(value) }));
+        });
+      } else if (schema.type === 'integer' || schema.type === 'number') {
+        control = el('input', { type: 'number' });
+        if (schema.minimum !== undefined) control.setAttribute('min', String(schema.minimum));
+        if (schema.maximum !== undefined) control.setAttribute('max', String(schema.maximum));
+        if (schema.type === 'integer') control.setAttribute('step', '1');
+        if (schema.default !== undefined) {
+          control.setAttribute('placeholder', 'default ' + schema.default);
+        }
+      } else {
+        control = el('input', { type: 'text' });
+        var sample = param.example !== undefined ? param.example : schemaExample(schema);
+        control.setAttribute('placeholder', sample !== undefined ? String(sample) : param.name);
+      }
+
+      var inputRow = control;
+      if (/_id$/.test(param.name)) {
+        var fillButton = el('button', {
+          type: 'button',
+          class: 'tiny',
+          text: 'last',
+          title: 'Fill in the most recent ' + param.name + ' this page has seen',
+          onclick: function () {
+            if (lastIds[param.name]) control.value = lastIds[param.name];
+          }
+        });
+        fillButton.disabled = !lastIds[param.name];
+        idSubscribers.push(function (ids) { fillButton.disabled = !ids[param.name]; });
+        inputRow = el('div', { class: 'with-side' }, [control, fillButton]);
+      }
+
+      fields.appendChild(el('label', { class: 'field' }, [
+        el('span', { class: 'flabel' }, [
+          document.createTextNode(param.name + ' (' + (param['in'] || '') + ')'),
+          param.required ? el('span', { class: 'req-star', text: ' *' }) : null
+        ]),
+        inputRow,
+        param.description
+          ? el('span', { class: 'hint', text: firstSentence(param.description) })
+          : null
+      ]));
+
+      byName[param.name] = control;
+      getters.push({ param: param, control: control });
+    });
+
+    return { node: fields, getters: getters, byName: byName };
+  }
+
+  function firstSentence(text) {
+    var flat = String(text).replace(/\s+/g, ' ').replace(/`/g, '');
+    var stop = flat.indexOf('. ');
+    var out = stop === -1 ? flat : flat.slice(0, stop + 1);
+    return out.length > 190 ? out.slice(0, 187) + '...' : out;
+  }
+
+  /** File input for binary bodies, textarea for anything else. */
+  function buildBodyField(op, paramFields) {
+    var body = op.requestBody;
+    if (!body || !body.content) return null;
+    var mediaTypes = Object.keys(body.content);
+    if (!mediaTypes.length) return null;
+    var mediaType = mediaTypes[0];
+    var media = body.content[mediaType] || {};
+    var schema = resolveSchema(media.schema);
+
+    if (isBinaryMedia(mediaType, schema)) {
+      var fileInput = el('input', { type: 'file' });
+
+      // This API pairs a raw binary body with a "name" query parameter, so
+      // choosing a file fills that parameter in. Harmless when absent.
+      if (has(paramFields.byName, 'name') && paramFields.byName.name.tagName === 'INPUT') {
+        var nameControl = paramFields.byName.name;
+        fileInput.addEventListener('change', function () {
+          var file = fileInput.files && fileInput.files[0];
+          if (file) nameControl.value = file.name;
+        });
+      }
+
+      return {
+        node: el('div', { class: 'field' }, [
+          el('span', { class: 'flabel' }, [
+            document.createTextNode('body (' + mediaType + ')'),
+            body.required ? el('span', { class: 'req-star', text: ' *' }) : null
+          ]),
+          fileInput,
+          el('span', {
+            class: 'hint',
+            text: 'Sent as the raw request body. Nothing is wrapped around the bytes.'
+          })
+        ]),
+        mediaType: mediaType,
+        get: function () {
+          var file = fileInput.files && fileInput.files[0];
+          return file ? file : new Blob([], { type: mediaType });
+        }
+      };
+    }
+
+    var sample = exampleEntries(media)[0];
+    var textarea = el('textarea', {
+      placeholder: sample ? (typeof sample.value === 'string'
+        ? sample.value : JSON.stringify(sample.value, null, 2)) : ''
+    });
+    return {
+      node: el('div', { class: 'field' }, [
+        el('span', { class: 'flabel', text: 'body (' + mediaType + ')' }),
+        textarea
+      ]),
+      mediaType: mediaType,
+      get: function () { return textarea.value === '' ? null : textarea.value; }
+    };
+  }
+
+  function buildTrySection(op) {
+    var paramFields = buildParamFields(op);
+    var bodyField = buildBodyField(op, paramFields);
+    if (bodyField) paramFields.node.appendChild(bodyField.node);
+    if (!op.params.length && !bodyField) {
+      paramFields.node.appendChild(el('span', {
+        class: 'hint',
+        text: 'No parameters and no body. Just execute it.'
+      }));
+    }
+
+    var result = el('div', { class: 'result' });
+    var runButton = el('button', { type: 'button', class: 'primary', text: 'Execute' });
+    var status = el('span', { class: 'note' });
+
+    runButton.addEventListener('click', function () {
+      var pathValues = {};
+      var queryPairs = [];
+      var missing = [];
+
+      paramFields.getters.forEach(function (entry) {
+        var value = entry.control.value;
+        if (entry.param.required && value === '') missing.push(entry.param.name);
+        if (entry.param['in'] === 'path') pathValues[entry.param.name] = value;
+        else if (entry.param['in'] === 'query') queryPairs.push([entry.param.name, value]);
+      });
+
+      if (missing.length) {
+        clear(result);
+        result.appendChild(el('div', {
+          class: 'error-box',
+          text: 'Fill the required parameters first: ' + missing.join(', ')
+        }));
+        return;
+      }
+
+      var url;
+      try {
+        url = buildUrl(op.path, pathValues, queryPairs);
+        assertSameOrigin(url);
+      } catch (err) {
+        renderCallError(result, err);
+        return;
+      }
+
+      var payload = null;
+      var mediaType = null;
+      if (bodyField && op.method !== 'GET' && op.method !== 'HEAD') {
+        payload = bodyField.get();
+        mediaType = bodyField.mediaType;
+      }
+
+      runButton.disabled = true;
+      status.textContent = 'Calling ' + op.method + ' ' + url.pathname + ' ...';
+      clear(result);
+
+      callApi(op.method, url, payload, mediaType)
+        .then(function (call) { return renderResponse(result, url, op.method, call); })
+        .catch(function (err) { renderCallError(result, err); })
+        .then(function () {
+          runButton.disabled = false;
+          status.textContent = '';
+        });
+    });
+
+    return el('div', { class: 'try' }, [
+      el('div', { class: 'label', text: 'Try it out' }),
+      paramFields.node,
+      el('div', { class: 'actions' }, [runButton, status]),
+      result
+    ]);
+  }
+
+  function operationCard(op) {
+    var head = el('summary', { class: 'op-head' }, [
+      el('span', { class: 'badge ' + methodClass(op.method), text: op.method }),
+      appendAll(el('span', { class: 'op-path' }), pathNodes(op.path)),
+      op.summary ? el('span', { class: 'op-sum', text: op.summary }) : null,
+      op.deprecated ? el('span', { class: 'chip req', text: 'deprecated' }) : null
+    ]);
+
+    var body = el('div', { class: 'op-body' });
+    if (op.description) body.appendChild(markdown(op.description));
+    if (op.params.length) {
+      body.appendChild(el('div', { class: 'section' }, [
+        el('div', { class: 'label', text: 'Parameters' }),
+        parameterTable(op.params)
+      ]));
+    }
+    if (op.requestBody) body.appendChild(requestBodySection(op.requestBody));
+    if (op.responses.length) body.appendChild(responsesSection(op.responses));
+    body.appendChild(buildTrySection(op));
+
+    return el('details', { class: 'card', id: op.id }, [head, body]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Navigation
+  // ---------------------------------------------------------------------------
+
+  function buildNav(operations) {
+    var container = clear(byId('nav-groups'));
+    var order = [];
+    var grouped = {};
+
+    if (Array.isArray(SPEC.tags)) {
+      SPEC.tags.forEach(function (tag) {
+        if (tag && tag.name) { order.push(String(tag.name)); grouped[String(tag.name)] = []; }
+      });
+    }
+    operations.forEach(function (op) {
+      if (!has(grouped, op.tag)) { grouped[op.tag] = []; order.push(op.tag); }
+      grouped[op.tag].push(op);
+    });
+
+    order.forEach(function (tag) {
+      var group = grouped[tag];
+      if (!group || !group.length) return;
+      var links = group.map(function (op) {
+        var link = el('a', {
+          class: 'nav-link',
+          href: '#' + op.id,
+          title: op.summary || op.path
+        }, [
+          el('span', { class: 'badge sm ' + methodClass(op.method), text: op.method }),
+          el('span', { text: op.path })
+        ]);
+        link.addEventListener('click', function () {
+          var card = byId(op.id);
+          if (card) card.open = true;
+        });
+        return link;
+      });
+      container.appendChild(el('div', { class: 'nav-group' },
+        [el('div', { class: 'nav-title', text: tag })].concat(links)));
+    });
+  }
+
+  function wireExpandButtons() {
+    byId('expand-all').addEventListener('click', function () { setAllCards(true); });
+    byId('collapse-all').addEventListener('click', function () { setAllCards(false); });
+  }
+
+  function setAllCards(open) {
+    var cards = document.querySelectorAll('#ops details.card');
+    for (var i = 0; i < cards.length; i++) cards[i].open = open;
+  }
+
+  // ---------------------------------------------------------------------------
+  // "Run the whole flow": upload, poll, download, delete
+  // ---------------------------------------------------------------------------
+
+  var FLOW_PATHS = {
+    compress: '/compress',
+    job: '/jobs/{job_id}',
+    download: '/jobs/{job_id}/download'
+  };
+
+  function flowStep(list, name) {
+    var dot = el('span', { class: 'dot' });
+    var detail = el('div', { class: 'step-detail' });
+    var time = el('span', { class: 'step-time' });
+    var main = el('div', { class: 'step-main' }, [
+      el('div', { class: 'step-name', text: name }),
+      detail
+    ]);
+    list.appendChild(el('div', { class: 'step' }, [dot, main, time]));
+    return {
+      main: main,
+      start: function (text) { dot.className = 'dot run'; detail.textContent = text || 'running'; },
+      note: function (text) { detail.textContent = text; },
+      time: function (text) { time.textContent = text; },
+      ok: function (text, ms) {
+        dot.className = 'dot ok';
+        if (text !== undefined && text !== null) detail.textContent = text;
+        if (ms !== undefined) time.textContent = formatMs(ms);
+      },
+      fail: function (text, ms) {
+        dot.className = 'dot bad';
+        detail.textContent = text;
+        if (ms !== undefined) time.textContent = formatMs(ms);
+      }
+    };
+  }
+
+  /** Read {"detail": "..."} out of an error response, falling back to text. */
+  function errorDetail(response) {
+    return response.text().then(function (text) {
+      try {
+        var parsed = JSON.parse(text);
+        if (parsed && typeof parsed.detail === 'string') return parsed.detail;
+      } catch (err) { /* not JSON: use the raw text below */ }
+      return text || (response.status + ' ' + response.statusText);
+    });
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
+  function setupFlow(operations) {
+    var panel = byId('flow-panel');
+    var note = byId('flow-note');
+    var index = {};
+    operations.forEach(function (op) { index[op.method + ' ' + op.path] = op; });
+
+    var compressOp = index['POST ' + FLOW_PATHS.compress];
+    var jobOp = index['GET ' + FLOW_PATHS.job];
+    var downloadOp = index['GET ' + FLOW_PATHS.download];
+    var deleteOp = index['DELETE ' + FLOW_PATHS.job];
+
+    panel.hidden = false;
+
+    if (!compressOp || !jobOp || !downloadOp || !deleteOp) {
+      note.textContent = 'This description does not carry the four job endpoints, '
+        + 'so the flow runner is switched off.';
+      byId('flow-run').disabled = true;
+      return;
+    }
+
+    // The choices come from the spec, so the runner follows the document
+    // instead of keeping a second hardcoded copy of the contract.
+    var algorithmParam = null;
+    var levelParam = null;
+    compressOp.params.forEach(function (param) {
+      if (param.name === 'algorithm') algorithmParam = param;
+      if (param.name === 'level') levelParam = param;
+    });
+
+    var algorithmSchema = (algorithmParam && algorithmParam.schema) || {};
+    var choices = Array.isArray(algorithmSchema.enum) ? algorithmSchema.enum : ['zip'];
+    var algorithmSelect = clear(byId('flow-algorithm'));
+    choices.forEach(function (value) {
+      algorithmSelect.appendChild(el('option', { value: String(value), text: String(value) }));
+    });
+    if (algorithmSchema.default !== undefined) {
+      algorithmSelect.value = String(algorithmSchema.default);
+    }
+
+    var levelSchema = (levelParam && levelParam.schema) || {};
+    var levelInput = byId('flow-level');
+    if (levelSchema.minimum !== undefined) levelInput.setAttribute('min', String(levelSchema.minimum));
+    if (levelSchema.maximum !== undefined) levelInput.setAttribute('max', String(levelSchema.maximum));
+    levelInput.setAttribute('step', '1');
+    levelInput.value = levelSchema.default !== undefined ? String(levelSchema.default) : '3';
+
+    var fileInput = byId('flow-file');
+    var nameInput = byId('flow-name');
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (file) nameInput.value = file.name;
+    });
+
+    var runButton = byId('flow-run');
+    var cancelButton = byId('flow-cancel');
+    var cancelled = false;
+
+    cancelButton.addEventListener('click', function () {
+      cancelled = true;
+      cancelButton.disabled = true;
+      note.textContent = 'Cancelling after the request in flight.';
+    });
+
+    runButton.addEventListener('click', function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        note.textContent = 'Choose a file first.';
+        return;
+      }
+      cancelled = false;
+      runButton.disabled = true;
+      cancelButton.disabled = false;
+      note.textContent = '';
+      runFlow({
+        file: file,
+        name: nameInput.value || file.name,
+        algorithm: algorithmSelect.value,
+        level: levelInput.value,
+        isCancelled: function () { return cancelled; }
+      }).then(function () {
+        runButton.disabled = false;
+        cancelButton.disabled = true;
+      });
+    });
+  }
+
+  function runFlow(options) {
+    var steps = clear(byId('flow-steps'));
+    var out = clear(byId('flow-out'));
+    var note = byId('flow-note');
+    var flowStarted = performance.now();
+    var jobId = null;
+
+    var upload = flowStep(steps, '1. POST /compress');
+    var poll = flowStep(steps, '2. GET /jobs/{job_id}');
+    var download = flowStep(steps, '3. GET /jobs/{job_id}/download');
+    var remove = flowStep(steps, '4. DELETE /jobs/{job_id}');
+
+    upload.start('sending ' + formatBytes(options.file.size) + ' as ' + options.algorithm);
+
+    var uploadUrl = buildUrl(FLOW_PATHS.compress, {}, [
+      ['name', options.name],
+      ['algorithm', options.algorithm],
+      ['level', options.level]
+    ]);
+
+    return callApi('POST', uploadUrl, options.file, 'application/octet-stream')
+      .then(function (call) {
+        if (call.response.status !== 202) {
+          return errorDetail(call.response).then(function (detail) {
+            upload.fail(call.response.status + ': ' + detail, call.elapsed);
+            throw new Error('stop');
+          });
+        }
+        return call.response.json().then(function (job) {
+          jobId = job.job_id;
+          captureIds(job);
+          upload.ok('accepted as ' + job.archive_name + ', job ' + job.job_id, call.elapsed);
+        });
+      })
+      .then(function () {
+        // Poll until the job settles, recording every transition with the
+        // time since the flow started.
+        poll.start('polling every ' + POLL_INTERVAL_MS + ' ms');
+        var transitions = el('div', { class: 'transitions' });
+        poll.main.appendChild(transitions);
+        var seen = null;
+        var polls = 0;
+        var pollStarted = performance.now();
+
+        function tick() {
+          if (options.isCancelled()) {
+            poll.fail('cancelled after ' + polls + ' polls', performance.now() - pollStarted);
+            throw new Error('stop');
+          }
+          if (performance.now() - pollStarted > FLOW_TIMEOUT_MS) {
+            poll.fail('gave up after ' + formatMs(FLOW_TIMEOUT_MS), performance.now() - pollStarted);
+            throw new Error('stop');
+          }
+
+          var url = buildUrl(FLOW_PATHS.job, { job_id: jobId }, []);
+          return callApi('GET', url, null, null).then(function (call) {
+            polls += 1;
+            if (!call.response.ok) {
+              return errorDetail(call.response).then(function (detail) {
+                poll.fail(call.response.status + ': ' + detail, performance.now() - pollStarted);
+                throw new Error('stop');
+              });
+            }
+            return call.response.json().then(function (job) {
+              if (job.status !== seen) {
+                seen = job.status;
+                transitions.appendChild(el('div', { class: 'transition' }, [
+                  el('span', { class: 't-status', text: String(job.status) }),
+                  el('span', { text: 'at ' + formatMs(performance.now() - flowStarted) })
+                ]));
+              }
+              poll.time(formatMs(performance.now() - pollStarted));
+              poll.note(polls + ' polls, currently ' + String(job.status));
+
+              if (job.status === 'completed') {
+                poll.ok(polls + ' polls until completed', performance.now() - pollStarted);
+                return job;
+              }
+              if (job.status === 'failed') {
+                poll.fail('failed: ' + (job.error_message || 'no message given'),
+                  performance.now() - pollStarted);
+                throw new Error('stop');
+              }
+              return sleep(POLL_INTERVAL_MS).then(tick);
+            });
+          });
+        }
+
+        return tick();
+      })
+      .then(function (job) {
+        if (options.isCancelled()) {
+          download.fail('cancelled');
+          throw new Error('stop');
+        }
+        download.start('fetching the archive');
+        var url = buildUrl(FLOW_PATHS.download, { job_id: jobId }, []);
+        return callApi('GET', url, null, null).then(function (call) {
+          if (!call.response.ok) {
+            return errorDetail(call.response).then(function (detail) {
+              download.fail(call.response.status + ': ' + detail, call.elapsed);
+              throw new Error('stop');
+            });
+          }
+          var suggested = filenameFromDisposition(call.response.headers.get('content-disposition'));
+          var contentType = call.response.headers.get('content-type') || 'unset';
+          return call.response.blob().then(function (blob) {
+            var filename = suggested || job.archive_name || 'archive';
+            download.ok(formatBytes(blob.size) + ' as ' + filename, call.elapsed);
+            out.appendChild(saveLink(blob, filename));
+            out.appendChild(el('div', {
+              class: 'hint',
+              text: 'Content-Type ' + contentType + '. Uploaded '
+                + formatBytes(options.file.size) + ', archive ' + formatBytes(blob.size) + '.'
+            }));
+          });
+        });
+      })
+      .then(function () {
+        remove.start('cleaning the job up');
+        var url = buildUrl(FLOW_PATHS.job, { job_id: jobId }, []);
+        return callApi('DELETE', url, null, null).then(function (call) {
+          if (!call.response.ok) {
+            return errorDetail(call.response).then(function (detail) {
+              remove.fail(call.response.status + ': ' + detail, call.elapsed);
+              throw new Error('stop');
+            });
+          }
+          return call.response.json().then(function (body) {
+            remove.ok('deleted: ' + String(body.deleted), call.elapsed);
+          });
+        });
+      })
+      .then(function () {
+        note.textContent = 'Flow finished in ' + formatMs(performance.now() - flowStarted) + '.';
+      })
+      .catch(function (err) {
+        // A job left behind by a failed step is still deletable by hand from
+        // the DELETE operation below, so nothing is force deleted here.
+        note.textContent = (!err || err.message !== 'stop')
+          ? 'The flow stopped: ' + (err && err.message ? err.message : String(err))
+          : 'The flow stopped after ' + formatMs(performance.now() - flowStarted) + '.';
+      });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+
+  function showBootError(message, detail) {
+    var retry = el('button', { type: 'button', class: 'primary', text: 'Retry' });
+    retry.addEventListener('click', function () { start(); });
+    clear(byId('boot')).appendChild(el('div', { class: 'boot' }, [
+      el('h2', { text: message }),
+      el('p', { text: detail }),
+      el('p', {
+        text: 'This page reads ' + SPEC_URL + ' from its own origin and renders itself from it. '
+          + 'Serve the page from the API so the relative path resolves, then reload.'
+      }),
+      retry
+    ]));
+  }
+
+  function renderHeader(info) {
+    byId('spec-version').textContent = info.version ? 'v' + info.version : 'no version';
+    document.title = 'collapse-server-backend' + (info.version ? ' ' + info.version : '');
+    byId('spec-tagline').textContent = info.summary
+      || (info.description ? info.description.split('\n')[0] : '');
+
+    var originLabel = (location.origin && location.origin !== 'null')
+      ? location.origin : location.href;
+    var meta = clear(byId('origin-note'));
+    if (info.title && info.title !== 'collapse-server-backend') {
+      meta.appendChild(el('span', { text: info.title }));
+    }
+    if (info.license && info.license.name) {
+      meta.appendChild(el('span', { text: info.license.name }));
+    }
+    meta.appendChild(el('span', { text: 'calls go to ' + originLabel }));
+    meta.appendChild(el('a', { href: SPEC_URL, text: SPEC_URL }));
+  }
+
+  function renderAbout(info) {
+    var about = clear(byId('about'));
+    if (!info.description) return;
+    about.appendChild(el('details', { class: 'card about' }, [
+      el('summary', { text: 'About this API' }),
+      el('div', { class: 'about-body' }, markdown(info.description))
+    ]));
+  }
+
+  function renderSpec(spec) {
+    SPEC = spec;
+    API_BASE = resolveApiBase(spec);
+
+    var info = spec.info || {};
+    renderHeader(info);
+    renderAbout(info);
+
+    var operations = collectOperations();
+    var opsSection = clear(byId('ops'));
+
+    if (!operations.length) {
+      opsSection.appendChild(el('div', { class: 'boot' }, [
+        el('h2', { text: 'This description carries no operations.' }),
+        el('p', { text: SPEC_URL + ' parsed correctly, but its paths object is empty.' })
+      ]));
+      clear(byId('boot'));
+      return;
+    }
+
+    operations.forEach(function (op) { opsSection.appendChild(operationCard(op)); });
+    buildNav(operations);
+    setupFlow(operations);
+    clear(byId('boot'));
+
+    // Open whatever operation the address bar names.
+    if (location.hash.length > 1) {
+      var target = document.getElementById(location.hash.slice(1));
+      if (target && target.tagName === 'DETAILS') {
+        target.open = true;
+        target.scrollIntoView();
+      }
+    }
+  }
+
+  function start() {
+    clear(byId('boot')).appendChild(el('div', { class: 'boot' }, [
+      el('h2', { text: 'Loading ' + SPEC_URL + ' ...' })
+    ]));
+
+    fetch(SPEC_URL, { headers: { accept: 'application/json' }, cache: 'no-store' })
+      .then(function (response) {
+        if (!response.ok) {
+          throw new Error('The server answered ' + response.status
+            + (response.statusText ? ' ' + response.statusText : '') + '.');
+        }
+        return response.text();
+      })
+      .then(function (text) {
+        var spec;
+        try {
+          spec = JSON.parse(text);
+        } catch (err) {
+          throw new Error('The document is not valid JSON: ' + err.message);
+        }
+        renderSpec(spec);
+      })
+      .catch(function (err) {
+        showBootError('The API description could not be loaded.',
+          err && err.message ? err.message : String(err));
+      });
+  }
+
+  wireExpandButtons();
+  start();
+})();
+</script>
+</body>
+</html>

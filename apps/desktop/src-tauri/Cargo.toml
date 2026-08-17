@@ -1,9 +1,10 @@
 [package]
 name = "collapse-desktop"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 description = "Collapse — a small, fast file compressor"
 authors = ["cervantic"]
+license = "GPL-3.0-only"
 
 # Standalone workspace: kept out of the root Cargo workspace so a plain
 # `cargo test` at the repo root (core + CLI) does not need the Tauri system
@@ -19,6 +20,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 collapse-core = { path = "../../core" }
+# Remote compression. The HTTP lives here rather than in the webview, so the
+# app's CSP stays `default-src 'self'` and no network capability is needed.
+collapse-remote = { path = "../../remote" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }

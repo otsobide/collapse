@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-APPS := core cli desktop landing
+APPS := core remote cli server-backend server-frontend server-aio desktop landing
 
 # ---------------------------------------------------------------------------
 # Per-app delegation — `make <app>/<target>` runs <target> in apps/<app>/Makefile
@@ -16,13 +16,13 @@ $(foreach app,$(APPS),$(eval $(call APP_DELEGATE,$(app))))
 # Global targets
 # ---------------------------------------------------------------------------
 .PHONY: test
-test: core/test cli/test desktop/test ## Run every test suite
+test: core/test remote/test cli/test server-backend/test server-frontend/test desktop/test ## Run every test suite
 
 .PHONY: test/rust
-test/rust: core/test cli/test ## Run only the Rust tests
+test/rust: core/test remote/test cli/test server-backend/test ## Run only the Rust tests
 
 .PHONY: build
-build: core/build cli/build ## Build the Rust crates (debug)
+build: core/build remote/build cli/build server-backend/build ## Build the Rust crates (debug)
 
 .PHONY: fmt
 fmt: ## Format all Rust code
@@ -35,6 +35,62 @@ lint: ## Run clippy across the Rust workspace
 .PHONY: clean
 clean: ## Remove Rust build artifacts (per-app: `make desktop/clean`)
 	cargo clean
+
+# ---------------------------------------------------------------------------
+# Docker — collapse-server-backend in a container (see docker-compose.yml)
+#
+# "docker" is not in APPS, so these do not collide with the <app>/<target>
+# pattern rules above. Override the port or the image name inline, e.g.
+# `COLLAPSE_PORT=9000 make docker/up`.
+# ---------------------------------------------------------------------------
+COLLAPSE_PORT ?= 8000
+COLLAPSE_WEB_PORT ?= 8080
+IMAGE ?= collapse-server-backend:dev
+WEB_IMAGE ?= collapse-server-frontend:dev
+AIO_IMAGE ?= collapse-server-aio:dev
+COMPOSE ?= docker compose
+
+.PHONY: docker/build
+docker/build: ## Build both images (backend and web frontend)
+	docker build -f apps/server-backend/Dockerfile -t $(IMAGE) .
+	docker build -f apps/server-frontend/Dockerfile -t $(WEB_IMAGE) .
+
+.PHONY: docker/up
+docker/up: ## Start the stack in the background and print its URLs
+	COLLAPSE_PORT=$(COLLAPSE_PORT) COLLAPSE_WEB_PORT=$(COLLAPSE_WEB_PORT) $(COMPOSE) up -d --build
+	@echo "web app at http://localhost:$(COLLAPSE_WEB_PORT)"
+	@echo "API docs at http://localhost:$(COLLAPSE_PORT)/docs"
+
+.PHONY: docker/aio
+docker/aio: ## Start the all-in-one container (same ports, one image)
+	COLLAPSE_PORT=$(COLLAPSE_PORT) COLLAPSE_WEB_PORT=$(COLLAPSE_WEB_PORT) $(COMPOSE) --profile aio up -d --build aio
+	@echo "web app at http://localhost:$(COLLAPSE_WEB_PORT)"
+	@echo "API docs at http://localhost:$(COLLAPSE_PORT)/docs"
+
+.PHONY: docker/down
+docker/down: ## Stop the stack and remove its containers
+	$(COMPOSE) --profile aio down
+
+.PHONY: docker/logs
+docker/logs: ## Follow the container logs
+	$(COMPOSE) logs -f
+
+.PHONY: docker/shell
+docker/shell: ## Open a shell inside the running backend container
+	$(COMPOSE) exec backend /bin/bash
+
+.PHONY: docker/run
+docker/run: docker/build ## Run a throwaway container — ARGS="--max-upload-mb 50"
+	docker run --rm -p $(COLLAPSE_PORT):8000 $(IMAGE) $(ARGS)
+
+.PHONY: docker/smoke
+docker/smoke: ## Build, start, drive a real compression through the published port, stop
+	@apps/server-backend/smoke.sh $(COLLAPSE_PORT) $(IMAGE)
+
+.PHONY: docker/clean
+docker/clean: ## Remove the containers, the volume and the images
+	-$(COMPOSE) --profile aio down -v
+	-docker image rm $(IMAGE) $(WEB_IMAGE) $(AIO_IMAGE)
 
 .PHONY: help
 help: ## Show this help

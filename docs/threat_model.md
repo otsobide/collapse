@@ -2,8 +2,9 @@
 
 This document describes the security measures implemented in Collapse, the
 attacks they prevent, and the current limitations. Everything here applies to
-**`collapse-core`** — the engine every interface (CLI, desktop, …) builds on —
-so the guarantees hold no matter which front-end invokes it.
+**`collapse-core`** — the engine every interface (CLI, desktop, server) builds
+on — so the guarantees hold no matter which front-end invokes it, plus a
+section on what changes once a **server** is doing the work for someone else.
 
 ## Threat model
 
@@ -12,6 +13,11 @@ untrusted `.zip`, `.7z`, or `.tar` must never let the archive write, link, or
 read outside the directory you chose as the extraction target. Compression is
 lower-risk (you own the input tree), but it must not silently pull data from
 **outside** that tree into the archive.
+
+That framing assumes the machine doing the work owns its input, which is true
+of the CLI and the desktop app. It is **not** true of `collapse-server-backend`, which
+compresses what a client sends and, for directory uploads, extracts it first:
+see [The API server](#the-api-server).
 
 The trust boundary is the **output directory** on extraction, and the
 **source directory** on compression. Every measure below defends one of those
@@ -130,6 +136,77 @@ backends are only ever reached with a validated level.
 
 ---
 
+## The API server
+
+`collapse-server-backend` (and therefore the CLI's `--server`, and any front-end that
+uses `collapse-remote`) moves the trust boundary: the server acts on bytes
+someone else sent it.
+
+### 8. The server extracts an untrusted archive
+
+**Attack.** `POST /compress?envelope=tar` hands the server a tar that it
+unpacks before compressing the tree inside. That is the extraction direction,
+on input the server did not create, which is exactly the dangerous case this
+document opens with.
+
+**Prevention.** The unpacking goes through the same `extract_tar` every other
+caller uses, so it inherits every guarantee in measures #1 to #4: `unpack_in`
+refuses entries with `..`, strips root components, and blocks writing through
+a pre-existing symlink, while entries that are not regular files or
+directories (symlinks, hardlinks, device nodes) are skipped rather than
+created. The destination is the job's own staging directory, one per job.
+
+On top of that, the shape of what was unpacked is checked before compressing:
+it must be exactly one entry, it must be a directory, and its name must match
+the `name` the job was created for. A mismatch fails the job instead of
+compressing whatever happened to arrive.
+
+**Covered by** `apps/server-backend/tests/security.rs`, which posts hostile tars at the
+server itself: `a_traversing_entry_never_escapes_the_staging_area`,
+`an_absolute_entry_never_escapes_the_staging_area`,
+`a_symlink_entry_is_not_materialized`,
+`an_envelope_that_is_not_a_directory_is_refused` and
+`an_empty_envelope_is_refused`. Core's own suite already proves the extractor
+holds; these prove the **server** is wired to it and that a bad envelope fails
+the job rather than producing an archive.
+
+**Choice of envelope.** Tar is used *because it does not compress*. An archive
+that expands could turn a small upload into an unbounded write; a tar cannot,
+so the existing `--max-upload-mb` cap also bounds what reaches the disk. A zip
+or 7z envelope would have introduced a decompression bomb where there is none
+today, which is why it is not offered.
+
+### 9. What the server does not defend against
+
+Stated plainly, because deploying it assumes these:
+
+- **No authentication and no rate limiting.** Anyone who can reach the port can
+  submit jobs, and jobs consume CPU, memory and disk. Bind it to localhost (the
+  default, and what the container image publishes) or put it behind something
+  that authenticates.
+- **The web frontend proxies the API, so its port exposes the API too.** nginx
+  forwards `/compress` and `/jobs` to the backend, which is what keeps the
+  browser same-origin; the consequence is that publishing the web port to a
+  network publishes the whole unauthenticated API to it as well. Both default
+  to localhost for this reason. See [server.md](server.md#exposure).
+- **No transport security.** The server speaks plain HTTP, so uploaded content
+  and downloaded archives travel in the clear. Do not send anything sensitive
+  across a network you do not trust; terminate TLS in front of it if you must.
+
+  This cuts both ways: a **client** that picks a remote destination (the CLI's
+  `--server`, the desktop app's picker) is putting the file's contents on the
+  network. The desktop app says so in its servers panel, and both default to
+  compressing locally.
+- **Uploads are held in memory.** The request body is buffered before staging,
+  and the zip/7z backends buffer whole files, so concurrent large uploads
+  multiply. The upload cap and a container memory limit are the only ceilings;
+  the compose file sets one for that reason.
+- **Staging is only cleaned on request.** A job's files live until `DELETE
+  /jobs/{id}` (or the process exits, with the default temporary directory).
+  Abandoned jobs accumulate.
+
+---
+
 ## Known limitations (out of scope for now)
 
 These are **not** currently mitigated; treat them as accepted risk for the MVP
@@ -162,7 +239,8 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
 
 ## Testing & verification
 
-The extraction and symlink measures above are exercised by
+There are two security suites: `apps/server-backend/tests/security.rs` for what a client
+can send the server (measure 8), and, for the engine itself,
 `apps/core/tests/security.rs` (level validation, measure 7, lives with the
 functional tests in `apps/core/tests/compression.rs`), which
 crafts genuinely malicious archives (smuggling traversal and symlink entries

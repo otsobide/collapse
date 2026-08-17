@@ -1,0 +1,26 @@
+[package]
+name = "collapse-remote"
+version = "0.5.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Client for a remote Collapse compression server"
+
+[dependencies]
+collapse-core = { path = "../core" }
+ureq = "2"
+serde_json = "1"
+thiserror = "2"
+# Directories are packed into a tar envelope on disk before upload.
+tempfile = "3"
+
+# Integration tests (tests/) drive the protocol helpers through the public
+# API, and tests/client.rs serves a real collapse-server-backend in-process to cover the
+# paths no consumer's own suite reaches (the health probe, the rejection
+# mapping). collapse-server-backend does not depend on this crate, so there is no cycle.
+[dev-dependencies]
+serde_json = "1"
+collapse-server-backend = { path = "../server-backend" }
+collapse-core = { path = "../core" }
+tokio = { version = "1", features = ["rt", "net"] }
+axum = "0.8"
+tempfile = "3"

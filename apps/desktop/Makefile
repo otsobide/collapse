@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := build
-.PHONY: install test dev build bundle bundle-linux compile clean
+.PHONY: install test dev build bundle bundle-linux bundle-windows compile clean
 
 # Install JS deps only when the lockfile changed.
 node_modules: package-lock.json
@@ -26,6 +26,9 @@ bundle: node_modules ## Build the distributable macOS app: one universal .dmg
 # instead works with or without FUSE.
 bundle-linux: node_modules ## Build the distributable Linux packages: .deb, .rpm and .AppImage (host arch)
 	APPIMAGE_EXTRACT_AND_RUN=1 npm run tauri -- build --bundles deb,rpm,appimage
+
+bundle-windows: node_modules ## Build the distributable Windows installers: .msi and NSIS setup .exe
+	npm run tauri -- build --bundles msi,nsis
 
 compile: node_modules ## Compile the app (frontend + Rust) without bundling installers
 	npm run tauri -- build --no-bundle
