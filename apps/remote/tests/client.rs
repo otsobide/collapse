@@ -35,7 +35,10 @@ fn collapse_server() -> String {
     let storage = tempfile::TempDir::new().unwrap();
     let path = storage.path().to_path_buf();
     std::mem::forget(storage); // the server outlives the test that started it
-    serve(move || collapse_server_backend::build_app(path, collapse_server_backend::DEFAULT_MAX_UPLOAD_MB))
+    serve(move || {
+        collapse_server_backend::build_app(path, collapse_server_backend::DEFAULT_MAX_UPLOAD_MB)
+            .expect("the server builds")
+    })
 }
 
 // A port from the unassigned range: nothing listens there.

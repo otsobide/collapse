@@ -15,7 +15,7 @@ use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 /// Build the app over its own staging dir; keep the TempDir alive with it.
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB);
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     (router, storage)
 }
 
@@ -443,7 +443,7 @@ async fn compress_rejects_name_with_separators() {
 async fn compress_rejects_body_over_the_limit() {
     // A 1 MiB cap and a body just past it.
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), 1);
+    let router = build_app(storage.path().to_path_buf(), 1).expect("the app builds");
     let response = post_compress(&router, "name=big.bin", &vec![0u8; 1024 * 1024 + 1]).await;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);

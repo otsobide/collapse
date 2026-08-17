@@ -27,6 +27,9 @@ clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.6", features = ["trace"] }
+# The job registry. "bundled" compiles SQLite into the binary, so the runtime
+# image needs no libsqlite3 and every platform gets the same version.
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 # Integration tests (tests/) drive the router in-process and verify the
 # responses round-trip through the core extractors.
@@ -38,3 +41,6 @@ tempfile = "3"
 tokio = { version = "1", features = ["time"] }
 # tests/security.rs crafts hostile tar envelopes by hand.
 tar = "0.4"
+# tests/registry.rs reads the database back with a plain SQLite client, to
+# check what the server wrote rather than what its own code says it wrote.
+rusqlite = { version = "0.40.2", features = ["bundled"] }

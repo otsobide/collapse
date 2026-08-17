@@ -58,6 +58,12 @@ async fn main() {
         .await
         .unwrap_or_else(|e| fatal(format!("Cannot bind to {addr}: {e}")));
 
+    // Built before announcing the port: it opens the registry and reconciles
+    // it against the staging directory, and a server that cannot do that has
+    // nothing to serve.
+    let app = build_app(storage_dir.clone(), cli.max_upload_mb)
+        .unwrap_or_else(|e| fatal(e.to_string()));
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         %addr,
@@ -66,7 +72,7 @@ async fn main() {
         "collapse-server-backend listening"
     );
 
-    if let Err(e) = axum::serve(listener, build_app(storage_dir, cli.max_upload_mb)).await {
+    if let Err(e) = axum::serve(listener, app).await {
         fatal(format!("Server error: {e}"));
     }
 }

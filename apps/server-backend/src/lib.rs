@@ -14,6 +14,7 @@
 // (handlers and the worker) stays private.
 pub mod error;
 pub mod logging;
+pub mod maintenance;
 pub mod models;
 pub mod openapi;
 pub mod registry;
@@ -34,6 +35,7 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tower_http::LatencyUnit;
 use tracing::Level;
 
+use error::StartupError;
 use registry::Registry;
 use storage::Storage;
 
@@ -69,9 +71,25 @@ pub(crate) struct AppState {
 /// Errors are JSON `{"detail": "..."}` with a 4xx/5xx status. Job files are
 /// staged under `storage_dir` (one directory per job); `max_upload_mb` caps
 /// the accepted request body size (413 beyond it).
-pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
-    let registry = Arc::new(Registry::new());
+pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Result<Router, StartupError> {
+    // The registry's database lives in here, so the directory has to exist
+    // before it is opened; `--storage-dir` may name one that does not yet.
+    std::fs::create_dir_all(&storage_dir)?;
+
+    let registry = Arc::new(Registry::open(&storage_dir)?);
     let storage = Arc::new(Storage::new(storage_dir));
+
+    // Before serving anything: the rows and the staged files have to agree.
+    // Nothing is compressing yet, which is what makes that judgement safe.
+    let reconciled = maintenance::reconcile(&registry, &storage)?;
+    if !reconciled.is_clean() {
+        tracing::info!(
+            interrupted = reconciled.interrupted,
+            without_files = reconciled.without_files,
+            orphaned = reconciled.orphaned,
+            "reconciled the registry with the staging directory"
+        );
+    }
 
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
     queue::start_worker(registry.clone(), storage.clone(), queue_rx);
@@ -106,8 +124,8 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
     // /health stays outside the traced router on purpose: a container probes
     // it every ten seconds, and those lines would bury everything worth
     // reading. Its failures surface as the container's health status.
-    Router::new()
+    Ok(Router::new()
         .route("/health", get(routes::health))
         .merge(api)
-        .with_state(state)
+        .with_state(state))
 }

@@ -27,13 +27,29 @@ pub(crate) fn start_worker(
     });
 }
 
+/// Record a status change, or say so. The worker has nobody to return an
+/// error to, and a status that never lands would leave a client polling a job
+/// that is quietly finished.
+fn set_status(registry: &Registry, job_id: &str, status: JobStatus, message: Option<String>) {
+    if let Err(e) = registry.update_status(job_id, status, message) {
+        tracing::error!(job = %job_id, %status, error = %e, "cannot record the job status");
+    }
+}
+
 async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
-    // The job may have been deleted while queued.
-    let Some(job) = registry.get(job_id) else {
-        tracing::debug!(job = %job_id, "gone before it started");
-        return;
+    let job = match registry.get(job_id) {
+        Ok(Some(job)) => job,
+        // The job may have been deleted while queued.
+        Ok(None) => {
+            tracing::debug!(job = %job_id, "gone before it started");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(job = %job_id, error = %e, "cannot read the job, skipping it");
+            return;
+        }
     };
-    registry.update_status(job_id, JobStatus::Compressing, None);
+    set_status(registry, job_id, JobStatus::Compressing, None);
     tracing::info!(
         job = %job_id,
         name = %job.name,
@@ -61,7 +77,7 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
     let elapsed_ms = started.elapsed().as_millis();
     match result {
         Ok(Ok(())) => {
-            registry.update_status(job_id, JobStatus::Completed, None);
+            set_status(registry, job_id, JobStatus::Completed, None);
             let bytes = std::fs::metadata(storage.output_path(job_id, algorithm))
                 .map(|meta| meta.len())
                 .unwrap_or_default();
@@ -71,11 +87,11 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
         // client's problem, not the server's, so it is a warning; a worker
         // that dies mid-job is ours.
         Ok(Err(message)) => {
-            registry.update_status(job_id, JobStatus::Failed, Some(message.clone()));
+            set_status(registry, job_id, JobStatus::Failed, Some(message.clone()));
             tracing::warn!(job = %job_id, elapsed_ms, error = %message, "failed");
         }
         Err(e) => {
-            registry.update_status(job_id, JobStatus::Failed, Some(e.to_string()));
+            set_status(registry, job_id, JobStatus::Failed, Some(e.to_string()));
             tracing::error!(job = %job_id, elapsed_ms, error = %e, "the worker died on this job");
         }
     }

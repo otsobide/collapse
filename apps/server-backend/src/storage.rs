@@ -58,6 +58,27 @@ impl Storage {
         let dir = self.job_dir(job_id);
         Path::new(&dir).exists() && fs::remove_dir_all(&dir).is_ok()
     }
+
+    /// Whether a job still has files staged.
+    pub fn has_job(&self, job_id: &str) -> bool {
+        self.job_dir(job_id).is_dir()
+    }
+
+    /// The job ids that have a directory in the staging area.
+    ///
+    /// Only directories count, which is what keeps the registry's own
+    /// database (a file, plus the two SQLite writes beside it) from ever
+    /// looking like an abandoned job.
+    pub fn staged_jobs(&self) -> io::Result<Vec<String>> {
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(&self.base)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                ids.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(ids)
+    }
 }
 
 /// The single top-level directory an unpacked tar envelope must contain.
