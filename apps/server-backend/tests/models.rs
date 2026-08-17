@@ -87,6 +87,18 @@ fn job_serializes_the_expected_fields() {
 }
 
 #[test]
+fn an_envelope_prints_what_the_wire_carries() {
+    // Logs quote the envelope, and an operator reads them against the request
+    // that produced them, so the two spellings have to agree.
+    for envelope in [Envelope::None, Envelope::Tar] {
+        assert_eq!(
+            envelope.to_string(),
+            serde_json::to_value(envelope).unwrap().as_str().unwrap()
+        );
+    }
+}
+
+#[test]
 fn a_failed_job_carries_its_message() {
     let mut job = job("notes.txt", Algorithm::Zip);
     job.status = JobStatus::Failed;
