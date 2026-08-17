@@ -4,7 +4,7 @@
   "info": {
     "title": "Collapse Compression API",
     "summary": "Asynchronous HTTP compression: upload a file, poll the job, download the archive.",
-    "description": "Collapse compresses a single uploaded file into a 7z, tar or zip archive. Extraction is not exposed over HTTP; it stays local to the clients.\n\n## The asynchronous flow\n\nUploading never blocks on the compression itself. A client is expected to walk these four steps in order:\n\n1. **Create the job.** `POST /compress?name=<bare file name>` with the raw file bytes as the request body. The server stages the upload, queues the work and answers `202 Accepted` with a Job whose `status` is `queued`. Keep the `job_id`.\n2. **Poll the job.** `GET /jobs/{job_id}` until `status` leaves `queued`/`compressing` and settles on `completed` or `failed`. Polling every 100 to 500 ms is plenty. A `failed` job carries the reason in `error_message`.\n3. **Download the archive.** `GET /jobs/{job_id}/download` returns the archive bytes once the job is `completed`, with `Content-Disposition: attachment` naming it `archive_name`. Downloading before the job completes is a `409`. The download may be repeated for as long as the job exists.\n4. **Delete the job.** `DELETE /jobs/{job_id}` drops the job and its staged files. Nothing else reclaims that disk space, so always delete after a successful download.\n\nA background worker processes jobs sequentially, so several uploads queue up instead of competing for the CPU. Jobs live in an in-memory registry and their files in a per-job staging directory: nothing survives a server restart.\n\n## Error shape\n\nErrors raised by the application are JSON objects of the shape `{\"detail\": \"<message>\"}`. Two rejections are produced by the web framework before the handler runs and are `text/plain` instead: a query string that cannot be deserialized at all (a missing `name`, a non numeric `level`) and a request body over the upload cap. Both are documented on the operations where they can occur.",
+    "description": "Collapse compresses a single uploaded file into a 7z, tar or zip archive. Extraction is not exposed over HTTP; it stays local to the clients.\n\n## The asynchronous flow\n\nUploading never blocks on the compression itself. A client is expected to walk these four steps in order:\n\n1. **Create the job.** `POST /compress?name=<bare file name>` with the raw file bytes as the request body. The server stages the upload, queues the work and answers `202 Accepted` with a Job whose `status` is `queued`. Keep the `job_id`.\n2. **Poll the job.** `GET /jobs/{job_id}` until `status` leaves `queued`/`compressing` and settles on `completed` or `failed`. Polling every 100 to 500 ms is plenty. A `failed` job carries the reason in `error_message`.\n3. **Download the archive.** `GET /jobs/{job_id}/download` returns the archive bytes once the job is `completed`, with `Content-Disposition: attachment` naming it `archive_name`. Downloading before the job completes is a `409`. The download may be repeated for as long as the job exists.\n4. **Delete the job.** `DELETE /jobs/{job_id}` drops the job and its staged files. Nothing else reclaims that disk space, so always delete after a successful download.\n\nA background worker processes jobs sequentially, so several uploads queue up instead of competing for the CPU. Jobs are recorded in a database beside their staged files, so a completed job can still be polled, downloaded and deleted after the server restarts. A job that was queued or compressing when the server went down does not survive it: no worker outlived the stop, so it comes back `failed`, saying so in `error_message`.\n\n## Error shape\n\nErrors raised by the application are JSON objects of the shape `{\"detail\": \"<message>\"}`. Two rejections are produced by the web framework before the handler runs and are `text/plain` instead: a query string that cannot be deserialized at all (a missing `name`, a non numeric `level`) and a request body over the upload cap. Both are documented on the operations where they can occur.",
     "version": "__VERSION__",
     "license": {
       "name": "GPL-3.0-only",
@@ -253,7 +253,7 @@
           "jobs"
         ],
         "summary": "Poll a compression job",
-        "description": "Step 2 of the asynchronous flow. Returns the job's current state. Poll this until `status` leaves `queued`/`compressing`.\n\nThe lifecycle is `queued` then `compressing` then either `completed` or `failed`, and it never moves backwards. On `completed` the archive is ready at `GET /jobs/{job_id}/download`. On `failed`, `error_message` carries the reason and no archive exists; the job should be deleted.\n\nThe job disappears (and this becomes a `404`) once it is deleted or the server restarts.",
+        "description": "Step 2 of the asynchronous flow. Returns the job's current state. Poll this until `status` leaves `queued`/`compressing`.\n\nThe lifecycle is `queued` then `compressing` then either `completed` or `failed`, and it never moves backwards. On `completed` the archive is ready at `GET /jobs/{job_id}/download`. On `failed`, `error_message` carries the reason and no archive exists; the job should be deleted.\n\nThe job disappears (and this becomes a `404`) once it is deleted. A restart does not remove it: a job that was still running when the server stopped comes back `failed` rather than missing.",
         "operationId": "getJob",
         "responses": {
           "200": {
@@ -433,7 +433,7 @@
             }
           },
           "404": {
-            "description": "Either no job carries this `job_id` (unknown, already deleted, or lost to a restart), or the job exists and reports `completed` but its archive is gone from the staging directory.",
+            "description": "Either no job carries this `job_id` (unknown, or already deleted), or the job exists and reports `completed` but its archive is gone from the staging directory.",
             "content": {
               "application/json": {
                 "schema": {
@@ -499,7 +499,7 @@
     },
     "responses": {
       "JobNotFound": {
-        "description": "No job carries this `job_id`. It was never created, it was already deleted, or the server restarted (jobs are held in memory only).",
+        "description": "No job carries this `job_id`. It was never created, or it was already deleted.",
         "content": {
           "application/json": {
             "schema": {

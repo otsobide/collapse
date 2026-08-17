@@ -386,6 +386,12 @@ The web app's nginx logs its own accesses separately, in the same stream.
 unpacked tree for a tar envelope (`tree/`) and the produced archive. Deleting
 the job removes the whole directory.
 
+Beside those directories sits **`jobs.db`**, the SQLite registry (with its
+`-wal` and `-shm` companions). It is what lets a job survive a restart, and the
+reason the staging area must be a persistent volume if you care about that:
+every *directory* in there is a job, and anything that is not claimed by a row
+in the database is deleted at startup.
+
 **Nothing in it is worth backing up.** It is staging for in-flight work, not
 data the server owns. Sizing it, worst case per job:
 
@@ -402,8 +408,18 @@ concurrent uploads add up. Give the volume room, or lower the cap.
 docker compose build --pull && docker compose up -d
 ```
 
-In-flight jobs do not survive: the registry is in memory, and the server does
-not currently shut down gracefully. Upgrade when nothing is running.
+Finished jobs survive it: the registry is on disk, so a client can still poll,
+download and delete across the restart. A job that was **running** does not,
+because the server does not yet shut down gracefully and no worker survives the
+stop. Those come back marked `failed`, with `error_message` saying the server
+restarted, so a client is told rather than left polling forever. Still worth
+upgrading when nothing is running.
+
+The reconciliation that does this reports itself when it finds anything:
+
+```
+INFO collapse_server_backend: reconciled the registry with the staging directory interrupted=0 without_files=0 orphaned=1
+```
 
 ## Exposure
 
@@ -426,13 +442,12 @@ a tar someone sent it, is in [threat_model.md](threat_model.md#the-api-server).
 
 Worth knowing before deploying this unattended:
 
-- **Abandoned jobs are never cleaned up.** Staged files are removed when a
-  client deletes its job, and all three clients do, but a client that stops
-  half way leaves its directory behind. Nothing sweeps them, and a restart
-  makes it permanent: the registry is in memory, so after a restart the API
-  answers 404 for those jobs while their files stay on the volume. Recreate the
-  volume periodically, or run without one and let a container restart wipe the
-  staging area.
+- **Abandoned jobs still pile up.** Staged files are removed when a client
+  deletes its job, and all three clients do, but a client that stops half way
+  leaves its directory behind and nothing yet reaps it by age. What a restart
+  no longer does is strand it: the registry is on disk, so those jobs can still
+  be listed, downloaded and deleted afterwards, and anything with no owner at
+  all is swept at startup. A time-based reaper is the next piece.
 - **No graceful shutdown.** `docker stop` cuts in-flight uploads, downloads and
   compressions immediately.
 - **Uploads and downloads are buffered whole in memory** by the backend, on top
@@ -467,7 +482,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 84 Rust tests, including a hostile-tar suite
+make server-backend/test     # 101 Rust tests, including a hostile-tar suite
 make server-frontend/test    # 40 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
 make docker/smoke            # the split stack through its published port

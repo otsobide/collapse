@@ -7,7 +7,8 @@
 //! answers `202 Accepted` with a job while a background worker compresses,
 //! the job can be polled, the archive downloaded once completed, and the job
 //! deleted afterwards. Jobs are staged on disk under a per-job directory and
-//! tracked in memory (nothing survives a restart).
+//! recorded in a SQLite registry beside them, so they outlive the process;
+//! `build_app` reconciles the two before serving.
 
 // The building blocks are public because the integration tests are a separate
 // crate and source files here carry no inline `mod tests`; only the wiring
