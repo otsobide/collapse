@@ -1,5 +1,6 @@
 //! Command-line interface for Collapse: compress a file or folder, or extract
-//! an archive, on top of `collapse-core`.
+//! an archive, on top of `collapse-core` — or, with `--server`, through a
+//! remote collapse-server-backend instance.
 
 use std::path::{Path, PathBuf};
 
@@ -38,6 +39,11 @@ pub enum Command {
         /// Overwrite the output archive if it already exists.
         #[arg(long)]
         force: bool,
+
+        /// Compress on a remote Collapse server instead of locally
+        /// (e.g. http://localhost:8000).
+        #[arg(long, value_name = "URL")]
+        server: Option<String>,
     },
 
     /// Extract an archive (.zip, .7z or .tar) — format detected by extension.
@@ -113,6 +119,12 @@ pub enum CliError {
     InvalidPath(PathBuf),
 
     #[error(transparent)]
+    Remote(#[from] collapse_remote::RemoteError),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error(transparent)]
     Core(#[from] collapse_core::CompressionError),
 }
 
@@ -125,7 +137,8 @@ pub fn run(cli: Cli) -> Result<Outcome, CliError> {
             level,
             output,
             force,
-        } => run_compress(path, format, level, output, force),
+            server,
+        } => run_compress(path, format, level, output, force, server),
         Command::Extract { archive, output } => run_extract(archive, output),
     }
 }
@@ -136,6 +149,7 @@ fn run_compress(
     level: u32,
     output: Option<PathBuf>,
     force: bool,
+    server: Option<String>,
 ) -> Result<Outcome, CliError> {
     // Canonicalize so `.`/`..`/trailing slashes resolve to a real path with a
     // usable file name (and to detect an output that aliases the source).
@@ -160,17 +174,26 @@ fn run_compress(
         }
     }
 
-    if source.is_dir() {
-        compress_dir(&source, &output, algorithm, level)?;
-    } else if source.is_file() {
-        let arcname = source
-            .file_name()
-            .ok_or_else(|| CliError::InvalidPath(source.clone()))?
-            .to_string_lossy()
-            .into_owned();
-        compress(&source, &output, &arcname, algorithm, level)?;
-    } else {
+    if !source.is_dir() && !source.is_file() {
         return Err(CliError::UnsupportedSource(source));
+    }
+
+    match server.as_deref() {
+        // Remote handles both shapes: a file goes as-is, a directory travels
+        // as a tar envelope the server unwraps.
+        Some(server) => {
+            let archive = collapse_remote::compress_path(server, &source, algorithm, level)?;
+            std::fs::write(&output, archive)?;
+        }
+        None if source.is_dir() => compress_dir(&source, &output, algorithm, level)?,
+        None => {
+            let arcname = source
+                .file_name()
+                .ok_or_else(|| CliError::InvalidPath(source.clone()))?
+                .to_string_lossy()
+                .into_owned();
+            compress(&source, &output, &arcname, algorithm, level)?;
+        }
     }
 
     Ok(Outcome::Compressed { output })

@@ -14,11 +14,19 @@ path = "src/lib.rs"
 
 [dependencies]
 collapse-core = { path = "../core" }
+# Remote compression (--server); the exchange itself lives in collapse-remote
+# so the desktop app can reuse it.
+collapse-remote = { path = "../remote" }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 
-# Integration tests (tests/) drive the real clap parser and verify with core.
+# Integration tests (tests/) drive the real clap parser and verify with core;
+# the remote tests (tests/remote.rs) serve the real collapse-server-backend router
+# in-process on an ephemeral port.
 [dev-dependencies]
 collapse-core = { path = "../core" }
+collapse-server-backend = { path = "../server-backend" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+tokio = { version = "1", features = ["rt", "net"] }
+axum = "0.8"

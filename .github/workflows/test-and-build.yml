@@ -34,6 +34,33 @@ jobs:
       - name: Test collapse-core
         run: make core/test
 
+  # The remote client sits between core and the front-ends that talk to a
+  # server, so it gates nothing but is tested alongside them.
+  remote:
+    name: remote
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Test collapse-remote
+        run: make remote/test
+
   # Runs only if core passed; parallel with vitest.
   cli:
     name: cli
@@ -59,6 +86,69 @@ jobs:
 
       - name: Test collapse-cli
         run: make cli/test
+
+  # Runs only if core passed; parallel with cli and vitest.
+  server-backend:
+    name: server-backend
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Test collapse-server-backend
+        run: make server-backend/test
+
+  # The web frontend is Node only: it talks to the backend over HTTP and
+  # mocks that in tests, so it needs no Rust at all.
+  web:
+    name: vitest (server-frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/server-frontend/package-lock.json
+
+      - name: Run Vitest
+        run: make server-frontend/test
+
+  build-web:
+    name: build (server-frontend)
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/server-frontend/package-lock.json
+
+      - name: Build the web frontend
+        run: make server-frontend/build
 
   # Runs only if core passed; parallel with cli. Frontend tests mock the Tauri
   # IPC, so this needs Node only — no Tauri system dependencies.
@@ -108,6 +198,31 @@ jobs:
       - name: Build collapse-core
         run: make core/build
 
+  build-remote:
+    name: build (remote)
+    needs: remote
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build collapse-remote
+        run: make remote/build
+
   build-cli:
     name: build (cli)
     needs: cli
@@ -132,6 +247,31 @@ jobs:
 
       - name: Build collapse-cli
         run: make cli/build
+
+  build-server-backend:
+    name: build (server-backend)
+    needs: server-backend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build collapse-server-backend
+        run: make server-backend/build
 
   # Compiles the whole desktop app (frontend + the src-tauri Rust crate,
   # which no other CI job compiles) without bundling installers. Needs the

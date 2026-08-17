@@ -4,6 +4,18 @@ import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { baseName, dirOf, isArchive, levelHint as levelHintFor } from './paths.js'
+import {
+  LOCAL,
+  labelFor,
+  loadDestination,
+  loadSources,
+  makeSource,
+  removeSource,
+  saveDestination,
+  saveSources,
+  upsertSource,
+  urlFor,
+} from './sources.js'
 
 const mode = ref('compress') // 'compress' | 'extract'
 const inputPath = ref(null)
@@ -17,8 +29,62 @@ const error = ref(null)
 const format = ref('zip')
 const level = ref(3)
 
+// Where compression runs. Remotes are remembered between launches; the
+// dropdown is always on screen in compress mode, so the active one is never
+// hidden state.
+const sources = ref(loadSources())
+const destination = ref(loadDestination(sources.value))
+const showSources = ref(false)
+const newLabel = ref('')
+const newUrl = ref('')
+const checking = ref(null) // source id being tested
+const checkResults = ref({}) // id -> { ok, message }
+const addError = ref(null)
+
+const destinationLabel = computed(() => labelFor(sources.value, destination.value))
+const serverUrl = computed(() => urlFor(sources.value, destination.value))
+const isRemote = computed(() => serverUrl.value !== null)
+
 const levelHint = computed(() => levelHintFor(level.value))
 const levelDisabled = computed(() => format.value === 'tar')
+
+function selectDestination(value) {
+  destination.value = value
+  saveDestination(value)
+}
+
+function addSource() {
+  addError.value = null
+  const source = makeSource(newLabel.value, newUrl.value)
+  if (!source) {
+    addError.value = 'Enter a server address, for example http://localhost:8000'
+    return
+  }
+  sources.value = upsertSource(sources.value, source)
+  saveSources(sources.value)
+  newLabel.value = ''
+  newUrl.value = ''
+  checkSource(source)
+}
+
+function forgetSource(id) {
+  sources.value = removeSource(sources.value, id)
+  saveSources(sources.value)
+  // Never leave the app pointing at a server that is no longer listed.
+  if (destination.value === id) selectDestination(LOCAL)
+}
+
+async function checkSource(source) {
+  checking.value = source.id
+  try {
+    await invoke('check_server', { url: source.url })
+    checkResults.value = { ...checkResults.value, [source.id]: { ok: true, message: 'Reachable' } }
+  } catch (e) {
+    checkResults.value = { ...checkResults.value, [source.id]: { ok: false, message: String(e) } }
+  } finally {
+    checking.value = null
+  }
+}
 
 async function pick(path) {
   error.value = null
@@ -76,6 +142,7 @@ async function compress() {
       output: savePath,
       format: format.value,
       level: level.value,
+      server: serverUrl.value,
     })
     result.value = { output }
   } catch (e) {
@@ -145,11 +212,63 @@ onUnmounted(() => {
 
     <header data-tauri-drag-region>
       <span class="wordmark">Collapse</span>
-      <div class="modes">
-        <button :class="{ on: mode === 'compress' }" @click="setMode('compress')">Compress</button>
-        <button :class="{ on: mode === 'extract' }" @click="setMode('extract')">Extract</button>
+      <div class="header-right">
+        <div class="modes">
+          <button :class="{ on: mode === 'compress' }" @click="setMode('compress')">Compress</button>
+          <button :class="{ on: mode === 'extract' }" @click="setMode('extract')">Extract</button>
+        </div>
+        <button class="gear" title="Servers" aria-label="Servers" @click="showSources = true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
       </div>
     </header>
+
+    <!-- Servers -->
+    <Transition name="fade">
+      <div v-if="showSources" class="sheet" @click.self="showSources = false">
+        <div class="sheet-panel">
+          <div class="sheet-head">
+            <p class="sheet-title">Servers</p>
+            <button class="ghost small" @click="showSources = false">Done</button>
+          </div>
+          <p class="sheet-hint">
+            Compress on another machine running <code>collapse-server-backend</code>. Files and folders
+            are sent over the network, so only add servers you trust.
+          </p>
+
+          <ul v-if="sources.length" class="sources">
+            <li v-for="s in sources" :key="s.id">
+              <div class="source-text">
+                <span class="source-label">{{ s.label }}</span>
+                <span class="source-url">{{ s.url }}</span>
+                <span
+                  v-if="checkResults[s.id]"
+                  class="source-check"
+                  :class="{ bad: !checkResults[s.id].ok }"
+                >{{ checkResults[s.id].message }}</span>
+              </div>
+              <div class="source-actions">
+                <button class="ghost small" :disabled="checking === s.id" @click="checkSource(s)">
+                  {{ checking === s.id ? 'Testing…' : 'Test' }}
+                </button>
+                <button class="ghost small danger" @click="forgetSource(s.id)">Remove</button>
+              </div>
+            </li>
+          </ul>
+          <p v-else class="sheet-empty">No servers yet. Everything compresses on this computer.</p>
+
+          <form class="add-source" @submit.prevent="addSource">
+            <input v-model="newLabel" type="text" placeholder="Name (optional)" />
+            <input v-model="newUrl" type="text" placeholder="http://localhost:8000" />
+            <button class="cta small" type="submit">Add</button>
+          </form>
+          <p v-if="addError" class="add-error">{{ addError }}</p>
+        </div>
+      </div>
+    </Transition>
 
     <main>
       <Transition name="fade" mode="out-in">
@@ -209,6 +328,20 @@ onUnmounted(() => {
           <!-- Compress options -->
           <Transition name="slide">
             <div v-if="inputPath && mode === 'compress'" class="panel">
+              <!-- Only compression can run remotely, so this row belongs to
+                   compress mode alone. -->
+              <div class="row">
+                <span class="row-label">Where</span>
+                <select
+                  class="picker"
+                  :value="destination"
+                  @change="selectDestination($event.target.value)"
+                >
+                  <option :value="LOCAL">This computer</option>
+                  <option v-for="s in sources" :key="s.id" :value="s.id">{{ s.label }}</option>
+                </select>
+              </div>
+
               <div class="row">
                 <span class="row-label">Format</span>
                 <div class="segmented">
@@ -232,7 +365,7 @@ onUnmounted(() => {
 
               <button class="cta" :disabled="!canProceed" @click="compress">
                 <span v-if="processing" class="spinner"></span>
-                {{ processing ? 'Compressing…' : 'Compress' }}
+                {{ processing ? (isRemote ? `Compressing on ${destinationLabel}…` : 'Compressing…') : 'Compress' }}
               </button>
             </div>
           </Transition>
@@ -358,6 +491,25 @@ header {
 .modes button:hover { color: var(--text); }
 .modes button.on { background: var(--accent-dim); color: var(--accent); }
 
+.header-right { display: flex; align-items: center; gap: 8px; }
+
+.gear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.18s, border-color 0.18s;
+}
+.gear svg { width: 15px; height: 15px; }
+.gear:hover { color: var(--accent); border-color: var(--accent); }
+
 main {
   position: relative;
   flex: 1;
@@ -365,6 +517,92 @@ main {
   flex-direction: column;
   padding: 10px 22px 22px;
 }
+
+/* Destination picker: a native select, so the list stays usable as servers
+   are added instead of a segmented control that outgrows the window. */
+.picker {
+  font-family: var(--font);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 6px 10px;
+  max-width: 62%;
+  cursor: pointer;
+}
+.picker:hover { border-color: var(--accent); }
+
+/* ---- servers sheet ---- */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(62, 54, 43, 0.28);
+}
+
+.sheet-panel {
+  width: 100%;
+  max-height: 88vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 20px 20px;
+  background: var(--surface);
+  border-top: 1px solid var(--border-2);
+  border-radius: var(--r) var(--r) 0 0;
+}
+
+.sheet-head { display: flex; align-items: center; justify-content: space-between; }
+.sheet-title { font-size: 0.95rem; font-weight: 700; }
+.sheet-hint { font-size: 0.76rem; color: var(--muted); line-height: 1.5; }
+.sheet-hint code { background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+.sheet-empty { font-size: 0.78rem; color: var(--faint); padding: 6px 0; }
+
+.sources { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+.sources li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.source-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.source-label { font-size: 0.83rem; font-weight: 600; }
+.source-url { font-size: 0.71rem; color: var(--faint); word-break: break-all; }
+.source-check { font-size: 0.71rem; color: var(--success); }
+.source-check.bad { color: var(--danger); }
+.source-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.ghost.small, .cta.small {
+  margin-top: 0;
+  padding: 6px 11px;
+  font-size: 0.74rem;
+  width: auto;
+}
+.ghost.small.danger:hover { border-color: var(--danger); color: var(--danger); background: var(--danger-dim); }
+
+.add-source { display: flex; gap: 6px; align-items: center; }
+.add-source input {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font);
+  font-size: 0.78rem;
+  color: var(--text);
+  background: var(--cream);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.add-source input:focus { outline: none; border-color: var(--accent); }
+.add-error { font-size: 0.74rem; color: var(--danger); }
 
 .work { display: flex; flex-direction: column; gap: 14px; flex: 1; }
 

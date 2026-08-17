@@ -30,12 +30,13 @@ fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
 fn compress_parses_defaults() {
     let cli = parse(&["collapse", "compress", "file.txt"]).unwrap();
     match cli.command {
-        Command::Compress { path, level, output, force, format } => {
+        Command::Compress { path, level, output, force, format, server } => {
             assert_eq!(path.to_str().unwrap(), "file.txt");
             assert_eq!(level, 3);
             assert!(output.is_none());
             assert!(format.is_none());
             assert!(!force);
+            assert!(server.is_none());
         }
         _ => panic!("expected compress"),
     }

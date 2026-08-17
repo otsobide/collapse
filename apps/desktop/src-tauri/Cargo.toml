@@ -20,6 +20,9 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 collapse-core = { path = "../../core" }
+# Remote compression. The HTTP lives here rather than in the webview, so the
+# app's CSP stays `default-src 'self'` and no network capability is needed.
+collapse-remote = { path = "../../remote" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }

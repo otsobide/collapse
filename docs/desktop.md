@@ -7,6 +7,14 @@ interface using the cervantic palette (warm cream + terracotta, monospace).
 
 It runs on **macOS, Windows and Linux** from one codebase.
 
+Compression can also be handed to a remote `collapse-server-backend` instance: the
+compress options carry a **destination picker**, defaulting to this computer,
+and the gear in the header opens a panel to add, test and remove servers. The
+list is remembered between launches. The HTTP happens in Rust through
+`collapse-remote`, not in the webview, which is what keeps the app's CSP at
+`default-src 'self'` and needs no network capability. Extraction has no remote
+mode, so the picker only appears when compressing.
+
 ## Layout
 
 ```
@@ -114,6 +122,7 @@ arm64 packages and Flathub are optional later channels.
 - CI covers the desktop app in `test-and-build.yml`: a `vitest (desktop)` job
   runs the frontend suite (Node only, Tauri IPC mocked), and a `build (desktop)`
   job installs the Tauri Linux system deps and compiles the whole app via
-  `make desktop/compile` (`tauri build --no-bundle`). The macOS universal
+  `make desktop/compile` (`tauri build --no-bundle`). That build job is the only
+  thing that type-checks the `src-tauri` crate, including the remote path. The macOS universal
   `.dmg` is built by `release.yml` on each version tag. The `src-tauri` crate
   stays out of the root `cargo test` pipeline, which needs no Tauri deps.

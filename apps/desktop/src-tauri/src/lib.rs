@@ -14,16 +14,26 @@ fn is_directory(path: String) -> bool {
 }
 
 /// Compress a file or a whole folder into `output`.
+///
+/// With `server` set, the work happens on a remote Collapse instance instead:
+/// the bytes go out (a folder as a tar envelope), the archive comes back and
+/// is written to the same `output` the local path would use. This command is
+/// deliberately synchronous, so Tauri runs it on its blocking pool and the
+/// window stays responsive while the server works.
 #[tauri::command]
 fn compress_path(
     path: String,
     output: String,
     format: String,
     level: u32,
+    server: Option<String>,
 ) -> Result<String, String> {
     let source = PathBuf::from(&path);
     if !source.exists() {
         return Err(format!("Not found: {path}"));
+    }
+    if !source.is_dir() && !source.is_file() {
+        return Err("Unsupported source (not a regular file or directory).".to_string());
     }
 
     let algorithm: Algorithm = format.parse()?;
@@ -35,20 +45,34 @@ fn compress_path(
         return Err("The output is the same file as the source.".to_string());
     }
 
-    if source.is_dir() {
-        compress_dir(&source, &output_path, algorithm, level).map_err(|e| e.to_string())?;
-    } else if source.is_file() {
-        let arcname = source
-            .file_name()
-            .ok_or_else(|| "Invalid source path.".to_string())?
-            .to_string_lossy()
-            .into_owned();
-        compress(&source, &output_path, &arcname, algorithm, level).map_err(|e| e.to_string())?;
-    } else {
-        return Err("Unsupported source (not a regular file or directory).".to_string());
+    match server.as_deref().filter(|s| !s.is_empty()) {
+        Some(server) => {
+            let archive = collapse_remote::compress_path(server, &source, algorithm, level)
+                .map_err(|e| e.to_string())?;
+            std::fs::write(&output_path, archive).map_err(|e| e.to_string())?;
+        }
+        None if source.is_dir() => {
+            compress_dir(&source, &output_path, algorithm, level).map_err(|e| e.to_string())?
+        }
+        None => {
+            let arcname = source
+                .file_name()
+                .ok_or_else(|| "Invalid source path.".to_string())?
+                .to_string_lossy()
+                .into_owned();
+            compress(&source, &output_path, &arcname, algorithm, level)
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     Ok(output_path.to_string_lossy().into_owned())
+}
+
+/// Check that a remote Collapse server is reachable, so a typo surfaces in
+/// the settings panel rather than at the end of an upload.
+#[tauri::command]
+fn check_server(url: String) -> Result<(), String> {
+    collapse_remote::check_health(&url).map_err(|e| e.to_string())
 }
 
 /// Extract an archive into `output_dir`, returning the extracted file paths.
@@ -89,7 +113,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             is_directory,
             compress_path,
-            extract_archive
+            extract_archive,
+            check_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

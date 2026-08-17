@@ -1,7 +1,7 @@
 {
   "seo": {
     "title": "Collapse — a small, fast file compressor",
-    "description": "Collapse is a small, fast, open-source file compressor for MacOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives, and back. Local-first, no tracking."
+    "description": "A small, fast, open-source file compressor for MacOS, Windows and Linux. Turn files and folders into 7z, ZIP or tar archives and back, from a desktop app or your terminal."
   },
   "nav": {
     "download": "Download",
@@ -13,10 +13,10 @@
     "eyebrow": "Collapse",
     "titleLine1": "A small, fast",
     "titleLine2": "file compressor.",
-    "lead": "Drag in a file or a folder, pick a format, and get a smaller archive in seconds. 7z, ZIP and tar, in and out. Local, open-source, refreshingly simple.",
+    "lead": "Drag in a file or a folder, pick a format, and get a smaller archive in seconds. 7z, ZIP and tar, in and out, from a desktop window or your terminal.",
     "ctaDownload": "Download →",
     "ctaFeatures": "See what it does",
-    "tagline": "Open source · Local-first · No tracking",
+    "tagline": "Open source · Desktop app & CLI · 7z, ZIP, tar",
     "dropLabel": "Drop a file or folder",
     "dropHint": "or browse"
   },
@@ -50,13 +50,21 @@
         "title": "Compress & extract",
         "body": "It goes both ways: drop an archive back in and the format is detected for you."
       },
+      "modes": {
+        "title": "Two modes",
+        "body": "Compress on this machine, or hand the work to a Collapse server you run yourself when you would rather a stronger one did it. Pick per archive; local is the default."
+      },
+      "interfaces": {
+        "title": "App & command line",
+        "body": "One engine behind a calm window and a terminal command, so clicking and scripting produce the same archive."
+      },
       "safe": {
-        "title": "Safe & private",
-        "body": "Extraction can never escape its folder, and nothing ever leaves your machine."
+        "title": "Safe extraction",
+        "body": "An archive can never write outside the folder you picked, however it was crafted."
       }
     }
   },
   "footer": {
-    "meta": "Open source · Local-first · No tracking · part of Cervantic"
+    "meta": "Open source · Desktop app & CLI · part of Cervantic"
   }
 }

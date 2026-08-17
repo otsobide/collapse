@@ -1,0 +1,117 @@
+# Bring Collapse up locally:
+#
+#   make docker/up      then open http://localhost:8080 for the web app,
+#                       or http://localhost:8000/docs for the API itself
+#
+# Override the ports or the upload cap without editing this file:
+#
+#   COLLAPSE_PORT=9000 COLLAPSE_WEB_PORT=9090 make docker/up
+#   COLLAPSE_MAX_UPLOAD_MB=50 make docker/up
+#
+# Or run the whole thing as a single container instead:
+#
+#   make docker/aio     same two ports, one image
+
+name: collapse
+
+services:
+  backend:
+    build:
+      # The context is the repository root: collapse-server-backend depends on
+      # collapse-core through a path dependency.
+      context: .
+      dockerfile: apps/server-backend/Dockerfile
+    image: collapse-server-backend:dev
+    container_name: collapse-server-backend
+
+    # Appended to the image's ENTRYPOINT, which already pins --host 0.0.0.0.
+    command:
+      - --port
+      - "8000"
+      - --max-upload-mb
+      - "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+
+    # Published on the loopback interface only, matching the server's own
+    # default posture: the API has no authentication and no rate limiting, so
+    # it should not land on the LAN by accident. Change to
+    # "${COLLAPSE_PORT:-8000}:8000" if you really want it reachable from
+    # other machines.
+    ports:
+      - "127.0.0.1:${COLLAPSE_PORT:-8000}:8000"
+
+    # Job staging. Uploads and archives live here, so keep them off the
+    # container's writable layer.
+    volumes:
+      - jobs:/var/lib/collapse
+
+    # The zip and 7z backends buffer whole files in memory and nothing caps an
+    # archive's expansion, so a container-level ceiling is the only thing
+    # standing between a large upload and the host's RAM.
+    mem_limit: 2g
+
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/server-frontend/Dockerfile
+    image: collapse-server-frontend:dev
+    container_name: collapse-server-frontend
+
+    # nginx serves the app AND proxies the API to the backend, so the browser
+    # only ever talks to one origin. That is what lets the backend keep no
+    # CORS layer, rather than opening it up the way the reference
+    # implementation did.
+    environment:
+      COLLAPSE_BACKEND: backend:8000
+
+    ports:
+      - "127.0.0.1:${COLLAPSE_WEB_PORT:-8080}:8080"
+
+    # Only waits for the port to accept connections, not for a healthy
+    # backend: the app loads regardless and tells the user if the server is
+    # unreachable.
+    depends_on:
+      backend:
+        condition: service_started
+
+    restart: unless-stopped
+
+  # The same server and web app in ONE container, which is what most people
+  # actually want to deploy. It publishes the same two ports, so it sits
+  # behind a profile and never starts alongside the pair above:
+  #
+  #   make docker/aio
+  #
+  # It is packaging only: the binary and the bundle are the very ones the
+  # split images use, and it reuses the frontend's nginx template.
+  aio:
+    profiles: ["aio"]
+    build:
+      context: .
+      dockerfile: apps/server-aio/Dockerfile
+    image: collapse-server-aio:dev
+    container_name: collapse-server-aio
+
+    environment:
+      COLLAPSE_MAX_UPLOAD_MB: "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+
+    ports:
+      - "127.0.0.1:${COLLAPSE_WEB_PORT:-8080}:8080"
+      - "127.0.0.1:${COLLAPSE_PORT:-8000}:8000"
+
+    volumes:
+      - jobs:/var/lib/collapse
+
+    mem_limit: 2g
+    restart: unless-stopped
+
+volumes:
+  jobs:
