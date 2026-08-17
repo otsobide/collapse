@@ -44,3 +44,6 @@ tar = "0.4"
 # tests/registry.rs reads the database back with a plain SQLite client, to
 # check what the server wrote rather than what its own code says it wrote.
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# tests/e2e.rs talks to the real binary over a real socket, so it needs an
+# HTTP client of its own. ureq is the one collapse-remote already uses.
+ureq = "2"

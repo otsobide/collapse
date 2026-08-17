@@ -482,14 +482,18 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 101 Rust tests, including a hostile-tar suite
+make server-backend/test     # 111 Rust tests: unit, a hostile-tar suite, and
+                             # an end-to-end suite that runs the real binary
 make server-frontend/test    # 40 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
 make docker/smoke            # the split stack through its published port
 ```
 
-The backend's suite drives the whole app in-process with no sockets; the
-frontend's stubs `fetch`, so neither needs the other running. CI runs both,
-plus a build of each. The Docker packaging is **not** in CI: the two smoke
+Most of the backend's suite drives the app in-process with no sockets, which is
+fast and precise. `tests/e2e.rs` is the other half: it **launches the real
+binary** on a port the operating system picks, drives every endpoint over a
+real socket, and covers the things no in-process test can reach, starting with
+a job outliving the process that made it. The frontend's suite stubs `fetch`,
+so neither side needs the other running. CI runs both, plus a build of each. The Docker packaging is **not** in CI: the two smoke
 targets are the way to check it, and they are worth running after touching a
 Dockerfile, the compose file or the workspace layout.

@@ -64,9 +64,14 @@ async fn main() {
     let app = build_app(storage_dir.clone(), cli.max_upload_mb)
         .unwrap_or_else(|e| fatal(e.to_string()));
 
+    // The address the socket actually got, not the one that was asked for:
+    // with `--port 0` the operating system picks, and the log is the only
+    // place that says which.
+    let bound = listener.local_addr().unwrap_or(addr);
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        %addr,
+        addr = %bound,
         max_upload_mb = cli.max_upload_mb,
         storage_dir = %storage_dir.display(),
         "collapse-server-backend listening"
