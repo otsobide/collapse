@@ -96,8 +96,13 @@ The default `tauri build` is **not** sandboxed (it targets direct download); the
 App Store build is a separate, entitlements-applied invocation.
 
 ### Windows
-Distribute the `.msi` / NSIS installer (optionally code-signed with an
-Authenticode certificate). The Microsoft Store is an optional later channel.
+What ships **today**: every GitHub release includes an x64 **`.msi`** and an
+NSIS **setup `.exe`** (with sha256 checksums), built on the Windows runner by
+`make desktop/bundle-windows` (`tauri build --bundles msi,nsis`; the NSIS
+installer is per-user, `installMode: currentUser`, so it needs no admin
+prompt). Both are unsigned for now, so SmartScreen interposes on first run
+(More info → Run anyway) until we sign with an Authenticode certificate. The
+Microsoft Store is an optional later channel.
 
 ### Linux
 What ships **today**: every GitHub release includes an x86_64 **`.deb`**,
@@ -124,5 +129,6 @@ arm64 packages and Flathub are optional later channels.
   job installs the Tauri Linux system deps and compiles the whole app via
   `make desktop/compile` (`tauri build --no-bundle`). That build job is the only
   thing that type-checks the `src-tauri` crate, including the remote path. The macOS universal
-  `.dmg` is built by `release.yml` on each version tag. The `src-tauri` crate
+  `.dmg` and the Windows installers are built by `release.yml` on each
+  version tag. The `src-tauri` crate
   stays out of the root `cargo test` pipeline, which needs no Tauri deps.

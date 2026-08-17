@@ -65,13 +65,13 @@ so it must be served at a **domain/subdomain root** — not under a subpath like
 ## What the page serves
 
 The page is one row per operating system: macOS (`.dmg`), Linux (`.deb`,
-`.rpm`, AppImage) and Windows (still a "coming soon" placeholder). Every
+`.rpm`, AppImage) and Windows (`.msi`, setup `.exe`). Every
 download **resolves its link at page load**: `pages/index.vue` fetches
 `https://api.github.com/repos/otsobide/collapse/releases/latest` client-side and
 matches each button to the first release asset whose name ends in that
 extension. A button whose asset is missing from the release renders as a
-disabled "soon" chip instead, so the AppImage entry becomes a real download the
-moment such an asset ships, with no page change. With JavaScript disabled or the
+disabled "soon" chip instead, so the AppImage and Windows entries become real
+downloads the moment such assets ship, with no page change. With JavaScript disabled or the
 API unreachable, the available buttons fall back to the releases page.
 
 ## Languages
