@@ -26,10 +26,11 @@ function assetUrl(ext) {
 }
 
 // One row per OS. A download without `href` links to the releases page;
-// `soon: true` renders as a disabled chip instead of a button. AppImage is
-// derived from the release assets, so it turns into a real download the
-// moment an .AppImage asset ships, with no page change needed. File
-// extensions stay untranslated; only the prose around them is localized.
+// `soon: true` renders as a disabled chip instead of a button. AppImage and
+// the Windows installers are derived from the release assets, so each turns
+// into a real download the moment such an asset ships, with no page change
+// needed. File extensions stay untranslated; only the prose around them is
+// localized.
 const systems = computed(() => [
   {
     name: 'MacOS',
@@ -48,7 +49,10 @@ const systems = computed(() => [
   {
     name: 'Windows',
     detail: t('download.systems.windows'),
-    downloads: [{ label: t('download.installer'), soon: true }],
+    downloads: [
+      { label: '.msi', href: assetUrl('.msi'), soon: !assetUrl('.msi') },
+      { label: '.exe', href: assetUrl('.exe'), soon: !assetUrl('.exe') },
+    ],
   },
 ])
 

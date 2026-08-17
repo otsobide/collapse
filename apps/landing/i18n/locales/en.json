@@ -24,7 +24,6 @@
     "eyebrow": "Download",
     "title": "Pick your platform.",
     "soon": "soon",
-    "installer": "Installer",
     "latest": "Latest release {version}",
     "unsigned": "Builds are unsigned for now (MacOS: right-click → Open on first launch). Checksums live on the",
     "releasePage": "release page",
