@@ -334,18 +334,24 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 ## CI
 
 `.github/workflows/test-and-build.yml` runs on every push to `main`/`dev` and
-on pull requests, entirely on Linux runners. Per app, tests gate the build: a
-`core` job (`make core/test`) gates a `cli` job, an `api` job and a `vitest`
-job (the desktop suite, Tauri IPC mocked), and each app's build job runs only
-after its own tests pass — `build (core)`, `build (cli)`, `build (api)`, and
-`build (desktop)`,
-the last compiling the whole Tauri app (frontend + the `src-tauri` crate,
-which no other CI job compiles) via `make desktop/compile`
-(`tauri build --no-bundle`), with the webkit system libraries installed on
-the runner. The landing has no tests and is built by `deploy-landing.yml`;
-release artifacts (macOS tarballs and `.dmg`, Linux `.deb`/`.rpm`/`.AppImage`) are
-`release.yml`'s job (which also runs the Rust test suite once on a macOS
-runner, one of the OSes the binaries actually target).
+on pull requests, entirely on Linux runners. Every job is named
+`test (<app>)` or `build (<app>)`, so a check's name says what it does and
+which app it belongs to; the job ids match those names (`test-cli`,
+`build-cli`). Per app, tests gate the build: `test (core)` (`make core/test`)
+gates `test (remote)`, `test (cli)`, `test (server-backend)` and
+`test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
+`test (server-frontend)` is independent of the Rust engine and runs on its
+own. Each app's build job runs only after its own tests pass: `build (core)`,
+`build (remote)`, `build (cli)`, `build (server-backend)`,
+`build (server-frontend)` and `build (desktop)`, the last compiling the whole
+Tauri app (frontend + the `src-tauri` crate, which no other CI job compiles)
+via `make desktop/compile` (`tauri build --no-bundle`), with the webkit system
+libraries installed on the runner. The landing has no tests and is built by
+`deploy-landing.yml`; release artifacts (macOS tarballs and `.dmg`, Linux
+`.deb`/`.rpm`/`.AppImage`, Windows `.msi` and setup `.exe`) are `release.yml`'s
+job (which also runs the Rust test suite once on a macOS runner, one of the
+OSes the binaries actually target). Renaming a job changes its check name, so
+any branch ruleset that requires the old name silently stops being satisfied.
 Branching and release flow are described in [git_flow.md](git_flow.md).
 
 ## Roadmap

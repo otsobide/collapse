@@ -218,7 +218,8 @@ list; a few common ones:
 
 ```bash
 make test            # run every test suite (all seven apps)
-make core/test       # a single app's tests (also remote/test, cli/test, api/test, desktop/test)
+make core/test       # a single app's tests (also remote/test, cli/test,
+                     # server-backend/test, server-frontend/test, desktop/test)
 make desktop/dev     # run an app target (here: the Tauri app in dev mode)
 make fmt  make lint  # format / clippy the Rust workspace
 ```

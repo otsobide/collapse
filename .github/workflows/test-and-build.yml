@@ -9,9 +9,12 @@ on:
   pull_request:
 
 jobs:
+  # Job display names follow one convention: `test (<app>)` and `build (<app>)`,
+  # so a check's name says what it does and which app it belongs to.
+  #
   # Gate: the shared engine must pass before anything downstream runs.
-  core:
-    name: core
+  test-core:
+    name: test (core)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,9 +39,9 @@ jobs:
 
   # The remote client sits between core and the front-ends that talk to a
   # server, so it gates nothing but is tested alongside them.
-  remote:
-    name: remote
-    needs: core
+  test-remote:
+    name: test (remote)
+    needs: test-core
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -61,10 +64,10 @@ jobs:
       - name: Test collapse-remote
         run: make remote/test
 
-  # Runs only if core passed; parallel with vitest.
-  cli:
-    name: cli
-    needs: core
+  # Runs only if core passed; parallel with the desktop suite.
+  test-cli:
+    name: test (cli)
+    needs: test-core
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -87,10 +90,10 @@ jobs:
       - name: Test collapse-cli
         run: make cli/test
 
-  # Runs only if core passed; parallel with cli and vitest.
-  server-backend:
-    name: server-backend
-    needs: core
+  # Runs only if core passed; parallel with the cli and desktop suites.
+  test-server-backend:
+    name: test (server-backend)
+    needs: test-core
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -115,8 +118,8 @@ jobs:
 
   # The web frontend is Node only: it talks to the backend over HTTP and
   # mocks that in tests, so it needs no Rust at all.
-  web:
-    name: vitest (server-frontend)
+  test-server-frontend:
+    name: test (server-frontend)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -132,29 +135,11 @@ jobs:
       - name: Run Vitest
         run: make server-frontend/test
 
-  build-web:
-    name: build (server-frontend)
-    needs: web
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: apps/server-frontend/package-lock.json
-
-      - name: Build the web frontend
-        run: make server-frontend/build
-
   # Runs only if core passed; parallel with cli. Frontend tests mock the Tauri
   # IPC, so this needs Node only — no Tauri system dependencies.
-  vitest:
-    name: vitest (desktop)
-    needs: core
+  test-desktop:
+    name: test (desktop)
+    needs: test-core
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -175,7 +160,7 @@ jobs:
   # -------------------------------------------------------------------------
   build-core:
     name: build (core)
-    needs: core
+    needs: test-core
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -200,7 +185,7 @@ jobs:
 
   build-remote:
     name: build (remote)
-    needs: remote
+    needs: test-remote
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -225,7 +210,7 @@ jobs:
 
   build-cli:
     name: build (cli)
-    needs: cli
+    needs: test-cli
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -250,7 +235,7 @@ jobs:
 
   build-server-backend:
     name: build (server-backend)
-    needs: server-backend
+    needs: test-server-backend
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -273,12 +258,30 @@ jobs:
       - name: Build collapse-server-backend
         run: make server-backend/build
 
+  build-server-frontend:
+    name: build (server-frontend)
+    needs: test-server-frontend
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/server-frontend/package-lock.json
+
+      - name: Build the web frontend
+        run: make server-frontend/build
+
   # Compiles the whole desktop app (frontend + the src-tauri Rust crate,
   # which no other CI job compiles) without bundling installers. Needs the
   # Tauri system libraries on Linux.
   build-desktop:
     name: build (desktop)
-    needs: vitest
+    needs: test-desktop
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
