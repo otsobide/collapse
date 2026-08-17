@@ -137,8 +137,10 @@ interface using the cervantic palette. Compression can also be sent to a remote
 computer by default) and the header gear manages the list of servers.
 
 Every release ships an unsigned
-**universal macOS `.dmg`** (right-click → Open on first launch) and x86_64
-Linux **`.deb`**, **`.rpm`** and **`.AppImage`** builds: grab them from the
+**universal macOS `.dmg`** (right-click → Open on first launch), x86_64
+Linux **`.deb`**, **`.rpm`** and **`.AppImage`** builds, and x64 Windows
+installers (**`.msi`** and an NSIS **setup `.exe`**; SmartScreen warns on
+first run until they are signed — More info → Run anyway): grab them from the
 [releases page](https://github.com/otsobide/collapse/releases/latest) or
 the landing site. See [desktop.md](docs/desktop.md) for building, signing, and
 per-platform distribution (including the macOS App Store).
