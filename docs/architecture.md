@@ -192,9 +192,15 @@ delete endpoint is the cleanup.
 Like the CLI it is a **library + binary**: `build_app()` (routes, state and
 the worker) lives in the lib, which is what its tests, and the CLI's
 end-to-end tests, drive in-process; `main.rs` only parses `--host` / `--port`
-/ `--max-upload-mb` / `--storage-dir` and serves. It binds `127.0.0.1` by
-default, and the default staging dir is a temporary directory removed when
-the server stops.
+/ `--max-upload-mb` / `--storage-dir`, installs the logger and serves. It binds
+`127.0.0.1` by default, and the default staging dir is a temporary directory
+removed when the server stops.
+
+It logs through `tracing` (`logging.rs` sets up the subscriber, `RUST_LOG`
+picks the level): one line per HTTP request from `tower-http`'s `TraceLayer`,
+plus the job lifecycle from the handlers and the worker, every line tagged with
+`job=<id>`. `GET /health` is routed outside the traced layer on purpose, since
+a container probe every ten seconds would drown the rest.
 
 It also ships a container image (`apps/server-backend/Dockerfile`, plus the root
 `docker-compose.yml` and the `make docker/*` targets). Two details there are
@@ -308,7 +314,7 @@ Each app carries its own tests, in that ecosystem's conventional place:
   `tests/remote.rs` serves the real `collapse-server-backend` app on an ephemeral port to
   go through remote mode end-to-end.
 - `apps/server-backend/tests/` — one file per source module (`validate`, `models`,
-  `registry`, `storage`, `error`, `openapi`) plus two cross-cutting suites.
+  `registry`, `storage`, `error`, `openapi`, `logging`) plus two cross-cutting suites.
   `api.rs` drives the whole app in-process (tower `oneshot`, no sockets)
   through the full job flow and verifies round-trips by feeding the downloaded
   bytes back through the core extractors. `security.rs` posts hostile tar

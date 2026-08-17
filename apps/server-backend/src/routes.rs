@@ -96,6 +96,16 @@ pub(crate) async fn compress_create(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))??;
 
+    tracing::info!(
+        job = %job_id,
+        name = %name,
+        algorithm = %algorithm,
+        level,
+        envelope = %envelope,
+        bytes = body.len(),
+        "queued"
+    );
+
     let job = Job::new(job_id.clone(), name, algorithm, level, envelope);
     state.registry.add(job.clone());
     state
@@ -179,6 +189,7 @@ pub(crate) async fn delete_job(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     state.registry.remove(&job_id);
+    tracing::info!(job = %job_id, files_removed = deleted, "deleted");
 
     Ok(Json(serde_json::json!({ "job_id": job_id, "deleted": deleted })))
 }

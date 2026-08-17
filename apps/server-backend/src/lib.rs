@@ -13,6 +13,7 @@
 // crate and source files here carry no inline `mod tests`; only the wiring
 // (handlers and the worker) stays private.
 pub mod error;
+pub mod logging;
 pub mod models;
 pub mod openapi;
 pub mod registry;
@@ -29,6 +30,9 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::mpsc;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::LatencyUnit;
+use tracing::Level;
 
 use registry::Registry;
 use storage::Storage;
@@ -78,8 +82,7 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
         queue_tx,
     };
 
-    Router::new()
-        .route("/health", get(routes::health))
+    let api = Router::new()
         // Interactive documentation, the way FastAPI serves it — but built
         // into the binary, so it works with no network access.
         .route("/docs", get(routes::docs))
@@ -88,5 +91,23 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
         .route("/jobs/{job_id}", get(routes::job_status).delete(routes::delete_job))
         .route("/jobs/{job_id}/download", get(routes::download))
         .layer(DefaultBodyLimit::max(max_upload_mb * 1024 * 1024))
+        // Applied after the body limit, which makes it the outer layer, so an
+        // upload rejected as too large is still logged as the 413 it is.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(
+                    DefaultOnResponse::new()
+                        .level(Level::INFO)
+                        .latency_unit(LatencyUnit::Millis),
+                ),
+        );
+
+    // /health stays outside the traced router on purpose: a container probes
+    // it every ten seconds, and those lines would bury everything worth
+    // reading. Its failures surface as the container's health status.
+    Router::new()
+        .route("/health", get(routes::health))
+        .merge(api)
         .with_state(state)
 }

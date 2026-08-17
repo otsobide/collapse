@@ -19,6 +19,17 @@ pub enum Envelope {
     Tar,
 }
 
+/// Renders what the wire carries (`none`, `tar`), not the Rust variant name,
+/// so a log line can be read against the request that produced it.
+impl std::fmt::Display for Envelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Envelope::None => f.write_str("none"),
+            Envelope::Tar => f.write_str("tar"),
+        }
+    }
+}
+
 impl FromStr for Envelope {
     type Err = String;
 

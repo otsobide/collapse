@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::mpsc;
 
@@ -29,9 +30,18 @@ pub(crate) fn start_worker(
 async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
     // The job may have been deleted while queued.
     let Some(job) = registry.get(job_id) else {
+        tracing::debug!(job = %job_id, "gone before it started");
         return;
     };
     registry.update_status(job_id, JobStatus::Compressing, None);
+    tracing::info!(
+        job = %job_id,
+        name = %job.name,
+        algorithm = %job.algorithm,
+        level = job.level,
+        "compressing"
+    );
+    let started = Instant::now();
 
     let input = storage.input_path(job_id, &job.name);
     let output = storage.output_path(job_id, job.algorithm);
@@ -48,10 +58,26 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
     })
     .await;
 
+    let elapsed_ms = started.elapsed().as_millis();
     match result {
-        Ok(Ok(())) => registry.update_status(job_id, JobStatus::Completed, None),
-        Ok(Err(message)) => registry.update_status(job_id, JobStatus::Failed, Some(message)),
-        Err(e) => registry.update_status(job_id, JobStatus::Failed, Some(e.to_string())),
+        Ok(Ok(())) => {
+            registry.update_status(job_id, JobStatus::Completed, None);
+            let bytes = std::fs::metadata(storage.output_path(job_id, algorithm))
+                .map(|meta| meta.len())
+                .unwrap_or_default();
+            tracing::info!(job = %job_id, bytes, elapsed_ms, "completed");
+        }
+        // A rejected upload (a hostile tar, an unreadable source) is the
+        // client's problem, not the server's, so it is a warning; a worker
+        // that dies mid-job is ours.
+        Ok(Err(message)) => {
+            registry.update_status(job_id, JobStatus::Failed, Some(message.clone()));
+            tracing::warn!(job = %job_id, elapsed_ms, error = %message, "failed");
+        }
+        Err(e) => {
+            registry.update_status(job_id, JobStatus::Failed, Some(e.to_string()));
+            tracing::error!(job = %job_id, elapsed_ms, error = %e, "the worker died on this job");
+        }
     }
 }
 

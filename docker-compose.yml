@@ -31,6 +31,11 @@ services:
       - --max-upload-mb
       - "${COLLAPSE_MAX_UPLOAD_MB:-500}"
 
+    # Log level, the usual tracing spelling: `RUST_LOG=debug make docker/up`,
+    # or a per-target spec like `collapse_server_backend=debug,tower_http=warn`.
+    environment:
+      RUST_LOG: "${RUST_LOG:-info}"
+
     # Published on the loopback interface only, matching the server's own
     # default posture: the API has no authentication and no rate limiting, so
     # it should not land on the LAN by accident. Change to
@@ -102,6 +107,7 @@ services:
 
     environment:
       COLLAPSE_MAX_UPLOAD_MB: "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+      RUST_LOG: "${RUST_LOG:-info}"
 
     ports:
       - "127.0.0.1:${COLLAPSE_WEB_PORT:-8080}:8080"
