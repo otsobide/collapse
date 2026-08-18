@@ -59,7 +59,7 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
     );
     let started = Instant::now();
 
-    let input = storage.input_path(job_id, &job.name);
+    let input = storage.input_path(job_id);
     let output = storage.output_path(job_id, job.algorithm);
     let tree = storage.tree_path(job_id);
     let name = job.name.clone();

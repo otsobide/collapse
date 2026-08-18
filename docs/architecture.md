@@ -269,7 +269,13 @@ Errors are JSON `{"detail": "..."}` with a 4xx/5xx status. Input is validated,
 never coerced: an unparseable or out-of-range `level` is a 400 (the reference
 implementation silently coerced it), an unknown `algorithm` is a 400, and
 `name` must be a **bare file name** (no separators, no `..`, not empty), since
-it becomes both the arcname inside the archive and the staging path on disk.
+it becomes the arcname inside the archive and the name a tar envelope's single
+root directory is checked against.
+
+It is deliberately **not** what keeps the staging paths safe. Every path the
+server builds comes from values it chose itself: a job id it generated, and
+fixed names (`input/upload`, `archive.<ext>`, `tree/`). Nothing a client sends
+is a path component, so the layout holds whether or not the validation does.
 Uploads beyond the configurable cap get a 413. There is no CORS layer: the
 server targets non-browser clients.
 

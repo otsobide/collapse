@@ -40,7 +40,7 @@ fn staged_job(registry: &Registry, storage: &Storage, id: &str, status: JobStatu
     let mut job = job(id);
     job.status = status;
     registry.add(&job).unwrap();
-    storage.save_input(id, "notes.txt", b"hello").unwrap();
+    storage.save_input(id, b"hello").unwrap();
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn files_no_job_claims_are_deleted() {
     // a restart left these behind and the API could not even name them.
     let dir = TempDir::new().unwrap();
     let (registry, storage) = server(&dir);
-    storage.save_input("orphan", "notes.txt", b"stranded").unwrap();
+    storage.save_input("orphan", b"stranded").unwrap();
 
     let report = reconcile(&registry, &storage).unwrap();
 
@@ -163,7 +163,7 @@ fn one_pass_puts_every_kind_of_disagreement_right() {
     staged_job(&registry, &storage, "healthy", JobStatus::Completed);
     staged_job(&registry, &storage, "running", JobStatus::Compressing);
     registry.add(&job("no-files")).unwrap();
-    storage.save_input("orphan", "notes.txt", b"stranded").unwrap();
+    storage.save_input("orphan", b"stranded").unwrap();
 
     let report = reconcile(&registry, &storage).unwrap();
 
@@ -286,7 +286,7 @@ fn reconciling_twice_changes_nothing_the_second_time() {
     let dir = TempDir::new().unwrap();
     let (registry, storage) = server(&dir);
     staged_job(&registry, &storage, "running", JobStatus::Compressing);
-    storage.save_input("orphan", "notes.txt", b"stranded").unwrap();
+    storage.save_input("orphan", b"stranded").unwrap();
 
     reconcile(&registry, &storage).unwrap();
     let second = reconcile(&registry, &storage).unwrap();

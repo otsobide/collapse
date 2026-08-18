@@ -90,9 +90,8 @@ pub(crate) async fn compress_create(
     // without its input (blocking I/O offloaded to the thread pool).
     let storage = state.storage.clone();
     let save_id = job_id.clone();
-    let save_name = name.clone();
     let data = body.to_vec();
-    tokio::task::spawn_blocking(move || storage.save_input(&save_id, &save_name, &data))
+    tokio::task::spawn_blocking(move || storage.save_input(&save_id, &data))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))??;
 
@@ -199,9 +198,13 @@ pub(crate) async fn delete_job(
     Ok(Json(serde_json::json!({ "job_id": job_id, "deleted": deleted })))
 }
 
-/// Require `name` to be a bare file name: the arcname goes into the archive
-/// verbatim and the staging path joins it onto the job directory, so
-/// separators, `..` and empty names are rejected before anything touches disk.
+/// Require `name` to be a bare file name.
+///
+/// It is no longer what keeps the staging paths safe: nothing a client sends
+/// is a path component any more (see [`crate::storage`]). What it still owes
+/// us is a sane **arcname**, which goes into the archive verbatim and would
+/// otherwise let a caller hand a third party a hostile archive, and a name a
+/// tar envelope's single root directory can be checked against.
 fn validated_name(name: &str) -> Result<String, ApiError> {
     if is_bare_file_name(name) {
         Ok(name.to_string())

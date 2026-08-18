@@ -509,7 +509,7 @@ fn a_job_caught_mid_compression_comes_back_failed() {
             .update_status("interrupted-job", JobStatus::Compressing, None)
             .unwrap();
         storage_area
-            .save_input("interrupted-job", "notes.txt", b"half done")
+            .save_input("interrupted-job", b"half done")
             .unwrap();
     }
 

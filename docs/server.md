@@ -217,7 +217,7 @@ Query parameters of `POST /compress`:
 
 | Parameter | Required | Default | Values |
 |---|---|---|---|
-| `name` | yes | | A bare file name. It becomes the name inside the archive, so no separators, no `..`. |
+| `name` | yes | | A bare file name. It becomes the name inside the archive, so no separators, no `..`. It never becomes a path on the server: uploads are staged under a fixed name. |
 | `algorithm` | no | `zip` | `zip`, `7z`, `tar` (`tar` only bundles, it does not compress) |
 | `level` | no | `3` | `1` to `5`. Out of range is a 400, never silently clamped. |
 | `envelope` | no | `none` | `none` for a plain file, `tar` for a directory: see below. |
@@ -397,7 +397,7 @@ The web app's nginx logs its own accesses separately, in the same stream.
 
 ### What lives in the volume
 
-`/var/lib/collapse/<job_id>/` per job, holding the upload (`input/`), the
+`/var/lib/collapse/<job_id>/` per job, holding the upload (`input/upload`), the
 unpacked tree for a tar envelope (`tree/`) and the produced archive. Deleting
 the job removes the whole directory.
 
@@ -561,7 +561,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 129 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 130 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
 make server-frontend/test    # 42 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
