@@ -155,6 +155,11 @@ pub(crate) async fn download(
         .await
         .map_err(|_| ApiError::NotFound("Archive file not found.".into()))?;
 
+    // Downloading is what says a job is still wanted, so it restarts the
+    // reaper's clock. Polling deliberately does not: a client that watches a
+    // finished job forever without fetching it has abandoned it.
+    state.registry.touch(&job_id)?;
+
     Ok((
         [
             (header::CONTENT_TYPE, job.algorithm.media_type().to_string()),

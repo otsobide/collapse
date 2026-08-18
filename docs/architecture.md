@@ -195,8 +195,14 @@ failed with a reason, since no worker survived to run them; rows whose files
 are gone are dropped; and directories no job claims are removed. That last one
 is what used to accumulate forever. The walk treats every *directory* in the
 staging area as a job, which is precisely why the database is a file next to
-them. Beyond that, the delete endpoint is still the only cleanup: a client that
-never calls it leaves a job behind until something reaps it.
+them.
+
+A background **reaper** (`maintenance::reap`, swept at a tenth of the window on
+a blocking task) covers the other half: finished jobs nobody downloads again
+within `--job-ttl-minutes` are deleted, row and files together. Downloading
+touches a job and restarts its window; polling does not, and jobs the worker
+still owns are never collected. Between the two, disk is bounded by the last
+window's jobs plus whatever is running.
 
 Like the CLI it is a **library + binary**: `build_app()` (routes, state and
 the worker) lives in the lib, which is what its tests, and the CLI's

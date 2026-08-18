@@ -64,6 +64,7 @@ takes flags. Everything has a working default.
 | Variable | Default | What it sets |
 |---|---|---|
 | `COLLAPSE_MAX_UPLOAD_MB` | `500` | Largest accepted upload, in MiB. Beyond it, uploads get a 413. |
+| `COLLAPSE_JOB_TTL_MINUTES` | `60` | How long a finished job survives without being downloaded again. `0` keeps every job until a client deletes it. See [Jobs are collected](#jobs-are-collected). |
 | `COLLAPSE_PORT` | `8000` | Host port for the API (compose only) |
 | `COLLAPSE_WEB_PORT` | `8080` | Host port for the web app (compose only) |
 | `COLLAPSE_BACKEND` | `127.0.0.1:8000` | Where nginx proxies the API to. Only worth changing in the split setup, where it is `backend:8000`. |
@@ -77,6 +78,7 @@ overriding what the image pins:
 | `--host` | `127.0.0.1` | Both images pin `0.0.0.0`, since a container's loopback reaches nothing from outside |
 | `--port` | `8000` | |
 | `--max-upload-mb` | `500` | |
+| `--job-ttl-minutes` | `60` | `0` disables the reaper |
 | `--storage-dir` | a temporary directory | Removed when the process exits. Give a path to keep jobs across restarts. Both images pin `/var/lib/collapse`. |
 
 Anything you append to `docker run` reaches the binary, and clap takes the last
@@ -104,6 +106,9 @@ services:
 
     environment:
       COLLAPSE_MAX_UPLOAD_MB: "500"
+      # Finished jobs nobody downloads again are collected after this long, so
+      # a client that walks away does not leave its files on the volume.
+      COLLAPSE_JOB_TTL_MINUTES: "60"
 
     # Only the web port is published. It proxies the API, so :8080 alone is a
     # complete deployment; publish 8000 as well only if a CLI or desktop client
@@ -392,6 +397,32 @@ reason the staging area must be a persistent volume if you care about that:
 every *directory* in there is a job, and anything that is not claimed by a row
 in the database is deleted at startup.
 
+### Jobs are collected
+
+Every client deletes its job after downloading, and all three of ours do. For
+the ones that do not, because a browser tab closed or a script died half way,
+the server sweeps: **a finished job nobody downloads again within
+`COLLAPSE_JOB_TTL_MINUTES` (an hour by default) is deleted**, row and files
+together, and says so:
+
+```
+INFO collapse_server_backend: reaped jobs nobody came back for jobs=3 ttl_minutes=60
+```
+
+Three rules make that safe to leave running unattended:
+
+- **Downloading restarts the clock.** Polling does not, deliberately: a client
+  that watches a finished job forever without ever fetching it has abandoned
+  it in every sense that matters to disk.
+- **Work in progress is never collected**, however old it looks. Those jobs
+  belong to the worker, and deleting one under it would leave a compression
+  writing into a directory that no longer exists.
+- **`0` turns it off**, for a deployment that would rather keep every job until
+  a client asks for it to go.
+
+Together with the startup pass, that bounds the disk: what is on it is the jobs
+of the last hour, plus whatever is running right now.
+
 **Nothing in it is worth backing up.** It is staging for in-flight work, not
 data the server owns. Sizing it, worst case per job:
 
@@ -442,12 +473,10 @@ a tar someone sent it, is in [threat_model.md](threat_model.md#the-api-server).
 
 Worth knowing before deploying this unattended:
 
-- **Abandoned jobs still pile up.** Staged files are removed when a client
-  deletes its job, and all three clients do, but a client that stops half way
-  leaves its directory behind and nothing yet reaps it by age. What a restart
-  no longer does is strand it: the registry is on disk, so those jobs can still
-  be listed, downloaded and deleted afterwards, and anything with no owner at
-  all is swept at startup. A time-based reaper is the next piece.
+- **A job can outlive its client's patience.** Nothing is left behind any more
+  (see [Jobs are collected](#jobs-are-collected)), but the flip side is that a
+  client which comes back for an archive more than an hour after downloading it
+  finds a 404. Raise `COLLAPSE_JOB_TTL_MINUTES` if your clients work that way.
 - **No graceful shutdown.** `docker stop` cuts in-flight uploads, downloads and
   compressions immediately.
 - **Uploads and downloads are buffered whole in memory** by the backend, on top
@@ -482,7 +511,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 111 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 123 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
 make server-frontend/test    # 40 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)

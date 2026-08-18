@@ -27,6 +27,7 @@ mod routes;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
@@ -42,6 +43,12 @@ use storage::Storage;
 
 /// Default cap on uploaded bodies, in mebibytes.
 pub const DEFAULT_MAX_UPLOAD_MB: usize = 500;
+
+/// How long a finished job survives without being downloaded again.
+///
+/// Generous on purpose: the clock only restarts on a download, so this is the
+/// window a client has to come back for an archive it already asked for.
+pub const DEFAULT_JOB_TTL_MINUTES: u64 = 60;
 
 /// Shared application state, handed to every route handler.
 #[derive(Clone)]
@@ -73,6 +80,21 @@ pub(crate) struct AppState {
 /// staged under `storage_dir` (one directory per job); `max_upload_mb` caps
 /// the accepted request body size (413 beyond it).
 pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Result<Router, StartupError> {
+    build_app_with(
+        storage_dir,
+        max_upload_mb,
+        Some(Duration::from_secs(DEFAULT_JOB_TTL_MINUTES * 60)),
+    )
+}
+
+/// [`build_app`] with the reaper's window spelled out. `None` disables it, and
+/// then only an explicit `DELETE` (or a restart, for files nothing claims)
+/// ever frees a job's disk.
+pub fn build_app_with(
+    storage_dir: PathBuf,
+    max_upload_mb: usize,
+    job_ttl: Option<Duration>,
+) -> Result<Router, StartupError> {
     // The registry's database lives in here, so the directory has to exist
     // before it is opened; `--storage-dir` may name one that does not yet.
     std::fs::create_dir_all(&storage_dir)?;
@@ -94,6 +116,10 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Result<Router, S
 
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
     queue::start_worker(registry.clone(), storage.clone(), queue_rx);
+
+    if let Some(ttl) = job_ttl {
+        start_reaper(registry.clone(), storage.clone(), ttl);
+    }
 
     let state = AppState {
         registry,
@@ -129,4 +155,38 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Result<Router, S
         .route("/health", get(routes::health))
         .merge(api)
         .with_state(state))
+}
+
+/// Sweep finished jobs nobody came back for, forever.
+///
+/// The pass itself is blocking (SQLite, and a `remove_dir_all` that can take a
+/// while on a large tree), so it runs off the runtime's threads. It sweeps at
+/// a tenth of the window, which keeps a job from outliving its welcome by much
+/// without waking an idle server every few seconds.
+fn start_reaper(registry: Arc<Registry>, storage: Arc<Storage>, ttl: Duration) {
+    let interval = (ttl / 10).clamp(Duration::from_millis(200), Duration::from_secs(300));
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+
+            let deadline = registry::now_unix() - ttl.as_secs() as i64;
+            let (registry, storage) = (registry.clone(), storage.clone());
+            let swept = tokio::task::spawn_blocking(move || {
+                maintenance::reap(&registry, &storage, deadline)
+            })
+            .await;
+
+            match swept {
+                Ok(Ok(0)) => {}
+                Ok(Ok(jobs)) => tracing::info!(
+                    jobs,
+                    ttl_minutes = ttl.as_secs() / 60,
+                    "reaped jobs nobody came back for"
+                ),
+                Ok(Err(e)) => tracing::error!(error = %e, "the reaper could not finish a pass"),
+                Err(e) => tracing::error!(error = %e, "the reaper task died"),
+            }
+        }
+    });
 }

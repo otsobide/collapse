@@ -35,6 +35,30 @@ impl Reconciled {
 /// show `error_message` verbatim, so it is written for a person.
 pub const INTERRUPTED: &str = "The server restarted while this job was running.";
 
+/// Delete finished jobs untouched since `deadline` (unix seconds), files and
+/// row together. Returns how many went.
+///
+/// This is the other half of the leak. Reconciling at startup catches what a
+/// restart stranded; this catches the client that uploaded, downloaded and
+/// then never called `DELETE`, which no amount of bookkeeping can distinguish
+/// from one that simply walked away.
+///
+/// Only finished jobs are considered, so nothing is pulled out from under the
+/// worker. A download refreshes the clock, so a client that keeps coming back
+/// for its archive keeps it; one that stops asking loses it.
+pub fn reap(registry: &Registry, storage: &Storage, deadline: i64) -> Result<usize, StartupError> {
+    let mut reaped = 0;
+    for job_id in registry.expired(deadline)? {
+        // Files first: a row without files is harmless (the next startup drops
+        // it), while files without a row would be invisible to everything but
+        // the startup sweep.
+        storage.delete_job(&job_id);
+        registry.remove(&job_id)?;
+        reaped += 1;
+    }
+    Ok(reaped)
+}
+
 /// Reconcile the registry against the staging directory. Call once at startup,
 /// before the server accepts requests: it assumes no worker is running, which
 /// is exactly what makes a `queued` or `compressing` row provably stale.

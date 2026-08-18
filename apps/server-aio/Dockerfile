@@ -57,6 +57,9 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # Inside this container the web app reaches the API over loopback.
 ENV COLLAPSE_BACKEND=127.0.0.1:8000
 ENV COLLAPSE_MAX_UPLOAD_MB=500
+# How long a finished job survives without being downloaded again. 0 keeps
+# every job until a client deletes it.
+ENV COLLAPSE_JOB_TTL_MINUTES=60
 
 EXPOSE 8000 8080
 VOLUME ["/var/lib/collapse"]

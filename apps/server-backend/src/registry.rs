@@ -170,6 +170,36 @@ impl Registry {
         Ok(ids)
     }
 
+    /// Finished jobs untouched since `deadline` (unix seconds).
+    ///
+    /// Only terminal ones: a queued or compressing job belongs to the worker,
+    /// however old it looks, and reaping it under the worker would leave the
+    /// compression writing into a directory that no longer exists.
+    pub fn expired(&self, deadline: i64) -> rusqlite::Result<Vec<String>> {
+        let connection = self.connection.lock().unwrap();
+        let mut statement = connection.prepare(
+            "SELECT job_id FROM jobs
+             WHERE status IN ('completed', 'failed') AND updated_at < ?1",
+        )?;
+        let ids = statement
+            .query_map(params![deadline], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(ids)
+    }
+
+    /// Mark a job as still wanted, so the reaper's clock starts again.
+    ///
+    /// Downloading is what counts as wanted: polling is not, deliberately. A
+    /// client that polls a finished job forever without ever fetching it has
+    /// abandoned it in every sense that matters to disk.
+    pub fn touch(&self, job_id: &str) -> rusqlite::Result<()> {
+        self.connection.lock().unwrap().execute(
+            "UPDATE jobs SET updated_at = ?2 WHERE job_id = ?1",
+            params![job_id, now()],
+        )?;
+        Ok(())
+    }
+
     /// The jobs no worker is working on any more, which after a restart means
     /// the ones that were interrupted by it.
     pub fn unfinished(&self) -> rusqlite::Result<Vec<String>> {
@@ -185,6 +215,10 @@ impl Registry {
 
 /// Unix seconds. Only ever compared against other rows, so a clock that jumps
 /// costs accuracy in reports, not correctness of the flow.
+pub fn now_unix() -> i64 {
+    now()
+}
+
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

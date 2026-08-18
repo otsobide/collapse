@@ -539,3 +539,36 @@ fn a_missing_storage_directory_is_created() {
     let (_, body) = post(&server.url("/compress?name=notes.txt"), b"hello");
     assert_eq!(server.await_status(&job_id(&body))["status"], "completed");
 }
+
+#[test]
+fn the_reaping_window_is_configurable_and_reported() {
+    let storage = TempDir::new().unwrap();
+
+    // The default is announced at startup, so an operator can see what the
+    // server will collect and when without reading the source.
+    let server = Server::start(storage.path(), &[]);
+    assert!(
+        server.logged("job_ttl_minutes=60"),
+        "the window is in the startup line: {:?}",
+        server.log.lock().unwrap()
+    );
+
+    // A finished job is not collected the moment it finishes: the window is an
+    // hour, and a client has that long to come back for its archive.
+    let (_, body) = post(&server.url("/compress?name=notes.txt"), b"still wanted");
+    let id = job_id(&body);
+    assert_eq!(server.await_status(&id)["status"], "completed");
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(get(&server.url(&format!("/jobs/{id}"))).0, 200);
+    server.stop();
+
+    // And it can be turned off for someone who would rather keep every job
+    // until a client deletes it.
+    let never = Server::start(storage.path(), &["--job-ttl-minutes", "0"]);
+    assert!(never.logged("job_ttl_minutes=0"));
+    assert_eq!(
+        get(&never.url(&format!("/jobs/{id}"))).0,
+        200,
+        "the job from the previous run is still there, untouched"
+    );
+}

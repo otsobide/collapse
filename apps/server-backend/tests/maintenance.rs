@@ -1,12 +1,20 @@
-//! Startup reconciliation: what happens to jobs and staged files that a
-//! restart, or a crash, left disagreeing with each other.
+//! Keeping the two stores honest: the startup pass that reconciles what a
+//! restart or a crash left disagreeing, and the reaper that collects jobs
+//! nobody came back for.
 
-use collapse_server_backend::maintenance::{reconcile, Reconciled, INTERRUPTED};
+use collapse_server_backend::maintenance::{reap, reconcile, Reconciled, INTERRUPTED};
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
-use collapse_server_backend::registry::{Registry, DATABASE_FILE};
+use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE};
 use collapse_server_backend::storage::Storage;
 use collapse_core::Algorithm;
 use tempfile::TempDir;
+
+/// A deadline every job is older than, and one no job is older than. Passing
+/// the boundary in explicitly is what keeps these tests off the clock.
+const LONG_AGO: i64 = 0;
+fn any_moment_now() -> i64 {
+    now_unix() + 3600
+}
 
 /// A registry and a storage over the same directory, the way the server has
 /// them.
@@ -177,6 +185,100 @@ fn one_pass_puts_every_kind_of_disagreement_right() {
     );
     assert!(registry.get("no-files").unwrap().is_none());
     assert!(!storage.has_job("orphan"));
+}
+
+// ------------------------------------------------------------- the reaper --
+
+#[test]
+fn a_finished_job_nobody_came_back_for_is_reaped() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "forgotten", JobStatus::Completed);
+
+    let reaped = reap(&registry, &storage, any_moment_now()).unwrap();
+
+    assert_eq!(reaped, 1);
+    assert!(registry.get("forgotten").unwrap().is_none());
+    assert!(!storage.has_job("forgotten"), "its files go with it");
+}
+
+#[test]
+fn a_failed_job_is_reaped_too() {
+    // Nobody is coming for an archive that does not exist, and its upload is
+    // still on disk.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "failed", JobStatus::Failed);
+
+    assert_eq!(reap(&registry, &storage, any_moment_now()).unwrap(), 1);
+    assert!(!storage.has_job("failed"));
+}
+
+#[test]
+fn a_job_inside_its_window_is_left_alone() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "recent", JobStatus::Completed);
+
+    let reaped = reap(&registry, &storage, LONG_AGO).unwrap();
+
+    assert_eq!(reaped, 0);
+    assert!(registry.get("recent").unwrap().is_some());
+    assert!(storage.has_job("recent"));
+}
+
+#[test]
+fn work_in_progress_is_never_reaped_however_old_it_looks() {
+    // The worker owns these. Deleting one under it would leave a compression
+    // writing into a directory that no longer exists.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "queued", JobStatus::Queued);
+    staged_job(&registry, &storage, "running", JobStatus::Compressing);
+
+    let reaped = reap(&registry, &storage, any_moment_now()).unwrap();
+
+    assert_eq!(reaped, 0);
+    assert!(storage.has_job("queued"));
+    assert!(storage.has_job("running"));
+}
+
+#[test]
+fn downloading_restarts_the_clock() {
+    // The rule the window is built on: a client that keeps fetching its
+    // archive keeps it, one that stops asking loses it.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "wanted", JobStatus::Completed);
+
+    let deadline = now_unix(); // everything up to this instant is expired
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // the clock has one-second resolution
+    registry.touch("wanted").unwrap();
+
+    assert_eq!(reap(&registry, &storage, deadline).unwrap(), 0);
+    assert!(storage.has_job("wanted"));
+}
+
+#[test]
+fn reaping_an_empty_registry_is_a_no_op() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+
+    assert_eq!(reap(&registry, &storage, any_moment_now()).unwrap(), 0);
+}
+
+/// The reaper and the startup pass have to agree: what one collects, the other
+/// must not have to clean up after.
+#[test]
+fn a_reaped_job_leaves_nothing_for_the_startup_pass() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "forgotten", JobStatus::Completed);
+
+    reap(&registry, &storage, any_moment_now()).unwrap();
+    let report = reconcile(&registry, &storage).unwrap();
+
+    assert!(report.is_clean(), "nothing left over: {report:?}");
 }
 
 #[test]

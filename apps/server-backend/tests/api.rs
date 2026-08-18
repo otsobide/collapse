@@ -10,7 +10,9 @@ use axum::Router;
 use http_body_util::BodyExt;
 use tower::util::ServiceExt;
 
-use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
+use std::time::Duration;
+
+use collapse_server_backend::{build_app, build_app_with, DEFAULT_MAX_UPLOAD_MB};
 
 /// Build the app over its own staging dir; keep the TempDir alive with it.
 fn app() -> (Router, tempfile::TempDir) {
@@ -460,4 +462,54 @@ async fn content_disposition_strips_header_breaking_characters() {
         response.headers()[header::CONTENT_DISPOSITION],
         "attachment; filename=\"weird.txt.zip\""
     );
+}
+
+#[tokio::test]
+async fn the_reaper_collects_a_job_nobody_came_back_for() {
+    // The background sweep, running for real: a one-second window, a job left
+    // undownloaded, and the server cleaning up after it without being asked.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app_with(
+        storage.path().to_path_buf(),
+        DEFAULT_MAX_UPLOAD_MB,
+        Some(Duration::from_secs(1)),
+    )
+    .expect("the app builds");
+
+    let job = body_json(post_compress(&router, "name=notes.txt", b"forget me").await).await;
+    let job_id = job["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let response = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+        if response.status() == StatusCode::NOT_FOUND {
+            let staged: Vec<_> = std::fs::read_dir(storage.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_dir())
+                .collect();
+            assert!(staged.is_empty(), "its files went with it: {staged:?}");
+            return;
+        }
+    }
+    panic!("the reaper never collected the job");
+}
+
+#[tokio::test]
+async fn the_reaper_can_be_turned_off() {
+    // `--job-ttl-minutes 0` for someone who would rather keep every job until
+    // a client deletes it.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app_with(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB, None)
+        .expect("the app builds");
+
+    let job = body_json(post_compress(&router, "name=notes.txt", b"keep me").await).await;
+    let job_id = job["job_id"].as_str().unwrap().to_string();
+    wait_for_job(&router, &job_id).await;
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let response = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+    assert_eq!(response.status(), StatusCode::OK, "nothing reaps it");
 }
