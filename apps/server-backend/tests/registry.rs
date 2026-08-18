@@ -6,7 +6,7 @@
 //! file and a second `open` standing in for a restart.
 
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
-use collapse_server_backend::registry::{Registry, DATABASE_FILE, SCHEMA_VERSION};
+use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE, SCHEMA_VERSION};
 use collapse_core::Algorithm;
 use tempfile::TempDir;
 
@@ -198,21 +198,17 @@ fn update_status_on_an_unknown_job_does_nothing() {
 // ----------------------------------------------------------------- removal --
 
 #[test]
-fn remove_returns_the_job_and_forgets_it() {
+fn forget_drops_the_job_and_says_it_did() {
     let registry = registry();
     registry.add(&job("j1")).unwrap();
 
-    let removed = registry
-        .remove("j1")
-        .unwrap()
-        .expect("removed job is returned");
-    assert_eq!(removed.job_id, "j1");
+    assert!(registry.forget("j1").unwrap(), "there was one to drop");
     assert!(registry.get("j1").unwrap().is_none());
 }
 
 #[test]
-fn remove_returns_none_for_an_unknown_job() {
-    assert!(registry().remove("ghost").unwrap().is_none());
+fn forget_says_so_when_there_was_nothing_to_drop() {
+    assert!(!registry().forget("ghost").unwrap());
 }
 
 // ------------------------------------------------------------- listing jobs --
@@ -297,7 +293,7 @@ fn a_removed_job_stays_removed() {
     {
         let registry = reopen(&dir);
         registry.add(&job("j1")).unwrap();
-        registry.remove("j1").unwrap();
+        registry.forget("j1").unwrap();
     }
 
     assert!(reopen(&dir).get("j1").unwrap().is_none());
@@ -371,4 +367,181 @@ fn concurrent_writers_and_readers_all_land() {
         registry.unfinished().unwrap().is_empty(),
         "and every one of them finished"
     );
+}
+
+// ------------------------------------------- rows this build cannot read --
+
+/// Write a row straight into the database, bypassing the registry, the way a
+/// newer version of the server or a hand edit would.
+fn plant_row(dir: &TempDir, job_id: &str, algorithm: &str, server_version: Option<&str>) {
+    let connection =
+        rusqlite::Connection::open(dir.path().join(DATABASE_FILE)).expect("the database opens");
+    connection
+        .execute(
+            "INSERT OR REPLACE INTO jobs
+                 (job_id, name, archive_name, algorithm, level, envelope, status,
+                  error_message, created_at, updated_at, server_version)
+             VALUES (?1, 'notes.txt', 'notes.txt.zip', ?2, 3, 'none', 'completed',
+                     NULL, 0, 0, ?3)",
+            rusqlite::params![job_id, algorithm, server_version],
+        )
+        .expect("the row is written");
+}
+
+/// A value from a version that knows a format this one does not. The schema is
+/// unchanged (an algorithm is not a column), so no version gate can catch it:
+/// it surfaces here, on the read.
+#[test]
+fn a_row_this_build_cannot_read_says_who_wrote_it_and_why() {
+    let dir = TempDir::new().unwrap();
+    drop(reopen(&dir));
+    plant_row(&dir, "from-the-future", "zstd", Some("0.9.0"));
+
+    let error = reopen(&dir)
+        .get("from-the-future")
+        .expect_err("a format this build does not know is not readable");
+
+    let message = error.to_string();
+    assert!(message.contains("0.9.0"), "names the build that wrote it: {message}");
+    assert!(message.contains("zstd"), "names the value: {message}");
+    assert!(message.contains("algorithm"), "names the field: {message}");
+    assert!(
+        !message.contains("column"),
+        "and not the database's own words: {message}"
+    );
+}
+
+#[test]
+fn a_row_with_no_recorded_version_still_explains_itself() {
+    let dir = TempDir::new().unwrap();
+    drop(reopen(&dir));
+    plant_row(&dir, "anonymous", "zstd", None);
+
+    let message = reopen(&dir).get("anonymous").unwrap_err().to_string();
+    assert!(message.contains("a different version"), "got {message}");
+    assert!(message.contains("zstd"), "got {message}");
+}
+
+/// The point of not reading a row in order to delete it: one row nobody can
+/// parse must not be able to stop the registry being cleaned up.
+#[test]
+fn a_row_that_cannot_be_read_can_still_be_forgotten() {
+    let dir = TempDir::new().unwrap();
+    drop(reopen(&dir));
+    plant_row(&dir, "unreadable", "zstd", Some("0.9.0"));
+
+    let registry = reopen(&dir);
+    assert!(registry.forget("unreadable").unwrap());
+    assert!(registry.ids().unwrap().is_empty());
+}
+
+/// And it does not hide the jobs around it from the listings maintenance uses.
+#[test]
+fn an_unreadable_row_does_not_hide_the_jobs_beside_it() {
+    let dir = TempDir::new().unwrap();
+    let registry = reopen(&dir);
+    registry.add(&job("healthy")).unwrap();
+    // Terminal, so the reaper's query is entitled to return it.
+    registry
+        .update_status("healthy", JobStatus::Completed, None)
+        .unwrap();
+    drop(registry);
+    plant_row(&dir, "unreadable", "zstd", Some("0.9.0"));
+
+    let registry = reopen(&dir);
+    let mut ids = registry.ids().unwrap();
+    ids.sort();
+    assert_eq!(ids, vec!["healthy".to_string(), "unreadable".to_string()]);
+
+    // Both come back: the listings maintenance runs on never interpret a row,
+    // so an unreadable one cannot hide its neighbours from the reaper.
+    let mut expired = registry.expired(now_unix() + 3600).unwrap();
+    expired.sort();
+    assert_eq!(expired, vec!["healthy".to_string(), "unreadable".to_string()]);
+}
+
+// ------------------------------------------------------------- migrations --
+
+#[test]
+fn a_registry_from_a_newer_schema_is_refused() {
+    // The other half of the same problem, caught where it can still be acted
+    // on: at startup, with a message saying what to do.
+    let dir = TempDir::new().unwrap();
+    drop(reopen(&dir));
+    rusqlite::Connection::open(dir.path().join(DATABASE_FILE))
+        .unwrap()
+        .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
+
+    let message = match Registry::open(dir.path()) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("a registry from a newer schema must not open"),
+    };
+    assert!(message.contains("newer Collapse"), "got {message}");
+    assert!(
+        message.contains(&(SCHEMA_VERSION + 1).to_string()),
+        "names what it found: {message}"
+    );
+}
+
+#[test]
+fn a_registry_from_the_previous_schema_is_migrated() {
+    // Version 1 had no server_version column. Opening it must add the column
+    // and keep the rows, not start over.
+    let dir = TempDir::new().unwrap();
+    {
+        let connection = rusqlite::Connection::open(dir.path().join(DATABASE_FILE)).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE jobs (
+                     job_id        TEXT PRIMARY KEY,
+                     name          TEXT NOT NULL,
+                     archive_name  TEXT NOT NULL,
+                     algorithm     TEXT NOT NULL,
+                     level         INTEGER NOT NULL,
+                     envelope      TEXT NOT NULL,
+                     status        TEXT NOT NULL,
+                     error_message TEXT,
+                     created_at    INTEGER NOT NULL,
+                     updated_at    INTEGER NOT NULL
+                 );
+                 INSERT INTO jobs VALUES
+                     ('old', 'notes.txt', 'notes.txt.zip', 'zip', 3, 'none',
+                      'completed', NULL, 0, 0);",
+            )
+            .unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+    }
+
+    let registry = Registry::open(dir.path()).expect("the older schema is migrated, not refused");
+
+    let job = registry.get("old").unwrap().expect("the job survives");
+    assert_eq!(job.archive_name, "notes.txt.zip");
+    assert_eq!(
+        registry.get("old").unwrap().unwrap().status,
+        JobStatus::Completed
+    );
+
+    let version: i64 = rusqlite::Connection::open(dir.path().join(DATABASE_FILE))
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+}
+
+#[test]
+fn a_new_row_records_the_build_that_wrote_it() {
+    let dir = TempDir::new().unwrap();
+    let registry = reopen(&dir);
+    registry.add(&job("j1")).unwrap();
+
+    let written: Option<String> = rusqlite::Connection::open(dir.path().join(DATABASE_FILE))
+        .unwrap()
+        .query_row(
+            "SELECT server_version FROM jobs WHERE job_id = 'j1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(written.as_deref(), Some(env!("CARGO_PKG_VERSION")));
 }

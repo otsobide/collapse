@@ -356,3 +356,60 @@ fn an_orphan_whose_name_is_not_text_is_really_deleted() {
         "and it is gone, not just counted: the report must not claim a cleanup it did not do"
     );
 }
+
+// ------------------------------------ rows no build in the world can read --
+
+/// Write a row the way a newer server would, with a format this build has
+/// never heard of.
+fn plant_unreadable_row(dir: &TempDir, job_id: &str) {
+    rusqlite::Connection::open(dir.path().join(REGISTRY_DIR).join(DATABASE_FILE))
+        .expect("the database opens")
+        .execute(
+            "INSERT OR REPLACE INTO jobs
+                 (job_id, name, archive_name, algorithm, level, envelope, status,
+                  error_message, created_at, updated_at, server_version)
+             VALUES (?1, 'notes.txt', 'notes.txt.zst', 'zstd', 3, 'none',
+                     'completed', NULL, 0, 0, '0.9.0')",
+            rusqlite::params![job_id],
+        )
+        .expect("the row is written");
+}
+
+/// One row nobody can parse used to stop the reaper on its first pass, and it
+/// runs every few minutes: disk was never reclaimed again, for any job.
+#[test]
+fn an_unreadable_row_does_not_stop_the_reaper() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "healthy", JobStatus::Completed);
+    plant_unreadable_row(&dir, "unreadable");
+    storage.save_input("unreadable", b"stranded").unwrap();
+
+    let reaped = reap(&registry, &storage, any_moment_now()).unwrap();
+
+    assert_eq!(reaped, 2, "both went, including the one it cannot read");
+    assert!(!storage.has_job("healthy"));
+    assert!(!storage.has_job("unreadable"));
+    assert!(registry.ids().unwrap().is_empty());
+}
+
+/// And the startup pass, where the same failure was worse: it made the server
+/// refuse to boot, and the row could not be removed through an API that was
+/// not running.
+#[test]
+fn an_unreadable_row_does_not_stop_the_server_starting() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "healthy", JobStatus::Completed);
+    plant_unreadable_row(&dir, "unreadable"); // no files staged for it
+
+    let report = reconcile(&registry, &storage).unwrap();
+
+    assert_eq!(report.without_files, 1, "the file-less row is dropped");
+    assert!(registry.get("unreadable").unwrap().is_none());
+    assert_eq!(
+        registry.get("healthy").unwrap().unwrap().status,
+        JobStatus::Completed,
+        "and its neighbour is untouched"
+    );
+}
