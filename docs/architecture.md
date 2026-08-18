@@ -185,9 +185,16 @@ immediately while a background worker compresses (a single queue consumer, so
 concurrent uploads line up instead of oversubscribing the CPU), and the
 client polls the job, downloads the archive, then deletes the job. Jobs are
 staged on disk with one directory per job under the staging dir (deleting a
-job is a single `remove_dir_all`) and tracked in a **SQLite registry**
-(`jobs.db`, beside those directories) that outlives the process, so a client
-can keep polling, downloading and above all deleting across a restart.
+job is a single `remove_dir_all`) and tracked in a **SQLite registry** that
+outlives the process, so a client can keep polling, downloading and above all
+deleting across a restart.
+
+The two live in separate subdirectories of the storage directory,
+`registry/jobs.db` and `jobs/<job_id>/`, because they behave nothing alike: a
+few kilobytes written constantly against gigabytes written once. An operator
+can mount one volume over the parent or one over each. It also means
+everything under `jobs/` is a job, so the sweep cannot reach the database by
+mistake.
 
 Because both stores can be interrupted, `build_app` **reconciles** them before
 serving (`maintenance::reconcile`): jobs still `queued` or `compressing` are

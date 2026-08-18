@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use collapse_server_backend::maintenance::INTERRUPTED;
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::Registry;
-use collapse_server_backend::storage::Storage;
+use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
 use collapse_core::Algorithm;
 use tempfile::TempDir;
 
@@ -187,7 +187,11 @@ fn job_id(body: &str) -> String {
 /// clients have cleaned up after themselves (the registry's own database lives
 /// there too, as files).
 fn staged_dirs(storage: &Path) -> Vec<String> {
-    std::fs::read_dir(storage)
+    let jobs = storage.join(JOBS_DIR);
+    if !jobs.is_dir() {
+        return Vec::new();
+    }
+    std::fs::read_dir(jobs)
         .unwrap()
         .map(|entry| entry.unwrap())
         .filter(|entry| entry.path().is_dir())
@@ -470,7 +474,7 @@ fn files_no_job_claims_are_swept_at_startup() {
 
     // Files left by an older server, or by a crash between staging an upload
     // and recording it.
-    let stray = storage.path().join("stray-job-from-before");
+    let stray = storage.path().join(JOBS_DIR).join("stray-job-from-before");
     std::fs::create_dir_all(stray.join("input")).unwrap();
     std::fs::write(stray.join("input/notes.txt"), b"stranded").unwrap();
 
@@ -495,8 +499,12 @@ fn a_job_caught_mid_compression_comes_back_failed() {
     // running, with its upload staged. Written through the crate's own API so
     // the test does not hand-roll the schema.
     {
-        let registry = Registry::open(storage.path()).unwrap();
-        let storage_area = Storage::new(storage.path().to_path_buf());
+        let registry_dir = storage.path().join(REGISTRY_DIR);
+        let jobs_dir = storage.path().join(JOBS_DIR);
+        std::fs::create_dir_all(&registry_dir).unwrap();
+        std::fs::create_dir_all(&jobs_dir).unwrap();
+        let registry = Registry::open(&registry_dir).unwrap();
+        let storage_area = Storage::new(jobs_dir);
         let job = Job::new(
             "interrupted-job".to_string(),
             "notes.txt".to_string(),

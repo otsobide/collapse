@@ -8,6 +8,25 @@ use collapse_core::Algorithm;
 /// The upload's name on disk. Fixed on purpose: see [`Storage::input_path`].
 pub const UPLOAD_FILE: &str = "upload";
 
+/// Where the registry's database lives, under the storage directory.
+///
+/// The two halves of the server's state are kept apart on purpose. They have
+/// nothing in common operationally: one is a few kilobytes of bookkeeping
+/// written constantly, the other is gigabytes of archives written once and
+/// read once. Splitting them lets an operator give each its own volume (a
+/// small fast one and a large cheap one) by mounting the two subdirectories
+/// separately, or keep it simple with a single volume over the parent.
+///
+/// It also removes a rule the sweep used to depend on. When the database sat
+/// beside the job directories, telling them apart meant "directories are
+/// jobs, files are not", so the database was one bad refactor away from being
+/// swept as an orphan. Now everything under [`JOBS_DIR`] is a job, and the
+/// database is not there at all.
+pub const REGISTRY_DIR: &str = "registry";
+
+/// Where the per-job directories live, under the storage directory.
+pub const JOBS_DIR: &str = "jobs";
+
 /// On-disk staging for jobs: one directory per job under a base directory,
 /// holding the uploaded input and the produced archive, so deleting a job is
 /// a single `remove_dir_all`.

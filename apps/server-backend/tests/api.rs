@@ -12,6 +12,7 @@ use tower::util::ServiceExt;
 
 use std::time::Duration;
 
+use collapse_server_backend::storage::JOBS_DIR;
 use collapse_server_backend::{build_app, build_app_with, DEFAULT_MAX_UPLOAD_MB};
 
 /// Build the app over its own staging dir; keep the TempDir alive with it.
@@ -346,7 +347,7 @@ async fn delete_removes_the_job_and_its_files() {
     let accepted = post_compress(&router, "name=a.txt", b"delete me after").await;
     let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
     wait_for_job(&router, &job_id).await;
-    assert!(storage.path().join(&job_id).exists());
+    assert!(storage.path().join(JOBS_DIR).join(&job_id).exists());
 
     let response = request(&router, Method::DELETE, &format!("/jobs/{job_id}"), b"").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -354,7 +355,7 @@ async fn delete_removes_the_job_and_its_files() {
     assert_eq!(json["deleted"], true);
 
     // Files gone, and the job no longer exists for any endpoint.
-    assert!(!storage.path().join(&job_id).exists());
+    assert!(!storage.path().join(JOBS_DIR).join(&job_id).exists());
     let status = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
     assert_eq!(status.status(), StatusCode::NOT_FOUND);
     let download =
@@ -484,7 +485,7 @@ async fn the_reaper_collects_a_job_nobody_came_back_for() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let response = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
         if response.status() == StatusCode::NOT_FOUND {
-            let staged: Vec<_> = std::fs::read_dir(storage.path())
+            let staged: Vec<_> = std::fs::read_dir(storage.path().join(JOBS_DIR))
                 .unwrap()
                 .map(|entry| entry.unwrap().path())
                 .filter(|path| path.is_dir())
@@ -530,7 +531,7 @@ async fn the_name_a_client_sends_reaches_the_archive_but_never_the_staging_paths
 
     // Every path under the staging directory, while the job is still there.
     let mut staged = Vec::new();
-    let mut pending = vec![storage.path().to_path_buf()];
+    let mut pending = vec![storage.path().join(JOBS_DIR)];
     while let Some(dir) = pending.pop() {
         for entry in std::fs::read_dir(&dir).unwrap() {
             let path = entry.unwrap().path();
@@ -576,7 +577,7 @@ async fn a_tar_envelope_is_staged_under_the_same_fixed_name() {
     let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
     assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
 
-    let job_dir = storage.path().join(&job_id);
+    let job_dir = storage.path().join(JOBS_DIR).join(&job_id);
     assert!(
         job_dir.join("input").join("upload").is_file(),
         "the envelope is staged under the server's own name"

@@ -95,12 +95,18 @@ pub fn build_app_with(
     max_upload_mb: usize,
     job_ttl: Option<Duration>,
 ) -> Result<Router, StartupError> {
-    // The registry's database lives in here, so the directory has to exist
-    // before it is opened; `--storage-dir` may name one that does not yet.
-    std::fs::create_dir_all(&storage_dir)?;
+    // Two halves, two directories under the one the operator named: the
+    // registry's database, and the job staging area. Both are created here
+    // because `--storage-dir` may name a path that does not exist yet, and
+    // because mounting a volume over either of them has to find a directory
+    // waiting for it.
+    let registry_dir = storage_dir.join(storage::REGISTRY_DIR);
+    let jobs_dir = storage_dir.join(storage::JOBS_DIR);
+    std::fs::create_dir_all(&registry_dir)?;
+    std::fs::create_dir_all(&jobs_dir)?;
 
-    let registry = Arc::new(Registry::open(&storage_dir)?);
-    let storage = Arc::new(Storage::new(storage_dir));
+    let registry = Arc::new(Registry::open(&registry_dir)?);
+    let storage = Arc::new(Storage::new(jobs_dir));
 
     // Before serving anything: the rows and the staged files have to agree.
     // Nothing is compressing yet, which is what makes that judgement safe.

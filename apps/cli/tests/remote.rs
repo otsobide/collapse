@@ -127,14 +127,12 @@ fn remote_compress_cleans_up_the_job_server_side() {
 
     run_ok(&["collapse", "compress", src.to_str().unwrap(), "--server", &server]);
 
-    // The CLI deletes the job after downloading, so no job directory (input
-    // or archive) survives in the server's staging area. The registry's own
-    // database sits there too, as files rather than directories, which is
-    // exactly what keeps the two apart.
-    let leftovers: Vec<_> = std::fs::read_dir(&storage)
+    // The CLI deletes the job after downloading, so nothing survives in the
+    // server's job area. That area is its own directory, separate from the
+    // registry's database, so this looks at jobs and only jobs.
+    let leftovers: Vec<_> = std::fs::read_dir(storage.join("jobs"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.is_dir())
         .collect();
     assert!(leftovers.is_empty(), "job files left behind: {leftovers:?}");
 }
