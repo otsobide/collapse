@@ -328,11 +328,17 @@ which this project treats as a defect not to repeat). Same-origin requests need
 none. If you ever see a CORS error here, the proxy is misconfigured; adding
 CORS to the backend is the wrong fix.
 
-Two settings in [`nginx.conf`](../apps/server-frontend/nginx.conf) are
+Three settings in [`nginx.conf`](../apps/server-frontend/nginx.conf) are
 load-bearing: `client_max_body_size`, because nginx defaults to 1 MiB and would
-turn every real upload into a 413 long before the backend's own cap applied,
-and `proxy_read_timeout` / `proxy_send_timeout`, because a job can run for
-minutes and the defaults would cut it off mid-compression.
+turn every real upload into a 413 long before the backend's own cap applied;
+`proxy_read_timeout` / `proxy_send_timeout`, because a job can run for minutes
+and the defaults would cut it off mid-compression; and `proxy_buffering off`,
+which streams the archive to the client instead of spooling it. Buffered,
+nginx reads the whole response into a temp file and counts the request as
+served the moment it has written those bytes into a socket, which both puts
+every archive on the proxy's disk and breaks the backend's graceful shutdown:
+the download would end short of its Content-Length while the access log claimed
+every byte was sent.
 
 ## Operating it
 
@@ -465,6 +471,12 @@ Two limits worth knowing:
   the wrong moment; the compose file gives both services `stop_grace_period:
   20s`. The web container also gets `stop_signal: SIGQUIT`, because nginx reads
   SIGTERM as "fast shutdown" and would drop the connections it is proxying.
+- **The all-in-one container waits for the kernel too.** Its entrypoint holds
+  on until the send queues are empty and have stayed empty briefly, because a
+  container's network namespace dies with PID 1 and takes any queued bytes with
+  it. Without that wait, a stop mid-download cost the client the last few
+  megabytes even though both processes had exited cleanly. It costs nothing
+  when nothing is pending: an idle stop is still immediate.
 
 **Compression in progress is not waited for.** A job that was running when the
 server stopped comes back `failed`, with `error_message` saying the server
