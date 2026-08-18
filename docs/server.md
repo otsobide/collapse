@@ -397,23 +397,41 @@ The web app's nginx logs its own accesses separately, in the same stream.
 
 ### What lives in the volume
 
-**Mounting one is your decision, not the image's.** Neither image declares a
-`VOLUME`, so a plain `docker run` keeps its staging inside the container and
-takes it along when the container goes, which is the right default for work in
-progress. Mount a volume (as the compose file does) when you want jobs to
-outlive a restart. An image that declared one would create an anonymous volume
-on every run, which `docker rm` leaves behind and nobody ever looks at, and
-would hand each run a fresh empty store while looking like persistence.
+The storage directory holds the server's two kinds of state, kept apart:
 
-`/var/lib/collapse/<job_id>/` per job, holding the upload (`input/upload`), the
-unpacked tree for a tar envelope (`tree/`) and the produced archive. Deleting
-the job removes the whole directory.
+```
+/var/lib/collapse/
+├── registry/        jobs.db (+ -wal, -shm): who exists and what state it is in
+└── jobs/            <job_id>/ per job: input/upload, tree/, archive.<ext>
+```
 
-Beside those directories sits **`jobs.db`**, the SQLite registry (with its
-`-wal` and `-shm` companions). It is what lets a job survive a restart, and the
-reason the staging area must be a persistent volume if you care about that:
-every *directory* in there is a job, and anything that is not claimed by a row
-in the database is deleted at startup.
+They are separated because they behave nothing alike. The registry is a few
+kilobytes written constantly; the jobs are gigabytes written once and read
+once. **That lets you choose how to mount them**: one volume over the parent
+for simplicity, or one for each if you would rather put the database on a fast
+disk and the archives on a big cheap one.
+
+```yaml
+volumes:
+  - jobs:/var/lib/collapse                # everything in one
+
+# or, independently:
+volumes:
+  - registry:/var/lib/collapse/registry   # small, written constantly
+  - staging:/var/lib/collapse/jobs        # large, transient
+```
+
+**Mounting anything is your decision, not the image's.** Neither image
+declares a `VOLUME`, so a plain `docker run` keeps its staging inside the
+container and takes it along when the container goes, which is the right
+default for work in progress. An image that declared one would create an
+anonymous volume on every run, which `docker rm` leaves behind and nobody ever
+looks at, and would hand each run a fresh empty store while looking like
+persistence.
+
+Everything under `jobs/` is a job: anything there that no row in the registry
+claims is deleted at startup. The database is not in that directory at all, so
+the sweep cannot reach it.
 
 ### Jobs are collected
 
@@ -569,7 +587,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 131 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 132 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
 make server-frontend/test    # 42 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)

@@ -5,7 +5,7 @@
 use collapse_server_backend::maintenance::{reap, reconcile, Reconciled, INTERRUPTED};
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE};
-use collapse_server_backend::storage::Storage;
+use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
 use collapse_core::Algorithm;
 use tempfile::TempDir;
 
@@ -16,13 +16,23 @@ fn any_moment_now() -> i64 {
     now_unix() + 3600
 }
 
-/// A registry and a storage over the same directory, the way the server has
-/// them.
+/// A registry and a storage laid out the way `build_app` lays them out: two
+/// subdirectories of one storage directory, so either can be a volume of its
+/// own.
 fn server(dir: &TempDir) -> (Registry, Storage) {
+    let registry_dir = dir.path().join(REGISTRY_DIR);
+    let jobs_dir = dir.path().join(JOBS_DIR);
+    std::fs::create_dir_all(&registry_dir).unwrap();
+    std::fs::create_dir_all(&jobs_dir).unwrap();
     (
-        Registry::open(dir.path()).expect("the registry opens"),
-        Storage::new(dir.path().to_path_buf()),
+        Registry::open(&registry_dir).expect("the registry opens"),
+        Storage::new(jobs_dir),
     )
+}
+
+/// The job staging area inside a test's storage directory.
+fn jobs_dir(dir: &TempDir) -> std::path::PathBuf {
+    dir.path().join(JOBS_DIR)
 }
 
 fn job(id: &str) -> Job {
@@ -142,18 +152,37 @@ fn files_no_job_claims_are_deleted() {
 }
 
 #[test]
-fn the_registrys_own_database_is_never_taken_for_a_job() {
-    // The database sits in the same directory as the job folders. Deleting it
-    // as an orphan would wipe every job on every startup, so the walk only
-    // ever considers directories.
+fn the_registrys_database_is_not_in_the_area_the_sweep_walks() {
+    // The two live in separate directories, so the sweep cannot reach the
+    // database at all. When they shared one, the only thing keeping it from
+    // being deleted as an orphan was a rule about files versus directories,
+    // and that rule is one refactor away from being lost.
     let dir = TempDir::new().unwrap();
     let (registry, storage) = server(&dir);
     staged_job(&registry, &storage, "j1", JobStatus::Completed);
 
     reconcile(&registry, &storage).unwrap();
 
-    assert!(dir.path().join(DATABASE_FILE).is_file());
+    assert!(dir.path().join(REGISTRY_DIR).join(DATABASE_FILE).is_file());
+    assert!(
+        !jobs_dir(&dir).join(DATABASE_FILE).exists(),
+        "the database is not among the jobs"
+    );
     assert!(registry.get("j1").unwrap().is_some());
+}
+
+/// And the split is the whole point: each half can be a volume of its own.
+#[test]
+fn the_two_halves_live_under_one_parent_in_separate_directories() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "j1", JobStatus::Completed);
+
+    let registry_dir = dir.path().join(REGISTRY_DIR);
+    assert!(registry_dir.join(DATABASE_FILE).is_file());
+    assert!(jobs_dir(&dir).join("j1").is_dir());
+    assert_ne!(registry_dir, jobs_dir(&dir));
+    assert_eq!(registry_dir.parent(), jobs_dir(&dir).parent());
 }
 
 #[test]

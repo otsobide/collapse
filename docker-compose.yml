@@ -49,6 +49,10 @@ services:
 
     # Job staging. Uploads and archives live here, so keep them off the
     # container's writable layer.
+    # One volume over the parent covers both halves. To give each its own,
+    # mount them separately instead:
+    #   - registry:/var/lib/collapse/registry
+    #   - staging:/var/lib/collapse/jobs
     volumes:
       - jobs:/var/lib/collapse
 
