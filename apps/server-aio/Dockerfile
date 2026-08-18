@@ -66,7 +66,15 @@ ENV COLLAPSE_JOB_TTL_MINUTES=60
 ENV COLLAPSE_SHUTDOWN_GRACE_SECONDS=10
 
 EXPOSE 8000 8080
-VOLUME ["/var/lib/collapse"]
+
+# No VOLUME declaration, matching the backend image. Declaring one makes every
+# plain `docker run` leave an anonymous volume behind that `docker rm` does not
+# take with it: three runs, three volumes, invisible until a disk fills. It
+# also hands each run a fresh empty store, which makes the job registry look
+# like it does not survive a restart when it does. Where the staging area
+# lives is the operator's decision, so the compose file mounts a named volume
+# and a bare `docker run` keeps its jobs in the container, where they belong
+# for something that is staging rather than data.
 
 # Both ports have to answer for the container to be useful, so both are probed.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=8s --retries=3 \

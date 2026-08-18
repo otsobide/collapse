@@ -397,6 +397,14 @@ The web app's nginx logs its own accesses separately, in the same stream.
 
 ### What lives in the volume
 
+**Mounting one is your decision, not the image's.** Neither image declares a
+`VOLUME`, so a plain `docker run` keeps its staging inside the container and
+takes it along when the container goes, which is the right default for work in
+progress. Mount a volume (as the compose file does) when you want jobs to
+outlive a restart. An image that declared one would create an anonymous volume
+on every run, which `docker rm` leaves behind and nobody ever looks at, and
+would hand each run a fresh empty store while looking like persistence.
+
 `/var/lib/collapse/<job_id>/` per job, holding the upload (`input/upload`), the
 unpacked tree for a tar envelope (`tree/`) and the produced archive. Deleting
 the job removes the whole directory.
