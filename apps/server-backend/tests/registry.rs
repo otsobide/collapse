@@ -328,3 +328,47 @@ fn reopening_keeps_the_schema_version() {
         .unwrap();
     assert_eq!(version, SCHEMA_VERSION);
 }
+
+// ------------------------------------------------------------- concurrency --
+
+/// The handlers and the worker hit the registry from different threads at the
+/// same time, and they do it inline rather than through a thread pool. A
+/// database behind a mutex has to survive that without deadlocking or losing a
+/// write, which is the assumption that made "no spawn_blocking" acceptable.
+#[test]
+fn concurrent_writers_and_readers_all_land() {
+    use std::sync::Arc;
+
+    let dir = TempDir::new().unwrap();
+    let registry = Arc::new(reopen(&dir));
+
+    let writers: Vec<_> = (0..8)
+        .map(|worker| {
+            let registry = registry.clone();
+            std::thread::spawn(move || {
+                for n in 0..25 {
+                    let id = format!("job-{worker}-{n}");
+                    registry.add(&job(&id)).unwrap();
+                    registry
+                        .update_status(&id, JobStatus::Completed, None)
+                        .unwrap();
+                    // A reader racing the writers, the way a polling client does.
+                    assert_eq!(
+                        registry.get(&id).unwrap().unwrap().status,
+                        JobStatus::Completed
+                    );
+                }
+            })
+        })
+        .collect();
+
+    for writer in writers {
+        writer.join().expect("no writer panicked or deadlocked");
+    }
+
+    assert_eq!(registry.ids().unwrap().len(), 8 * 25, "every write landed");
+    assert!(
+        registry.unfinished().unwrap().is_empty(),
+        "and every one of them finished"
+    );
+}

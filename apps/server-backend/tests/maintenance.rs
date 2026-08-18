@@ -40,7 +40,7 @@ fn staged_job(registry: &Registry, storage: &Storage, id: &str, status: JobStatu
     let mut job = job(id);
     job.status = status;
     registry.add(&job).unwrap();
-    storage.save_input(id, "notes.txt", b"hello").unwrap();
+    storage.save_input(id, b"hello").unwrap();
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn files_no_job_claims_are_deleted() {
     // a restart left these behind and the API could not even name them.
     let dir = TempDir::new().unwrap();
     let (registry, storage) = server(&dir);
-    storage.save_input("orphan", "notes.txt", b"stranded").unwrap();
+    storage.save_input("orphan", b"stranded").unwrap();
 
     let report = reconcile(&registry, &storage).unwrap();
 
@@ -163,7 +163,7 @@ fn one_pass_puts_every_kind_of_disagreement_right() {
     staged_job(&registry, &storage, "healthy", JobStatus::Completed);
     staged_job(&registry, &storage, "running", JobStatus::Compressing);
     registry.add(&job("no-files")).unwrap();
-    storage.save_input("orphan", "notes.txt", b"stranded").unwrap();
+    storage.save_input("orphan", b"stranded").unwrap();
 
     let report = reconcile(&registry, &storage).unwrap();
 
@@ -286,7 +286,7 @@ fn reconciling_twice_changes_nothing_the_second_time() {
     let dir = TempDir::new().unwrap();
     let (registry, storage) = server(&dir);
     staged_job(&registry, &storage, "running", JobStatus::Compressing);
-    storage.save_input("orphan", "notes.txt", b"stranded").unwrap();
+    storage.save_input("orphan", b"stranded").unwrap();
 
     reconcile(&registry, &storage).unwrap();
     let second = reconcile(&registry, &storage).unwrap();
@@ -294,5 +294,35 @@ fn reconciling_twice_changes_nothing_the_second_time() {
     assert!(
         second.is_clean(),
         "a reconciled server restarts into a clean one"
+    );
+}
+
+/// A staged directory whose name is not valid UTF-8 must actually be removed,
+/// not merely counted. `staged_jobs` reads names off the filesystem, where a
+/// name is bytes rather than text, and anything that turns those bytes into a
+/// String on the way to `delete_job` deletes a path that does not exist while
+/// the report claims otherwise: the directory then leaks forever and every
+/// startup says it was cleaned.
+#[test]
+// Linux only: macOS refuses to create a file name that is not valid UTF-8,
+// so the case cannot even be staged there. CI runs on Linux, where it can.
+#[cfg(target_os = "linux")]
+fn an_orphan_whose_name_is_not_text_is_really_deleted() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+
+    let name = std::ffi::OsStr::from_bytes(b"job\xffwith-odd-bytes");
+    let orphan = dir.path().join(name);
+    std::fs::create_dir_all(orphan.join("input")).unwrap();
+    std::fs::write(orphan.join("input/notes.txt"), b"stranded").unwrap();
+
+    let report = reconcile(&registry, &storage).unwrap();
+
+    assert_eq!(report.orphaned, 1, "it is recognised as an orphan");
+    assert!(
+        !orphan.exists(),
+        "and it is gone, not just counted: the report must not claim a cleanup it did not do"
     );
 }

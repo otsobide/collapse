@@ -60,6 +60,10 @@ ENV COLLAPSE_MAX_UPLOAD_MB=500
 # How long a finished job survives without being downloaded again. 0 keeps
 # every job until a client deletes it.
 ENV COLLAPSE_JOB_TTL_MINUTES=60
+# On a stop, how long transfers already in flight get to finish. Raise the
+# container's own stop grace period alongside it, or Docker's SIGKILL arrives
+# first and none of it applies.
+ENV COLLAPSE_SHUTDOWN_GRACE_SECONDS=10
 
 EXPOSE 8000 8080
 VOLUME ["/var/lib/collapse"]

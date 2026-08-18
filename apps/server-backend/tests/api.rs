@@ -513,3 +513,83 @@ async fn the_reaper_can_be_turned_off() {
     let response = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
     assert_eq!(response.status(), StatusCode::OK, "nothing reaps it");
 }
+
+#[tokio::test]
+async fn the_name_a_client_sends_reaches_the_archive_but_never_the_staging_paths() {
+    // Where the name still belongs: inside the archive. Where it no longer
+    // goes: any path this server builds. That split is what makes the layout
+    // safe by construction instead of by the name validation holding.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+
+    let accepted = post_compress(&router, "name=my%20odd%20notes.txt", b"payload").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    // Every path under the staging directory, while the job is still there.
+    let mut staged = Vec::new();
+    let mut pending = vec![storage.path().to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            staged.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            if path.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    assert!(
+        !staged.iter().any(|name| name.contains("odd")),
+        "the caller's name became a path: {staged:?}"
+    );
+    assert!(
+        staged.iter().any(|name| name == "upload"),
+        "the upload is staged under the server's own name: {staged:?}"
+    );
+
+    let response = request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    let files = extract_archive(&body_bytes(response).await, "zip");
+    assert_eq!(
+        files,
+        vec![("my odd notes.txt".to_string(), b"payload".to_vec())],
+        "and the archive still carries the name the caller asked for"
+    );
+}
+
+#[tokio::test]
+async fn a_tar_envelope_is_staged_under_the_same_fixed_name() {
+    // The envelope path has three files in play at once (the upload, the tree
+    // it unpacks into, the archive it produces), which is exactly where a
+    // name that came off the wire would have done the most damage. None of
+    // them is named after anything the caller sent.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+    });
+
+    let accepted = post_compress(&router, "name=photos&algorithm=zip&envelope=tar", &tar).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    let job_dir = storage.path().join(&job_id);
+    assert!(
+        job_dir.join("input").join("upload").is_file(),
+        "the envelope is staged under the server's own name"
+    );
+    assert!(
+        !job_dir.join("input").join("photos").exists()
+            && !job_dir.join("input").join("photos.tar").exists(),
+        "and never under the caller's"
+    );
+
+    // The unpacked tree does carry the caller's name, because that name is the
+    // tar's own content and the server checks it is the single root it was
+    // promised. That is a different thing from building a path out of it.
+    assert!(job_dir.join("tree").join("photos").is_dir());
+    assert!(job_dir.join("archive.zip").is_file());
+}

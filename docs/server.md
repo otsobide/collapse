@@ -68,6 +68,7 @@ takes flags. Everything has a working default.
 | `COLLAPSE_PORT` | `8000` | Host port for the API (compose only) |
 | `COLLAPSE_WEB_PORT` | `8080` | Host port for the web app (compose only) |
 | `COLLAPSE_BACKEND` | `127.0.0.1:8000` | Where nginx proxies the API to. Only worth changing in the split setup, where it is `backend:8000`. |
+| `COLLAPSE_SHUTDOWN_GRACE_SECONDS` | `10` | On a stop, how long transfers already in flight get to finish. Raise the container's `stop_grace_period` alongside it. See [Stopping it](#stopping-it). |
 | `RUST_LOG` | `info` | Log level, or a per-target spec like `collapse_server_backend=debug,tower_http=warn`. See [Logs](#logs). |
 
 The API binary's own flags, for a deployment without containers or for
@@ -79,6 +80,7 @@ overriding what the image pins:
 | `--port` | `8000` | |
 | `--max-upload-mb` | `500` | |
 | `--job-ttl-minutes` | `60` | `0` disables the reaper |
+| `--shutdown-grace-seconds` | `10` | On a stop, how long transfers already in flight get to finish |
 | `--storage-dir` | a temporary directory | Removed when the process exits. Give a path to keep jobs across restarts. Both images pin `/var/lib/collapse`. |
 
 Anything you append to `docker run` reaches the binary, and clap takes the last
@@ -126,6 +128,11 @@ services:
     # archive's expansion, so a container-level ceiling is what stands between
     # a large upload and the host's RAM. Size it well above the upload cap.
     mem_limit: 2g
+
+    # A stop lets transfers already in flight finish. Docker's default here is
+    # ten seconds, the same as the server's own deadline, which would SIGKILL
+    # just as it was about to exit cleanly.
+    stop_grace_period: 20s
 
 volumes:
   jobs:
@@ -210,7 +217,7 @@ Query parameters of `POST /compress`:
 
 | Parameter | Required | Default | Values |
 |---|---|---|---|
-| `name` | yes | | A bare file name. It becomes the name inside the archive, so no separators, no `..`. |
+| `name` | yes | | A bare file name. It becomes the name inside the archive, so no separators, no `..`. It never becomes a path on the server: uploads are staged under a fixed name. |
 | `algorithm` | no | `zip` | `zip`, `7z`, `tar` (`tar` only bundles, it does not compress) |
 | `level` | no | `3` | `1` to `5`. Out of range is a 400, never silently clamped. |
 | `envelope` | no | `none` | `none` for a plain file, `tar` for a directory: see below. |
@@ -321,11 +328,14 @@ which this project treats as a defect not to repeat). Same-origin requests need
 none. If you ever see a CORS error here, the proxy is misconfigured; adding
 CORS to the backend is the wrong fix.
 
-Two settings in [`nginx.conf`](../apps/server-frontend/nginx.conf) are
+Three settings in [`nginx.conf`](../apps/server-frontend/nginx.conf) are
 load-bearing: `client_max_body_size`, because nginx defaults to 1 MiB and would
-turn every real upload into a 413 long before the backend's own cap applied,
-and `proxy_read_timeout` / `proxy_send_timeout`, because a job can run for
-minutes and the defaults would cut it off mid-compression.
+turn every real upload into a 413 long before the backend's own cap applied;
+`proxy_read_timeout` / `proxy_send_timeout`, because a job can run for minutes
+and the defaults would cut it off mid-compression; and `proxy_buffering off`,
+because the default writes every download to a temp file of nginx's own before
+feeding the client, so a 500 MB archive is written twice and the proxy needs
+disk for a copy of what the backend just produced.
 
 ## Operating it
 
@@ -387,7 +397,7 @@ The web app's nginx logs its own accesses separately, in the same stream.
 
 ### What lives in the volume
 
-`/var/lib/collapse/<job_id>/` per job, holding the upload (`input/`), the
+`/var/lib/collapse/<job_id>/` per job, holding the upload (`input/upload`), the
 unpacked tree for a tar envelope (`tree/`) and the produced archive. Deleting
 the job removes the whole directory.
 
@@ -433,6 +443,47 @@ data the server owns. Sizing it, worst case per job:
 With the 500 MB default cap that is up to 1.5 GB of disk for a single job, and
 concurrent uploads add up. Give the volume room, or lower the cap.
 
+### Stopping it
+
+A stop is graceful: the server **stops accepting connections and finishes the
+requests it already has**, then exits.
+
+```
+INFO collapse_server_backend: stopping: no new connections, finishing what is in flight grace_seconds=10
+INFO collapse_server_backend: stopped
+```
+
+That matters most for downloads. Without it, restarting while someone was
+fetching a 40 MB archive handed them a truncated file; now the transfer
+completes and the server leaves afterwards. A clean exit is also what removes
+the default temporary staging directory, which a killed process leaves behind.
+
+Two limits worth knowing:
+
+- **`--shutdown-grace-seconds` (10) is a deadline, not a promise.** A client
+  that stops reading its download cannot hold the server open forever, so once
+  the window passes the process exits anyway.
+- **Docker's own grace period has to be at least as long.** It defaults to ten
+  seconds and then sends SIGKILL, which would cut the drain short at exactly
+  the wrong moment; the compose file gives both services `stop_grace_period:
+  20s`. The web container also gets `stop_signal: SIGQUIT`, because nginx reads
+  SIGTERM as "fast shutdown" and would drop the connections it is proxying.
+- **A container that stops still costs the tail of a transfer.** The processes
+  drain, but a container's network namespace dies with PID 1 and takes with it
+  whatever the kernel had queued and not yet delivered, so a client downloading
+  at the moment of the stop can end up short of its Content-Length. That is a
+  detected failure, not a silent one: the archive's length is known, so clients
+  see a broken transfer rather than a corrupt file. The CLI, for one, reports
+  `response body closed before all bytes were read` and writes nothing.
+  Downloading again is all it takes, since the job and its archive are still
+  there.
+
+**Compression in progress is not waited for.** A job that was running when the
+server stopped comes back `failed`, with `error_message` saying the server
+restarted, so a client is told rather than left polling forever. Waiting for it
+would mean holding a stop open for as long as an archive takes, which no
+container runtime will allow anyway.
+
 ### Upgrades
 
 ```bash
@@ -440,11 +491,9 @@ docker compose build --pull && docker compose up -d
 ```
 
 Finished jobs survive it: the registry is on disk, so a client can still poll,
-download and delete across the restart. A job that was **running** does not,
-because the server does not yet shut down gracefully and no worker survives the
-stop. Those come back marked `failed`, with `error_message` saying the server
-restarted, so a client is told rather than left polling forever. Still worth
-upgrading when nothing is running.
+download and delete across the restart. In-flight transfers survive it too, as
+long as they fit in the grace period. Jobs mid-compression do not, so it is
+still worth upgrading when nothing is running.
 
 The reconciliation that does this reports itself when it finds anything:
 
@@ -477,8 +526,9 @@ Worth knowing before deploying this unattended:
   (see [Jobs are collected](#jobs-are-collected)), but the flip side is that a
   client which comes back for an archive more than an hour after downloading it
   finds a 404. Raise `COLLAPSE_JOB_TTL_MINUTES` if your clients work that way.
-- **No graceful shutdown.** `docker stop` cuts in-flight uploads, downloads and
-  compressions immediately.
+- **A stop still costs whatever is compressing.** Requests in flight are
+  finished (see [Stopping it](#stopping-it)), but the worker is not waited for,
+  so a job mid-compression comes back `failed` and has to be uploaded again.
 - **Uploads and downloads are buffered whole in memory** by the backend, on top
   of what the compression itself buffers. Keep `mem_limit` well above
   `COLLAPSE_MAX_UPLOAD_MB` and expect concurrency to multiply it.
@@ -511,9 +561,9 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 123 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 131 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
-make server-frontend/test    # 40 Vitest cases
+make server-frontend/test    # 42 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
 make docker/smoke            # the split stack through its published port
 ```

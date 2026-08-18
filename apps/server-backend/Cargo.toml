@@ -15,7 +15,17 @@ path = "src/lib.rs"
 [dependencies]
 collapse-core = { path = "../core" }
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "fs", "time"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "macros",
+    "sync",
+    "fs",
+    "time",
+    # A stop has to be caught to be handled: without this the process is
+    # terminated mid-response.
+    "signal",
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
