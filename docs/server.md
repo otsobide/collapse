@@ -333,12 +333,9 @@ load-bearing: `client_max_body_size`, because nginx defaults to 1 MiB and would
 turn every real upload into a 413 long before the backend's own cap applied;
 `proxy_read_timeout` / `proxy_send_timeout`, because a job can run for minutes
 and the defaults would cut it off mid-compression; and `proxy_buffering off`,
-which streams the archive to the client instead of spooling it. Buffered,
-nginx reads the whole response into a temp file and counts the request as
-served the moment it has written those bytes into a socket, which both puts
-every archive on the proxy's disk and breaks the backend's graceful shutdown:
-the download would end short of its Content-Length while the access log claimed
-every byte was sent.
+because the default writes every download to a temp file of nginx's own before
+feeding the client, so a 500 MB archive is written twice and the proxy needs
+disk for a copy of what the backend just produced.
 
 ## Operating it
 
@@ -471,12 +468,15 @@ Two limits worth knowing:
   the wrong moment; the compose file gives both services `stop_grace_period:
   20s`. The web container also gets `stop_signal: SIGQUIT`, because nginx reads
   SIGTERM as "fast shutdown" and would drop the connections it is proxying.
-- **The all-in-one container waits for the kernel too.** Its entrypoint holds
-  on until the send queues are empty and have stayed empty briefly, because a
-  container's network namespace dies with PID 1 and takes any queued bytes with
-  it. Without that wait, a stop mid-download cost the client the last few
-  megabytes even though both processes had exited cleanly. It costs nothing
-  when nothing is pending: an idle stop is still immediate.
+- **A container that stops still costs the tail of a transfer.** The processes
+  drain, but a container's network namespace dies with PID 1 and takes with it
+  whatever the kernel had queued and not yet delivered, so a client downloading
+  at the moment of the stop can end up short of its Content-Length. That is a
+  detected failure, not a silent one: the archive's length is known, so clients
+  see a broken transfer rather than a corrupt file. The CLI, for one, reports
+  `response body closed before all bytes were read` and writes nothing.
+  Downloading again is all it takes, since the job and its archive are still
+  there.
 
 **Compression in progress is not waited for.** A job that was running when the
 server stopped comes back `failed`, with `error_message` saying the server

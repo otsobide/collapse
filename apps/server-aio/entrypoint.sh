@@ -57,38 +57,4 @@ shutdown
 wait "$api" 2>/dev/null || true
 wait "$web" 2>/dev/null || true
 
-# Both processes are gone, but their last bytes may not be. A closed socket is
-# still the kernel's to drain, and the container's network namespace dies with
-# PID 1: exit now and whatever is queued is discarded, which a client reads as
-# a download that ends short of its Content-Length. Measured on a 40 MB archive
-# over a rate-limited connection, that was the last 4 MB.
-#
-# So wait for the kernel's own send queues to empty, bounded, and only for as
-# long as something is actually pending.
-queued_bytes() {
-    # Column 5 of /proc/net/tcp is tx_queue:rx_queue, in hex. FNR, not NR: the
-    # header has to be skipped in each file, and counting it as a socket makes
-    # this never reach zero, turning the bounded wait into a flat delay on
-    # every stop.
-    local total=0 hex
-    for hex in $(awk 'FNR > 1 { split($5, q, ":"); print q[1] }' /proc/net/tcp /proc/net/tcp6 2>/dev/null); do
-        total=$((total + 0x$hex))
-    done
-    echo "$total"
-}
-
-# Empty once is not empty: the last bytes leave the namespace before they reach
-# the client, through the port forwarding on the other side of it, so the exit
-# waits for a short quiet spell rather than the first zero reading.
-quiet=0
-for _ in $(seq 1 100); do
-    if [ "$(queued_bytes)" -eq 0 ]; then
-        quiet=$((quiet + 1))
-        [ "$quiet" -ge 5 ] && break
-    else
-        quiet=0
-    fi
-    sleep 0.1
-done
-
 exit "$status"
