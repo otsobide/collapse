@@ -16,7 +16,8 @@ collapse-server-backend \
     --host 0.0.0.0 \
     --port 8000 \
     --storage-dir /var/lib/collapse \
-    --max-upload-mb "${COLLAPSE_MAX_UPLOAD_MB:-500}" "$@" &
+    --max-upload-mb "${COLLAPSE_MAX_UPLOAD_MB:-500}" \
+    --job-ttl-minutes "${COLLAPSE_JOB_TTL_MINUTES:-60}" "$@" &
 api=$!
 
 nginx -g 'daemon off;' &

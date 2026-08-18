@@ -41,8 +41,11 @@ fn start_server() -> (String, std::path::PathBuf) {
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            let app =
-                collapse_server_backend::build_app(app_storage, collapse_server_backend::DEFAULT_MAX_UPLOAD_MB);
+            let app = collapse_server_backend::build_app(
+                app_storage,
+                collapse_server_backend::DEFAULT_MAX_UPLOAD_MB,
+            )
+            .expect("the server builds");
             axum::serve(listener, app).await.unwrap();
         });
     });
@@ -125,8 +128,14 @@ fn remote_compress_cleans_up_the_job_server_side() {
     run_ok(&["collapse", "compress", src.to_str().unwrap(), "--server", &server]);
 
     // The CLI deletes the job after downloading, so no job directory (input
-    // or archive) survives in the server's staging area.
-    let leftovers: Vec<_> = std::fs::read_dir(&storage).unwrap().collect();
+    // or archive) survives in the server's staging area. The registry's own
+    // database sits there too, as files rather than directories, which is
+    // exactly what keeps the two apart.
+    let leftovers: Vec<_> = std::fs::read_dir(&storage)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_dir())
+        .collect();
     assert!(leftovers.is_empty(), "job files left behind: {leftovers:?}");
 }
 

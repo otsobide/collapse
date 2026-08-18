@@ -15,7 +15,7 @@ use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB);
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     (router, storage)
 }
 

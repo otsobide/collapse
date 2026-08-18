@@ -64,6 +64,7 @@ takes flags. Everything has a working default.
 | Variable | Default | What it sets |
 |---|---|---|
 | `COLLAPSE_MAX_UPLOAD_MB` | `500` | Largest accepted upload, in MiB. Beyond it, uploads get a 413. |
+| `COLLAPSE_JOB_TTL_MINUTES` | `60` | How long a finished job survives without being downloaded again. `0` keeps every job until a client deletes it. See [Jobs are collected](#jobs-are-collected). |
 | `COLLAPSE_PORT` | `8000` | Host port for the API (compose only) |
 | `COLLAPSE_WEB_PORT` | `8080` | Host port for the web app (compose only) |
 | `COLLAPSE_BACKEND` | `127.0.0.1:8000` | Where nginx proxies the API to. Only worth changing in the split setup, where it is `backend:8000`. |
@@ -77,6 +78,7 @@ overriding what the image pins:
 | `--host` | `127.0.0.1` | Both images pin `0.0.0.0`, since a container's loopback reaches nothing from outside |
 | `--port` | `8000` | |
 | `--max-upload-mb` | `500` | |
+| `--job-ttl-minutes` | `60` | `0` disables the reaper |
 | `--storage-dir` | a temporary directory | Removed when the process exits. Give a path to keep jobs across restarts. Both images pin `/var/lib/collapse`. |
 
 Anything you append to `docker run` reaches the binary, and clap takes the last
@@ -104,6 +106,9 @@ services:
 
     environment:
       COLLAPSE_MAX_UPLOAD_MB: "500"
+      # Finished jobs nobody downloads again are collected after this long, so
+      # a client that walks away does not leave its files on the volume.
+      COLLAPSE_JOB_TTL_MINUTES: "60"
 
     # Only the web port is published. It proxies the API, so :8080 alone is a
     # complete deployment; publish 8000 as well only if a CLI or desktop client
@@ -386,6 +391,38 @@ The web app's nginx logs its own accesses separately, in the same stream.
 unpacked tree for a tar envelope (`tree/`) and the produced archive. Deleting
 the job removes the whole directory.
 
+Beside those directories sits **`jobs.db`**, the SQLite registry (with its
+`-wal` and `-shm` companions). It is what lets a job survive a restart, and the
+reason the staging area must be a persistent volume if you care about that:
+every *directory* in there is a job, and anything that is not claimed by a row
+in the database is deleted at startup.
+
+### Jobs are collected
+
+Every client deletes its job after downloading, and all three of ours do. For
+the ones that do not, because a browser tab closed or a script died half way,
+the server sweeps: **a finished job nobody downloads again within
+`COLLAPSE_JOB_TTL_MINUTES` (an hour by default) is deleted**, row and files
+together, and says so:
+
+```
+INFO collapse_server_backend: reaped jobs nobody came back for jobs=3 ttl_minutes=60
+```
+
+Three rules make that safe to leave running unattended:
+
+- **Downloading restarts the clock.** Polling does not, deliberately: a client
+  that watches a finished job forever without ever fetching it has abandoned
+  it in every sense that matters to disk.
+- **Work in progress is never collected**, however old it looks. Those jobs
+  belong to the worker, and deleting one under it would leave a compression
+  writing into a directory that no longer exists.
+- **`0` turns it off**, for a deployment that would rather keep every job until
+  a client asks for it to go.
+
+Together with the startup pass, that bounds the disk: what is on it is the jobs
+of the last hour, plus whatever is running right now.
+
 **Nothing in it is worth backing up.** It is staging for in-flight work, not
 data the server owns. Sizing it, worst case per job:
 
@@ -402,8 +439,18 @@ concurrent uploads add up. Give the volume room, or lower the cap.
 docker compose build --pull && docker compose up -d
 ```
 
-In-flight jobs do not survive: the registry is in memory, and the server does
-not currently shut down gracefully. Upgrade when nothing is running.
+Finished jobs survive it: the registry is on disk, so a client can still poll,
+download and delete across the restart. A job that was **running** does not,
+because the server does not yet shut down gracefully and no worker survives the
+stop. Those come back marked `failed`, with `error_message` saying the server
+restarted, so a client is told rather than left polling forever. Still worth
+upgrading when nothing is running.
+
+The reconciliation that does this reports itself when it finds anything:
+
+```
+INFO collapse_server_backend: reconciled the registry with the staging directory interrupted=0 without_files=0 orphaned=1
+```
 
 ## Exposure
 
@@ -426,13 +473,10 @@ a tar someone sent it, is in [threat_model.md](threat_model.md#the-api-server).
 
 Worth knowing before deploying this unattended:
 
-- **Abandoned jobs are never cleaned up.** Staged files are removed when a
-  client deletes its job, and all three clients do, but a client that stops
-  half way leaves its directory behind. Nothing sweeps them, and a restart
-  makes it permanent: the registry is in memory, so after a restart the API
-  answers 404 for those jobs while their files stay on the volume. Recreate the
-  volume periodically, or run without one and let a container restart wipe the
-  staging area.
+- **A job can outlive its client's patience.** Nothing is left behind any more
+  (see [Jobs are collected](#jobs-are-collected)), but the flip side is that a
+  client which comes back for an archive more than an hour after downloading it
+  finds a 404. Raise `COLLAPSE_JOB_TTL_MINUTES` if your clients work that way.
 - **No graceful shutdown.** `docker stop` cuts in-flight uploads, downloads and
   compressions immediately.
 - **Uploads and downloads are buffered whole in memory** by the backend, on top
@@ -467,14 +511,18 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 84 Rust tests, including a hostile-tar suite
+make server-backend/test     # 123 Rust tests: unit, a hostile-tar suite, and
+                             # an end-to-end suite that runs the real binary
 make server-frontend/test    # 40 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
 make docker/smoke            # the split stack through its published port
 ```
 
-The backend's suite drives the whole app in-process with no sockets; the
-frontend's stubs `fetch`, so neither needs the other running. CI runs both,
-plus a build of each. The Docker packaging is **not** in CI: the two smoke
+Most of the backend's suite drives the app in-process with no sockets, which is
+fast and precise. `tests/e2e.rs` is the other half: it **launches the real
+binary** on a port the operating system picks, drives every endpoint over a
+real socket, and covers the things no in-process test can reach, starting with
+a job outliving the process that made it. The frontend's suite stubs `fetch`,
+so neither side needs the other running. CI runs both, plus a build of each. The Docker packaging is **not** in CI: the two smoke
 targets are the way to check it, and they are worth running after touching a
 Dockerfile, the compose file or the workspace layout.

@@ -30,6 +30,9 @@ services:
       - "8000"
       - --max-upload-mb
       - "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+      # Finished jobs nobody downloads again are collected after this long.
+      - --job-ttl-minutes
+      - "${COLLAPSE_JOB_TTL_MINUTES:-60}"
 
     # Log level, the usual tracing spelling: `RUST_LOG=debug make docker/up`,
     # or a per-target spec like `collapse_server_backend=debug,tower_http=warn`.
@@ -107,6 +110,7 @@ services:
 
     environment:
       COLLAPSE_MAX_UPLOAD_MB: "${COLLAPSE_MAX_UPLOAD_MB:-500}"
+      COLLAPSE_JOB_TTL_MINUTES: "${COLLAPSE_JOB_TTL_MINUTES:-60}"
       RUST_LOG: "${RUST_LOG:-info}"
 
     ports:

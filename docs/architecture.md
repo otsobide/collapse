@@ -185,9 +185,24 @@ immediately while a background worker compresses (a single queue consumer, so
 concurrent uploads line up instead of oversubscribing the CPU), and the
 client polls the job, downloads the archive, then deletes the job. Jobs are
 staged on disk with one directory per job under the staging dir (deleting a
-job is a single `remove_dir_all`) and tracked in an in-memory registry:
-nothing survives a restart, and nothing is cleaned up automatically — the
-delete endpoint is the cleanup.
+job is a single `remove_dir_all`) and tracked in a **SQLite registry**
+(`jobs.db`, beside those directories) that outlives the process, so a client
+can keep polling, downloading and above all deleting across a restart.
+
+Because both stores can be interrupted, `build_app` **reconciles** them before
+serving (`maintenance::reconcile`): jobs still `queued` or `compressing` are
+failed with a reason, since no worker survived to run them; rows whose files
+are gone are dropped; and directories no job claims are removed. That last one
+is what used to accumulate forever. The walk treats every *directory* in the
+staging area as a job, which is precisely why the database is a file next to
+them.
+
+A background **reaper** (`maintenance::reap`, swept at a tenth of the window on
+a blocking task) covers the other half: finished jobs nobody downloads again
+within `--job-ttl-minutes` are deleted, row and files together. Downloading
+touches a job and restarts its window; polling does not, and jobs the worker
+still owns are never collected. Between the two, disk is bounded by the last
+window's jobs plus whatever is running.
 
 Like the CLI it is a **library + binary**: `build_app()` (routes, state and
 the worker) lives in the lib, which is what its tests, and the CLI's
@@ -314,7 +329,8 @@ Each app carries its own tests, in that ecosystem's conventional place:
   `tests/remote.rs` serves the real `collapse-server-backend` app on an ephemeral port to
   go through remote mode end-to-end.
 - `apps/server-backend/tests/` — one file per source module (`validate`, `models`,
-  `registry`, `storage`, `error`, `openapi`, `logging`) plus two cross-cutting suites.
+  `registry`, `storage`, `error`, `openapi`, `logging`, `maintenance`) plus two
+  cross-cutting suites.
   `api.rs` drives the whole app in-process (tower `oneshot`, no sockets)
   through the full job flow and verifies round-trips by feeding the downloaded
   bytes back through the core extractors. `security.rs` posts hostile tar

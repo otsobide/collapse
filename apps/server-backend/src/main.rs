@@ -1,9 +1,12 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use clap::Parser;
 
-use collapse_server_backend::{build_app, logging, DEFAULT_MAX_UPLOAD_MB};
+use collapse_server_backend::{
+    build_app_with, logging, DEFAULT_JOB_TTL_MINUTES, DEFAULT_MAX_UPLOAD_MB,
+};
 
 /// Collapse compression API server.
 #[derive(Parser)]
@@ -25,6 +28,11 @@ struct Cli {
     /// removed when the server stops).
     #[arg(long)]
     storage_dir: Option<PathBuf>,
+
+    /// Delete finished jobs nobody downloads again after this many minutes.
+    /// 0 keeps them until a client deletes them.
+    #[arg(long, default_value_t = DEFAULT_JOB_TTL_MINUTES)]
+    job_ttl_minutes: u64,
 }
 
 /// Report a startup failure the way the rest of the server reports events, and
@@ -58,15 +66,32 @@ async fn main() {
         .await
         .unwrap_or_else(|e| fatal(format!("Cannot bind to {addr}: {e}")));
 
+    // Built before announcing the port: it opens the registry and reconciles
+    // it against the staging directory, and a server that cannot do that has
+    // nothing to serve.
+    // Zero disables the reaper; anything else is the window a finished job has
+    // to be downloaded again before it is collected.
+    let job_ttl =
+        (cli.job_ttl_minutes > 0).then(|| Duration::from_secs(cli.job_ttl_minutes * 60));
+
+    let app = build_app_with(storage_dir.clone(), cli.max_upload_mb, job_ttl)
+        .unwrap_or_else(|e| fatal(e.to_string()));
+
+    // The address the socket actually got, not the one that was asked for:
+    // with `--port 0` the operating system picks, and the log is the only
+    // place that says which.
+    let bound = listener.local_addr().unwrap_or(addr);
+
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
-        %addr,
+        addr = %bound,
         max_upload_mb = cli.max_upload_mb,
+        job_ttl_minutes = cli.job_ttl_minutes,
         storage_dir = %storage_dir.display(),
         "collapse-server-backend listening"
     );
 
-    if let Err(e) = axum::serve(listener, build_app(storage_dir, cli.max_upload_mb)).await {
+    if let Err(e) = axum::serve(listener, app).await {
         fatal(format!("Server error: {e}"));
     }
 }

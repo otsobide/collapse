@@ -54,6 +54,42 @@ pub enum JobStatus {
     Failed,
 }
 
+impl JobStatus {
+    /// Whether the job is done with, one way or the other. The worker owns
+    /// every other state, so anything that reaps or rewrites jobs from the
+    /// outside has to leave those alone.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, JobStatus::Completed | JobStatus::Failed)
+    }
+}
+
+/// One spelling for the wire, the log and the database column, so a status
+/// read out of any of the three means the same thing.
+impl std::fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            JobStatus::Queued => "queued",
+            JobStatus::Compressing => "compressing",
+            JobStatus::Completed => "completed",
+            JobStatus::Failed => "failed",
+        })
+    }
+}
+
+impl FromStr for JobStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "queued" => Ok(JobStatus::Queued),
+            "compressing" => Ok(JobStatus::Compressing),
+            "completed" => Ok(JobStatus::Completed),
+            "failed" => Ok(JobStatus::Failed),
+            other => Err(format!("Unknown job status: {other}.")),
+        }
+    }
+}
+
 /// One compression job tracked by the in-memory registry. Serialized as-is
 /// in the 202 response and by the status endpoint.
 #[derive(Debug, Clone, Serialize)]

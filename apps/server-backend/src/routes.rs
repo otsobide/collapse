@@ -32,7 +32,7 @@ pub(crate) struct CompressParams {
 fn job_or_404(state: &AppState, job_id: &str) -> Result<Job, ApiError> {
     state
         .registry
-        .get(job_id)
+        .get(job_id)?
         .ok_or_else(|| ApiError::NotFound("Job not found.".into()))
 }
 
@@ -107,7 +107,7 @@ pub(crate) async fn compress_create(
     );
 
     let job = Job::new(job_id.clone(), name, algorithm, level, envelope);
-    state.registry.add(job.clone());
+    state.registry.add(&job)?;
     state
         .queue_tx
         .send(job_id)
@@ -155,6 +155,11 @@ pub(crate) async fn download(
         .await
         .map_err(|_| ApiError::NotFound("Archive file not found.".into()))?;
 
+    // Downloading is what says a job is still wanted, so it restarts the
+    // reaper's clock. Polling deliberately does not: a client that watches a
+    // finished job forever without fetching it has abandoned it.
+    state.registry.touch(&job_id)?;
+
     Ok((
         [
             (header::CONTENT_TYPE, job.algorithm.media_type().to_string()),
@@ -188,7 +193,7 @@ pub(crate) async fn delete_job(
     let deleted = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    state.registry.remove(&job_id);
+    state.registry.remove(&job_id)?;
     tracing::info!(job = %job_id, files_removed = deleted, "deleted");
 
     Ok(Json(serde_json::json!({ "job_id": job_id, "deleted": deleted })))
