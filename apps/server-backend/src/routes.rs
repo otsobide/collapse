@@ -192,7 +192,7 @@ pub(crate) async fn delete_job(
     let deleted = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    state.registry.remove(&job_id)?;
+    state.registry.forget(&job_id)?;
     tracing::info!(job = %job_id, files_removed = deleted, "deleted");
 
     Ok(Json(serde_json::json!({ "job_id": job_id, "deleted": deleted })))

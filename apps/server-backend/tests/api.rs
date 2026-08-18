@@ -594,3 +594,43 @@ async fn a_tar_envelope_is_staged_under_the_same_fixed_name() {
     assert!(job_dir.join("tree").join("photos").is_dir());
     assert!(job_dir.join("archive.zip").is_file());
 }
+
+#[tokio::test]
+async fn a_job_this_build_cannot_read_answers_500_with_an_explanation() {
+    // The status is honest: the server has a state it cannot interpret, which
+    // is its problem, not the caller's. What changed is the message. It used
+    // to be SQLite's own words ("Invalid column type Text at index 3"), which
+    // told nobody anything.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+
+    // A row from a version that knows a format this one does not.
+    let database = storage
+        .path()
+        .join(collapse_server_backend::storage::REGISTRY_DIR)
+        .join(collapse_server_backend::registry::DATABASE_FILE);
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs
+                 (job_id, name, archive_name, algorithm, level, envelope, status,
+                  error_message, created_at, updated_at, server_version)
+             VALUES ('future', 'notes.txt', 'notes.txt.zst', 'zstd', 3, 'none',
+                     'completed', NULL, 0, 0, '0.9.0')",
+            [],
+        )
+        .unwrap();
+
+    let response = request(&router, Method::GET, "/jobs/future", b"").await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let detail = error_detail(response).await;
+    assert!(detail.contains("0.9.0"), "names the build that wrote it: {detail}");
+    assert!(detail.contains("zstd"), "names the value: {detail}");
+    assert!(detail.contains("algorithm"), "names the field: {detail}");
+    assert!(
+        !detail.contains("column"),
+        "and not the database's own words: {detail}"
+    );
+}

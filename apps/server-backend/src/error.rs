@@ -33,8 +33,18 @@ impl From<std::io::Error> for ApiError {
 
 /// A registry that cannot answer is a server that cannot say what it did with
 /// a job, so it is an internal error rather than a silent miss.
-impl From<rusqlite::Error> for ApiError {
-    fn from(err: rusqlite::Error) -> Self {
+///
+/// **500 on purpose**, including for a row this build cannot interpret. The
+/// server does have a state it cannot make sense of, which is its problem and
+/// not the caller's, and a 4xx would tell a client to retry differently when
+/// nothing it does can help. What was wrong with the old behaviour was the
+/// *message*, not the status: `RegistryError` renders one that names the
+/// version that wrote the row and the field that could not be read.
+impl From<crate::registry::RegistryError> for ApiError {
+    fn from(err: crate::registry::RegistryError) -> Self {
+        if let crate::registry::RegistryError::Unreadable { job_id, .. } = &err {
+            tracing::error!(job = %job_id, "{err}");
+        }
         ApiError::Internal(err.to_string())
     }
 }
@@ -44,7 +54,7 @@ impl From<rusqlite::Error> for ApiError {
 /// either rather than starting half-configured.
 #[derive(Debug)]
 pub enum StartupError {
-    Registry(rusqlite::Error),
+    Registry(crate::registry::RegistryError),
     Storage(std::io::Error),
 }
 
@@ -59,8 +69,8 @@ impl std::fmt::Display for StartupError {
 
 impl std::error::Error for StartupError {}
 
-impl From<rusqlite::Error> for StartupError {
-    fn from(err: rusqlite::Error) -> Self {
+impl From<crate::registry::RegistryError> for StartupError {
+    fn from(err: crate::registry::RegistryError) -> Self {
         StartupError::Registry(err)
     }
 }

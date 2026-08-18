@@ -53,7 +53,7 @@ pub fn reap(registry: &Registry, storage: &Storage, deadline: i64) -> Result<usi
         // it), while files without a row would be invisible to everything but
         // the startup sweep.
         storage.delete_job(&job_id);
-        registry.remove(&job_id)?;
+        registry.forget(&job_id)?;
         reaped += 1;
     }
     Ok(reaped)
@@ -74,7 +74,7 @@ pub fn reconcile(registry: &Registry, storage: &Storage) -> Result<Reconciled, S
         if storage.has_job(&job_id) {
             known.insert(job_id);
         } else {
-            registry.remove(&job_id)?;
+            registry.forget(&job_id)?;
             report.without_files += 1;
         }
     }

@@ -196,6 +196,13 @@ can mount one volume over the parent or one over each. It also means
 everything under `jobs/` is a job, so the sweep cannot reach the database by
 mistake.
 
+The database carries a schema version (`PRAGMA user_version`), migrated
+forward on open and **refused if it is newer than this build understands**, and
+each row records the build that wrote it. Nothing that deletes a job reads it
+first, so a row this build cannot interpret (a format a newer version knows)
+fails that one job's reads and stops nothing else. See
+[registry.md](registry.md).
+
 Because both stores can be interrupted, `build_app` **reconciles** them before
 serving (`maintenance::reconcile`): jobs still `queued` or `compressing` are
 failed with a reason, since no worker survived to run them; rows whose files

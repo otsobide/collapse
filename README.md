@@ -128,6 +128,12 @@ backend needs no CORS layer. Both publish to **localhost only** by default,
 matching the server's own posture (it has no authentication). Override the ports
 with `COLLAPSE_PORT=9000 COLLAPSE_WEB_PORT=9090 make docker/up`.
 
+Neither image declares a volume, so where the jobs live is your decision: the
+compose file mounts a named one, and a bare `docker run` keeps them in the
+container. The storage directory holds the registry and the job data in
+separate subdirectories, so one volume can cover both or each can have its own.
+See [registry.md](docs/registry.md).
+
 ### Desktop
 
 A Tauri v2 desktop app (macOS / Windows / Linux) sharing the same engine as the
@@ -164,7 +170,10 @@ Collapse is at an early stage. Here's exactly what exists today:
   with a destination picker for remote servers.
 - ✅ **API server** (`collapse-server-backend`) — optional remote compression over an
   asynchronous job flow, self-documenting at `/docs`, with a Dockerfile and a
-  compose file, and its own security suite for hostile uploads. Not shipped in
+  compose file, and its own security suite for hostile uploads. Built to be
+  left running: jobs are kept in a SQLite registry that survives a restart,
+  abandoned ones are collected on a timer, a stop finishes the transfers
+  already in flight, and it logs a line per request and per job. Not shipped in
   releases yet.
 - ✅ **Web app** (`collapse-server-frontend`) — a Vue frontend for the server,
   shipped in the compose stack, so a browser can compress too.
@@ -177,7 +186,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (276 Rust tests + 76 Vitest cases)
+make test              # run every suite (286 Rust tests + 76 Vitest cases)
 ```
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
@@ -195,7 +204,8 @@ apps/
   server-aio/      both of the above in one container (packaging only)
   desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust)
   landing/     collapse-landing — Nuxt landing page (the product site)
-docs/          architecture.md, threat_model.md, desktop.md, deployment.md, git_flow.md
+docs/          architecture.md, threat_model.md, server.md, registry.md,
+               desktop.md, deployment.md, git_flow.md
 ```
 
 Each app carries its own tests, in that ecosystem's conventional place: the Rust
@@ -207,6 +217,7 @@ keeps its Vitest suite in `apps/desktop/tests/`.
 - [Architecture](docs/architecture.md) — the engine, the CLI, the server, the desktop app, and how they fit together.
 - [Security](docs/threat_model.md) — threat model, measures, and the attacks they prevent.
 - [Server](docs/server.md) — running the compression server and its web app.
+- [Registry](docs/registry.md) — the server's state on disk: what survives a restart, and how to read or repair it.
 - [Desktop](docs/desktop.md) — building, signing, and per-platform distribution.
 - [Deployment](docs/deployment.md) — how the landing site is built and published.
 - [Git flow](docs/git_flow.md) — branching model (including deploy branches) and commits.
