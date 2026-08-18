@@ -185,16 +185,59 @@ immediately while a background worker compresses (a single queue consumer, so
 concurrent uploads line up instead of oversubscribing the CPU), and the
 client polls the job, downloads the archive, then deletes the job. Jobs are
 staged on disk with one directory per job under the staging dir (deleting a
-job is a single `remove_dir_all`) and tracked in an in-memory registry:
-nothing survives a restart, and nothing is cleaned up automatically — the
-delete endpoint is the cleanup.
+job is a single `remove_dir_all`) and tracked in a **SQLite registry** that
+outlives the process, so a client can keep polling, downloading and above all
+deleting across a restart.
+
+The two live in separate subdirectories of the storage directory,
+`registry/jobs.db` and `jobs/<job_id>/`, because they behave nothing alike: a
+few kilobytes written constantly against gigabytes written once. An operator
+can mount one volume over the parent or one over each. It also means
+everything under `jobs/` is a job, so the sweep cannot reach the database by
+mistake.
+
+The database carries a schema version (`PRAGMA user_version`), migrated
+forward on open and **refused if it is newer than this build understands**, and
+each row records the build that wrote it. Nothing that deletes a job reads it
+first, so a row this build cannot interpret (a format a newer version knows)
+fails that one job's reads and stops nothing else. See
+[registry.md](registry.md).
+
+Because both stores can be interrupted, `build_app` **reconciles** them before
+serving (`maintenance::reconcile`): jobs still `queued` or `compressing` are
+failed with a reason, since no worker survived to run them; rows whose files
+are gone are dropped; and directories no job claims are removed. That last one
+is what used to accumulate forever. The walk treats every *directory* in the
+staging area as a job, which is precisely why the database is a file next to
+them.
+
+A background **reaper** (`maintenance::reap`, swept at a tenth of the window on
+a blocking task) covers the other half: finished jobs nobody downloads again
+within `--job-ttl-minutes` are deleted, row and files together. Downloading
+touches a job and restarts its window; polling does not, and jobs the worker
+still owns are never collected. Between the two, disk is bounded by the last
+window's jobs plus whatever is running.
 
 Like the CLI it is a **library + binary**: `build_app()` (routes, state and
 the worker) lives in the lib, which is what its tests, and the CLI's
 end-to-end tests, drive in-process; `main.rs` only parses `--host` / `--port`
-/ `--max-upload-mb` / `--storage-dir` and serves. It binds `127.0.0.1` by
-default, and the default staging dir is a temporary directory removed when
-the server stops.
+/ `--max-upload-mb` / `--storage-dir`, installs the logger and serves. It binds
+`127.0.0.1` by default, and the default staging dir is a temporary directory
+removed when the server stops.
+
+A stop (SIGTERM, or Ctrl+C) is graceful: `main.rs` hands axum a shutdown future
+so it stops accepting connections and finishes the requests it already has,
+with `--shutdown-grace-seconds` as the deadline for a client that stops reading.
+The worker is deliberately not waited for, since a compression can outlast any
+container runtime's patience; a job caught mid-flight is resolved to `failed` by
+the next startup's reconciliation. The clean exit is also what lets the default
+staging TempDir's guard run.
+
+It logs through `tracing` (`logging.rs` sets up the subscriber, `RUST_LOG`
+picks the level): one line per HTTP request from `tower-http`'s `TraceLayer`,
+plus the job lifecycle from the handlers and the worker, every line tagged with
+`job=<id>`. `GET /health` is routed outside the traced layer on purpose, since
+a container probe every ten seconds would drown the rest.
 
 It also ships a container image (`apps/server-backend/Dockerfile`, plus the root
 `docker-compose.yml` and the `make docker/*` targets). Two details there are
@@ -240,7 +283,13 @@ Errors are JSON `{"detail": "..."}` with a 4xx/5xx status. Input is validated,
 never coerced: an unparseable or out-of-range `level` is a 400 (the reference
 implementation silently coerced it), an unknown `algorithm` is a 400, and
 `name` must be a **bare file name** (no separators, no `..`, not empty), since
-it becomes both the arcname inside the archive and the staging path on disk.
+it becomes the arcname inside the archive and the name a tar envelope's single
+root directory is checked against.
+
+It is deliberately **not** what keeps the staging paths safe. Every path the
+server builds comes from values it chose itself: a job id it generated, and
+fixed names (`input/upload`, `archive.<ext>`, `tree/`). Nothing a client sends
+is a path component, so the layout holds whether or not the validation does.
 Uploads beyond the configurable cap get a 413. There is no CORS layer: the
 server targets non-browser clients.
 
@@ -308,7 +357,8 @@ Each app carries its own tests, in that ecosystem's conventional place:
   `tests/remote.rs` serves the real `collapse-server-backend` app on an ephemeral port to
   go through remote mode end-to-end.
 - `apps/server-backend/tests/` — one file per source module (`validate`, `models`,
-  `registry`, `storage`, `error`, `openapi`) plus two cross-cutting suites.
+  `registry`, `storage`, `error`, `openapi`, `logging`, `maintenance`) plus two
+  cross-cutting suites.
   `api.rs` drives the whole app in-process (tower `oneshot`, no sockets)
   through the full job flow and verifies round-trips by feeding the downloaded
   bytes back through the core extractors. `security.rs` posts hostile tar
@@ -334,18 +384,24 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 ## CI
 
 `.github/workflows/test-and-build.yml` runs on every push to `main`/`dev` and
-on pull requests, entirely on Linux runners. Per app, tests gate the build: a
-`core` job (`make core/test`) gates a `cli` job, an `api` job and a `vitest`
-job (the desktop suite, Tauri IPC mocked), and each app's build job runs only
-after its own tests pass — `build (core)`, `build (cli)`, `build (api)`, and
-`build (desktop)`,
-the last compiling the whole Tauri app (frontend + the `src-tauri` crate,
-which no other CI job compiles) via `make desktop/compile`
-(`tauri build --no-bundle`), with the webkit system libraries installed on
-the runner. The landing has no tests and is built by `deploy-landing.yml`;
-release artifacts (macOS tarballs and `.dmg`, Linux `.deb`/`.rpm`/`.AppImage`) are
-`release.yml`'s job (which also runs the Rust test suite once on a macOS
-runner, one of the OSes the binaries actually target).
+on pull requests, entirely on Linux runners. Every job is named
+`test (<app>)` or `build (<app>)`, so a check's name says what it does and
+which app it belongs to; the job ids match those names (`test-cli`,
+`build-cli`). Per app, tests gate the build: `test (core)` (`make core/test`)
+gates `test (remote)`, `test (cli)`, `test (server-backend)` and
+`test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
+`test (server-frontend)` is independent of the Rust engine and runs on its
+own. Each app's build job runs only after its own tests pass: `build (core)`,
+`build (remote)`, `build (cli)`, `build (server-backend)`,
+`build (server-frontend)` and `build (desktop)`, the last compiling the whole
+Tauri app (frontend + the `src-tauri` crate, which no other CI job compiles)
+via `make desktop/compile` (`tauri build --no-bundle`), with the webkit system
+libraries installed on the runner. The landing has no tests and is built by
+`deploy-landing.yml`; release artifacts (macOS tarballs and `.dmg`, Linux
+`.deb`/`.rpm`/`.AppImage`, Windows `.msi` and setup `.exe`) are `release.yml`'s
+job (which also runs the Rust test suite once on a macOS runner, one of the
+OSes the binaries actually target). Renaming a job changes its check name, so
+any branch ruleset that requires the old name silently stops being satisfied.
 Branching and release flow are described in [git_flow.md](git_flow.md).
 
 ## Roadmap

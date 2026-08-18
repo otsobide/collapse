@@ -57,9 +57,24 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # Inside this container the web app reaches the API over loopback.
 ENV COLLAPSE_BACKEND=127.0.0.1:8000
 ENV COLLAPSE_MAX_UPLOAD_MB=500
+# How long a finished job survives without being downloaded again. 0 keeps
+# every job until a client deletes it.
+ENV COLLAPSE_JOB_TTL_MINUTES=60
+# On a stop, how long transfers already in flight get to finish. Raise the
+# container's own stop grace period alongside it, or Docker's SIGKILL arrives
+# first and none of it applies.
+ENV COLLAPSE_SHUTDOWN_GRACE_SECONDS=10
 
 EXPOSE 8000 8080
-VOLUME ["/var/lib/collapse"]
+
+# No VOLUME declaration, matching the backend image. Declaring one makes every
+# plain `docker run` leave an anonymous volume behind that `docker rm` does not
+# take with it: three runs, three volumes, invisible until a disk fills. It
+# also hands each run a fresh empty store, which makes the job registry look
+# like it does not survive a restart when it does. Where the staging area
+# lives is the operator's decision, so the compose file mounts a named volume
+# and a bare `docker run` keeps its jobs in the container, where they belong
+# for something that is staging rather than data.
 
 # Both ports have to answer for the container to be useful, so both are probed.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=8s --retries=3 \

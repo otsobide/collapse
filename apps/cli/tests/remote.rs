@@ -41,8 +41,11 @@ fn start_server() -> (String, std::path::PathBuf) {
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            let app =
-                collapse_server_backend::build_app(app_storage, collapse_server_backend::DEFAULT_MAX_UPLOAD_MB);
+            let app = collapse_server_backend::build_app(
+                app_storage,
+                collapse_server_backend::DEFAULT_MAX_UPLOAD_MB,
+            )
+            .expect("the server builds");
             axum::serve(listener, app).await.unwrap();
         });
     });
@@ -124,9 +127,13 @@ fn remote_compress_cleans_up_the_job_server_side() {
 
     run_ok(&["collapse", "compress", src.to_str().unwrap(), "--server", &server]);
 
-    // The CLI deletes the job after downloading, so no job directory (input
-    // or archive) survives in the server's staging area.
-    let leftovers: Vec<_> = std::fs::read_dir(&storage).unwrap().collect();
+    // The CLI deletes the job after downloading, so nothing survives in the
+    // server's job area. That area is its own directory, separate from the
+    // registry's database, so this looks at jobs and only jobs.
+    let leftovers: Vec<_> = std::fs::read_dir(storage.join("jobs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
     assert!(leftovers.is_empty(), "job files left behind: {leftovers:?}");
 }
 
@@ -278,4 +285,125 @@ fn remote_compress_refuses_to_overwrite_its_own_source() {
         CliError::OutputIsSource(_)
     ));
     assert_eq!(std::fs::read(&src).unwrap(), b"IMPORTANT ORIGINAL CONTENT");
+}
+
+// ------------------------------------------------- a transfer that breaks --
+
+/// A server that answers the job flow but hangs up half way through the
+/// download, the way a stopped container does. Speaking HTTP by hand is what
+/// lets the response promise one length and deliver another.
+fn truncating_server() -> String {
+    use std::io::{BufRead, Read, Write};
+
+    const JOB: &str = r#"{"job_id":"stub","name":"notes.txt","archive_name":"notes.txt.zip","algorithm":"zip","level":3,"envelope":"none","status":"completed","error_message":null}"#;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
+                continue;
+            }
+            let mut length = 0usize;
+            loop {
+                let mut header = String::new();
+                if reader.read_line(&mut header).unwrap_or(0) == 0 || header.trim().is_empty() {
+                    break;
+                }
+                let lower = header.to_ascii_lowercase();
+                if let Some(value) = lower.strip_prefix("content-length:") {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            if length > 0 {
+                let mut body = vec![0u8; length];
+                let _ = reader.read_exact(&mut body);
+            }
+
+            let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+            let (promised, body, kind): (usize, Vec<u8>, &str) = if path.ends_with("/download") {
+                (200_000, vec![b'A'; 100_000], "application/zip")
+            } else {
+                (JOB.len(), JOB.as_bytes().to_vec(), "application/json")
+            };
+
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {promised}\r\nConnection: close\r\n\r\n"
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+            let _ = stream.flush();
+        }
+    });
+
+    format!("http://{addr}")
+}
+
+/// A download that breaks must leave nothing behind. The archive is written
+/// only once every byte is in hand, so a user is never handed a file that
+/// looks like an archive and is not one.
+#[test]
+fn a_broken_download_writes_no_output_file() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"compress me").unwrap();
+    let output = dir.path().join("notes.txt.zip");
+
+    let error = run_err(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &truncating_server(),
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert!(
+        matches!(error, CliError::Remote(_)),
+        "the failure is reported as a remote one: {error:?}"
+    );
+    assert!(
+        !output.exists(),
+        "a half-delivered archive must not be left on disk"
+    );
+    assert!(src.exists(), "and the source is untouched");
+}
+
+/// The destructive twin of the test above: with `--force` there is already an
+/// archive at the output path, and a failed remote compression must leave it
+/// exactly as it was. Writing only once every byte is in hand is what makes
+/// that true, so this is the test that would catch someone streaming the
+/// download straight into the output file.
+#[test]
+fn a_broken_download_does_not_destroy_the_archive_it_would_have_replaced() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"compress me").unwrap();
+
+    let output = dir.path().join("notes.txt.zip");
+    let previous = b"an archive from a previous run";
+    std::fs::write(&output, previous).unwrap();
+
+    run_err(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &truncating_server(),
+        "-o",
+        output.to_str().unwrap(),
+        "--force",
+    ]);
+
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        previous,
+        "the archive that was already there is untouched"
+    );
 }

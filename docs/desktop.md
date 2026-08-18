@@ -124,7 +124,7 @@ arm64 packages and Flathub are optional later channels.
 
 - The window uses the macOS overlay title bar (`titleBarStyle: "Overlay"`,
   `hiddenTitle`); on Windows/Linux Tauri falls back to standard decorations.
-- CI covers the desktop app in `test-and-build.yml`: a `vitest (desktop)` job
+- CI covers the desktop app in `test-and-build.yml`: a `test (desktop)` job
   runs the frontend suite (Node only, Tauri IPC mocked), and a `build (desktop)`
   job installs the Tauri Linux system deps and compiles the whole app via
   `make desktop/compile` (`tauri build --no-bundle`). That build job is the only

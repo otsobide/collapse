@@ -10,12 +10,15 @@ use axum::Router;
 use http_body_util::BodyExt;
 use tower::util::ServiceExt;
 
-use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
+use std::time::Duration;
+
+use collapse_server_backend::storage::JOBS_DIR;
+use collapse_server_backend::{build_app, build_app_with, DEFAULT_MAX_UPLOAD_MB};
 
 /// Build the app over its own staging dir; keep the TempDir alive with it.
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB);
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     (router, storage)
 }
 
@@ -344,7 +347,7 @@ async fn delete_removes_the_job_and_its_files() {
     let accepted = post_compress(&router, "name=a.txt", b"delete me after").await;
     let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
     wait_for_job(&router, &job_id).await;
-    assert!(storage.path().join(&job_id).exists());
+    assert!(storage.path().join(JOBS_DIR).join(&job_id).exists());
 
     let response = request(&router, Method::DELETE, &format!("/jobs/{job_id}"), b"").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -352,7 +355,7 @@ async fn delete_removes_the_job_and_its_files() {
     assert_eq!(json["deleted"], true);
 
     // Files gone, and the job no longer exists for any endpoint.
-    assert!(!storage.path().join(&job_id).exists());
+    assert!(!storage.path().join(JOBS_DIR).join(&job_id).exists());
     let status = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
     assert_eq!(status.status(), StatusCode::NOT_FOUND);
     let download =
@@ -443,7 +446,7 @@ async fn compress_rejects_name_with_separators() {
 async fn compress_rejects_body_over_the_limit() {
     // A 1 MiB cap and a body just past it.
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), 1);
+    let router = build_app(storage.path().to_path_buf(), 1).expect("the app builds");
     let response = post_compress(&router, "name=big.bin", &vec![0u8; 1024 * 1024 + 1]).await;
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
@@ -459,5 +462,175 @@ async fn content_disposition_strips_header_breaking_characters() {
     assert_eq!(
         response.headers()[header::CONTENT_DISPOSITION],
         "attachment; filename=\"weird.txt.zip\""
+    );
+}
+
+#[tokio::test]
+async fn the_reaper_collects_a_job_nobody_came_back_for() {
+    // The background sweep, running for real: a one-second window, a job left
+    // undownloaded, and the server cleaning up after it without being asked.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app_with(
+        storage.path().to_path_buf(),
+        DEFAULT_MAX_UPLOAD_MB,
+        Some(Duration::from_secs(1)),
+    )
+    .expect("the app builds");
+
+    let job = body_json(post_compress(&router, "name=notes.txt", b"forget me").await).await;
+    let job_id = job["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let response = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+        if response.status() == StatusCode::NOT_FOUND {
+            let staged: Vec<_> = std::fs::read_dir(storage.path().join(JOBS_DIR))
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| path.is_dir())
+                .collect();
+            assert!(staged.is_empty(), "its files went with it: {staged:?}");
+            return;
+        }
+    }
+    panic!("the reaper never collected the job");
+}
+
+#[tokio::test]
+async fn the_reaper_can_be_turned_off() {
+    // `--job-ttl-minutes 0` for someone who would rather keep every job until
+    // a client deletes it.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app_with(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB, None)
+        .expect("the app builds");
+
+    let job = body_json(post_compress(&router, "name=notes.txt", b"keep me").await).await;
+    let job_id = job["job_id"].as_str().unwrap().to_string();
+    wait_for_job(&router, &job_id).await;
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+
+    let response = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+    assert_eq!(response.status(), StatusCode::OK, "nothing reaps it");
+}
+
+#[tokio::test]
+async fn the_name_a_client_sends_reaches_the_archive_but_never_the_staging_paths() {
+    // Where the name still belongs: inside the archive. Where it no longer
+    // goes: any path this server builds. That split is what makes the layout
+    // safe by construction instead of by the name validation holding.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+
+    let accepted = post_compress(&router, "name=my%20odd%20notes.txt", b"payload").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    // Every path under the staging directory, while the job is still there.
+    let mut staged = Vec::new();
+    let mut pending = vec![storage.path().join(JOBS_DIR)];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            staged.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            if path.is_dir() {
+                pending.push(path);
+            }
+        }
+    }
+    assert!(
+        !staged.iter().any(|name| name.contains("odd")),
+        "the caller's name became a path: {staged:?}"
+    );
+    assert!(
+        staged.iter().any(|name| name == "upload"),
+        "the upload is staged under the server's own name: {staged:?}"
+    );
+
+    let response = request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    let files = extract_archive(&body_bytes(response).await, "zip");
+    assert_eq!(
+        files,
+        vec![("my odd notes.txt".to_string(), b"payload".to_vec())],
+        "and the archive still carries the name the caller asked for"
+    );
+}
+
+#[tokio::test]
+async fn a_tar_envelope_is_staged_under_the_same_fixed_name() {
+    // The envelope path has three files in play at once (the upload, the tree
+    // it unpacks into, the archive it produces), which is exactly where a
+    // name that came off the wire would have done the most damage. None of
+    // them is named after anything the caller sent.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+    });
+
+    let accepted = post_compress(&router, "name=photos&algorithm=zip&envelope=tar", &tar).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    let job_dir = storage.path().join(JOBS_DIR).join(&job_id);
+    assert!(
+        job_dir.join("input").join("upload").is_file(),
+        "the envelope is staged under the server's own name"
+    );
+    assert!(
+        !job_dir.join("input").join("photos").exists()
+            && !job_dir.join("input").join("photos.tar").exists(),
+        "and never under the caller's"
+    );
+
+    // The unpacked tree does carry the caller's name, because that name is the
+    // tar's own content and the server checks it is the single root it was
+    // promised. That is a different thing from building a path out of it.
+    assert!(job_dir.join("tree").join("photos").is_dir());
+    assert!(job_dir.join("archive.zip").is_file());
+}
+
+#[tokio::test]
+async fn a_job_this_build_cannot_read_answers_500_with_an_explanation() {
+    // The status is honest: the server has a state it cannot interpret, which
+    // is its problem, not the caller's. What changed is the message. It used
+    // to be SQLite's own words ("Invalid column type Text at index 3"), which
+    // told nobody anything.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+
+    // A row from a version that knows a format this one does not.
+    let database = storage
+        .path()
+        .join(collapse_server_backend::storage::REGISTRY_DIR)
+        .join(collapse_server_backend::registry::DATABASE_FILE);
+    rusqlite::Connection::open(&database)
+        .unwrap()
+        .execute(
+            "INSERT INTO jobs
+                 (job_id, name, archive_name, algorithm, level, envelope, status,
+                  error_message, created_at, updated_at, server_version)
+             VALUES ('future', 'notes.txt', 'notes.txt.zst', 'zstd', 3, 'none',
+                     'completed', NULL, 0, 0, '0.9.0')",
+            [],
+        )
+        .unwrap();
+
+    let response = request(&router, Method::GET, "/jobs/future", b"").await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+    let detail = error_detail(response).await;
+    assert!(detail.contains("0.9.0"), "names the build that wrote it: {detail}");
+    assert!(detail.contains("zstd"), "names the value: {detail}");
+    assert!(detail.contains("algorithm"), "names the field: {detail}");
+    assert!(
+        !detail.contains("column"),
+        "and not the database's own words: {detail}"
     );
 }

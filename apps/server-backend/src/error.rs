@@ -30,3 +30,53 @@ impl From<std::io::Error> for ApiError {
         ApiError::Internal(err.to_string())
     }
 }
+
+/// A registry that cannot answer is a server that cannot say what it did with
+/// a job, so it is an internal error rather than a silent miss.
+///
+/// **500 on purpose**, including for a row this build cannot interpret. The
+/// server does have a state it cannot make sense of, which is its problem and
+/// not the caller's, and a 4xx would tell a client to retry differently when
+/// nothing it does can help. What was wrong with the old behaviour was the
+/// *message*, not the status: `RegistryError` renders one that names the
+/// version that wrote the row and the field that could not be read.
+impl From<crate::registry::RegistryError> for ApiError {
+    fn from(err: crate::registry::RegistryError) -> Self {
+        if let crate::registry::RegistryError::Unreadable { job_id, .. } = &err {
+            tracing::error!(job = %job_id, "{err}");
+        }
+        ApiError::Internal(err.to_string())
+    }
+}
+
+/// What can stop the server from coming up: the two things it owns are the
+/// job registry and the staging directory, and it refuses to serve without
+/// either rather than starting half-configured.
+#[derive(Debug)]
+pub enum StartupError {
+    Registry(crate::registry::RegistryError),
+    Storage(std::io::Error),
+}
+
+impl std::fmt::Display for StartupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartupError::Registry(err) => write!(f, "Cannot open the job registry: {err}"),
+            StartupError::Storage(err) => write!(f, "Cannot use the staging directory: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for StartupError {}
+
+impl From<crate::registry::RegistryError> for StartupError {
+    fn from(err: crate::registry::RegistryError) -> Self {
+        StartupError::Registry(err)
+    }
+}
+
+impl From<std::io::Error> for StartupError {
+    fn from(err: std::io::Error) -> Self {
+        StartupError::Storage(err)
+    }
+}

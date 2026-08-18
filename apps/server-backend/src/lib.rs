@@ -7,12 +7,15 @@
 //! answers `202 Accepted` with a job while a background worker compresses,
 //! the job can be polled, the archive downloaded once completed, and the job
 //! deleted afterwards. Jobs are staged on disk under a per-job directory and
-//! tracked in memory (nothing survives a restart).
+//! recorded in a SQLite registry beside them, so they outlive the process;
+//! `build_app` reconciles the two before serving.
 
 // The building blocks are public because the integration tests are a separate
 // crate and source files here carry no inline `mod tests`; only the wiring
 // (handlers and the worker) stays private.
 pub mod error;
+pub mod logging;
+pub mod maintenance;
 pub mod models;
 pub mod openapi;
 pub mod registry;
@@ -24,17 +27,28 @@ mod routes;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::sync::mpsc;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tower_http::LatencyUnit;
+use tracing::Level;
 
+use error::StartupError;
 use registry::Registry;
 use storage::Storage;
 
 /// Default cap on uploaded bodies, in mebibytes.
 pub const DEFAULT_MAX_UPLOAD_MB: usize = 500;
+
+/// How long a finished job survives without being downloaded again.
+///
+/// Generous on purpose: the clock only restarts on a download, so this is the
+/// window a client has to come back for an archive it already asked for.
+pub const DEFAULT_JOB_TTL_MINUTES: u64 = 60;
 
 /// Shared application state, handed to every route handler.
 #[derive(Clone)]
@@ -65,12 +79,53 @@ pub(crate) struct AppState {
 /// Errors are JSON `{"detail": "..."}` with a 4xx/5xx status. Job files are
 /// staged under `storage_dir` (one directory per job); `max_upload_mb` caps
 /// the accepted request body size (413 beyond it).
-pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
-    let registry = Arc::new(Registry::new());
-    let storage = Arc::new(Storage::new(storage_dir));
+pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Result<Router, StartupError> {
+    build_app_with(
+        storage_dir,
+        max_upload_mb,
+        Some(Duration::from_secs(DEFAULT_JOB_TTL_MINUTES * 60)),
+    )
+}
+
+/// [`build_app`] with the reaper's window spelled out. `None` disables it, and
+/// then only an explicit `DELETE` (or a restart, for files nothing claims)
+/// ever frees a job's disk.
+pub fn build_app_with(
+    storage_dir: PathBuf,
+    max_upload_mb: usize,
+    job_ttl: Option<Duration>,
+) -> Result<Router, StartupError> {
+    // Two halves, two directories under the one the operator named: the
+    // registry's database, and the job staging area. Both are created here
+    // because `--storage-dir` may name a path that does not exist yet, and
+    // because mounting a volume over either of them has to find a directory
+    // waiting for it.
+    let registry_dir = storage_dir.join(storage::REGISTRY_DIR);
+    let jobs_dir = storage_dir.join(storage::JOBS_DIR);
+    std::fs::create_dir_all(&registry_dir)?;
+    std::fs::create_dir_all(&jobs_dir)?;
+
+    let registry = Arc::new(Registry::open(&registry_dir)?);
+    let storage = Arc::new(Storage::new(jobs_dir));
+
+    // Before serving anything: the rows and the staged files have to agree.
+    // Nothing is compressing yet, which is what makes that judgement safe.
+    let reconciled = maintenance::reconcile(&registry, &storage)?;
+    if !reconciled.is_clean() {
+        tracing::info!(
+            interrupted = reconciled.interrupted,
+            without_files = reconciled.without_files,
+            orphaned = reconciled.orphaned,
+            "reconciled the registry with the staging directory"
+        );
+    }
 
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
     queue::start_worker(registry.clone(), storage.clone(), queue_rx);
+
+    if let Some(ttl) = job_ttl {
+        start_reaper(registry.clone(), storage.clone(), ttl);
+    }
 
     let state = AppState {
         registry,
@@ -78,8 +133,7 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
         queue_tx,
     };
 
-    Router::new()
-        .route("/health", get(routes::health))
+    let api = Router::new()
         // Interactive documentation, the way FastAPI serves it — but built
         // into the binary, so it works with no network access.
         .route("/docs", get(routes::docs))
@@ -88,5 +142,57 @@ pub fn build_app(storage_dir: PathBuf, max_upload_mb: usize) -> Router {
         .route("/jobs/{job_id}", get(routes::job_status).delete(routes::delete_job))
         .route("/jobs/{job_id}/download", get(routes::download))
         .layer(DefaultBodyLimit::max(max_upload_mb * 1024 * 1024))
-        .with_state(state)
+        // Applied after the body limit, which makes it the outer layer, so an
+        // upload rejected as too large is still logged as the 413 it is.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(
+                    DefaultOnResponse::new()
+                        .level(Level::INFO)
+                        .latency_unit(LatencyUnit::Millis),
+                ),
+        );
+
+    // /health stays outside the traced router on purpose: a container probes
+    // it every ten seconds, and those lines would bury everything worth
+    // reading. Its failures surface as the container's health status.
+    Ok(Router::new()
+        .route("/health", get(routes::health))
+        .merge(api)
+        .with_state(state))
+}
+
+/// Sweep finished jobs nobody came back for, forever.
+///
+/// The pass itself is blocking (SQLite, and a `remove_dir_all` that can take a
+/// while on a large tree), so it runs off the runtime's threads. It sweeps at
+/// a tenth of the window, which keeps a job from outliving its welcome by much
+/// without waking an idle server every few seconds.
+fn start_reaper(registry: Arc<Registry>, storage: Arc<Storage>, ttl: Duration) {
+    let interval = (ttl / 10).clamp(Duration::from_millis(200), Duration::from_secs(300));
+
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(interval).await;
+
+            let deadline = registry::now_unix() - ttl.as_secs() as i64;
+            let (registry, storage) = (registry.clone(), storage.clone());
+            let swept = tokio::task::spawn_blocking(move || {
+                maintenance::reap(&registry, &storage, deadline)
+            })
+            .await;
+
+            match swept {
+                Ok(Ok(0)) => {}
+                Ok(Ok(jobs)) => tracing::info!(
+                    jobs,
+                    ttl_minutes = ttl.as_secs() / 60,
+                    "reaped jobs nobody came back for"
+                ),
+                Ok(Err(e)) => tracing::error!(error = %e, "the reaper could not finish a pass"),
+                Err(e) => tracing::error!(error = %e, "the reaper task died"),
+            }
+        }
+    });
 }
