@@ -561,9 +561,9 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 126 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 128 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
-make server-frontend/test    # 40 Vitest cases
+make server-frontend/test    # 42 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
 make docker/smoke            # the split stack through its published port
 ```

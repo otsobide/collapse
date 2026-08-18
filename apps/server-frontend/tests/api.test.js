@@ -103,6 +103,60 @@ describe('compress', () => {
     })
   })
 
+  /// A download that breaks half way is the one failure the status code cannot
+  /// report: the 200 was sent with the headers, long before anything went
+  /// wrong. The browser catches it when it reads the body, and this pins that
+  /// the app never treats a half-delivered archive as a finished one.
+  it('rejects a download that breaks half way instead of saving a partial archive', async () => {
+    const { fetcher } = fetcherFrom([
+      json({ job_id: 'j1', archive_name: 'notes.txt.zip' }, true, 202),
+      json({ status: 'completed' }),
+      {
+        ok: true,
+        status: 200,
+        // What fetch does when the connection dies before Content-Length is
+        // satisfied: the response is fine, reading its body is not.
+        blob: async () => {
+          throw new TypeError('network error')
+        },
+      },
+    ])
+    const seen = []
+
+    await expect(
+      compress(
+        { body: new Blob(['x']), name: 'notes.txt', algorithm: 'zip', level: 3 },
+        { fetcher, onStatus: (s) => seen.push(s) },
+      ),
+    ).rejects.toThrow()
+
+    expect(seen).not.toContain('done')
+    expect(seen.at(-1)).toBe('downloading')
+  })
+
+  /// And it leaves the job where it is, which is what makes retrying cheap:
+  /// the archive is still on the server, so nothing has to be uploaded or
+  /// compressed again.
+  it('leaves the job on the server when the download breaks', async () => {
+    const { fetcher, calls } = fetcherFrom([
+      json({ job_id: 'j1', archive_name: 'notes.txt.zip' }, true, 202),
+      json({ status: 'completed' }),
+      {
+        ok: true,
+        status: 200,
+        blob: async () => {
+          throw new TypeError('network error')
+        },
+      },
+    ])
+
+    await expect(
+      compress({ body: new Blob(['x']), name: 'notes.txt', algorithm: 'zip', level: 3 }, { fetcher }),
+    ).rejects.toThrow()
+
+    expect(calls.map((c) => c.method)).not.toContain('DELETE')
+  })
+
   it('reports the server reason when the upload is rejected', async () => {
     const { fetcher } = fetcherFrom([json({ detail: 'Invalid file name.' }, false, 400)])
 

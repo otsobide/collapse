@@ -730,3 +730,30 @@ fn a_clean_stop_takes_the_temporary_staging_area_with_it() {
         "the temporary staging area goes with the process"
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn a_client_that_stops_reading_cannot_hold_the_stop_open() {
+    // The other half of a graceful stop: it finishes what is in flight, but a
+    // client that walks away mid-download must not keep the process alive for
+    // as long as it likes. That is what --shutdown-grace-seconds bounds.
+    let storage = TempDir::new().unwrap();
+    let mut server = Server::start(storage.path(), &["--shutdown-grace-seconds", "1"]);
+    let id = staged_archive(&server, 24);
+
+    let response = ureq::get(&server.url(&format!("/jobs/{id}/download")))
+        .call()
+        .expect("the download starts");
+    let mut body = response.into_reader();
+    let mut opening = vec![0u8; 8 * 1024];
+    body.read(&mut opening).unwrap();
+
+    // From here the archive is never read again, so the request stays open.
+    server.terminate();
+
+    assert!(
+        server.await_exit(Duration::from_secs(10)),
+        "the deadline ends the wait even with a request still open"
+    );
+    drop(body); // held until now, so the connection really was in flight
+}
