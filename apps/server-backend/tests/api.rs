@@ -557,3 +557,39 @@ async fn the_name_a_client_sends_reaches_the_archive_but_never_the_staging_paths
         "and the archive still carries the name the caller asked for"
     );
 }
+
+#[tokio::test]
+async fn a_tar_envelope_is_staged_under_the_same_fixed_name() {
+    // The envelope path has three files in play at once (the upload, the tree
+    // it unpacks into, the archive it produces), which is exactly where a
+    // name that came off the wire would have done the most damage. None of
+    // them is named after anything the caller sent.
+    let storage = tempfile::TempDir::new().unwrap();
+    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
+        .expect("the app builds");
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+    });
+
+    let accepted = post_compress(&router, "name=photos&algorithm=zip&envelope=tar", &tar).await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
+
+    let job_dir = storage.path().join(&job_id);
+    assert!(
+        job_dir.join("input").join("upload").is_file(),
+        "the envelope is staged under the server's own name"
+    );
+    assert!(
+        !job_dir.join("input").join("photos").exists()
+            && !job_dir.join("input").join("photos.tar").exists(),
+        "and never under the caller's"
+    );
+
+    // The unpacked tree does carry the caller's name, because that name is the
+    // tar's own content and the server checks it is the single root it was
+    // promised. That is a different thing from building a path out of it.
+    assert!(job_dir.join("tree").join("photos").is_dir());
+    assert!(job_dir.join("archive.zip").is_file());
+}
