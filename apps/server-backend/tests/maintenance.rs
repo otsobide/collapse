@@ -343,7 +343,8 @@ fn an_orphan_whose_name_is_not_text_is_really_deleted() {
     let (registry, storage) = server(&dir);
 
     let name = std::ffi::OsStr::from_bytes(b"job\xffwith-odd-bytes");
-    let orphan = dir.path().join(name);
+    // In the job area, which is where the sweep looks.
+    let orphan = jobs_dir(&dir).join(name);
     std::fs::create_dir_all(orphan.join("input")).unwrap();
     std::fs::write(orphan.join("input/notes.txt"), b"stranded").unwrap();
 
