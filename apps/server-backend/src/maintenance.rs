@@ -91,10 +91,22 @@ pub fn reconcile(registry: &Registry, storage: &Storage) -> Result<Reconciled, S
 
     // The other direction: files nobody claims. This is the case that used to
     // grow without bound, since the API could not even name those jobs.
-    for job_id in storage.staged_jobs()? {
-        if !known.contains(&job_id) {
-            storage.delete_job(&job_id);
+    //
+    // The name is matched against the known ids as text, which is safe because
+    // every id this server writes is hex; but it is *deleted* by the name the
+    // filesystem gave, since a name that is not valid UTF-8 would not survive
+    // the round trip through a String.
+    for name in storage.staged_jobs()? {
+        if known.contains(name.to_string_lossy().as_ref()) {
+            continue;
+        }
+        // Counted only once it is really gone: a report that claims a cleanup
+        // it did not do is worse than one that admits the problem, because it
+        // reads as clean on every boot while the directory stays forever.
+        if storage.delete_job(&name) {
             report.orphaned += 1;
+        } else {
+            tracing::warn!(entry = %name.to_string_lossy(), "cannot remove a staged directory no job claims");
         }
     }
 

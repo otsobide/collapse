@@ -376,3 +376,36 @@ fn a_broken_download_writes_no_output_file() {
     );
     assert!(src.exists(), "and the source is untouched");
 }
+
+/// The destructive twin of the test above: with `--force` there is already an
+/// archive at the output path, and a failed remote compression must leave it
+/// exactly as it was. Writing only once every byte is in hand is what makes
+/// that true, so this is the test that would catch someone streaming the
+/// download straight into the output file.
+#[test]
+fn a_broken_download_does_not_destroy_the_archive_it_would_have_replaced() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"compress me").unwrap();
+
+    let output = dir.path().join("notes.txt.zip");
+    let previous = b"an archive from a previous run";
+    std::fs::write(&output, previous).unwrap();
+
+    run_err(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &truncating_server(),
+        "-o",
+        output.to_str().unwrap(),
+        "--force",
+    ]);
+
+    assert_eq!(
+        std::fs::read(&output).unwrap(),
+        previous,
+        "the archive that was already there is untouched"
+    );
+}
