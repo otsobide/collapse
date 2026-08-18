@@ -64,6 +64,11 @@ services:
       retries: 3
       start_period: 5s
 
+    # A stop lets transfers already in flight finish (10 s by default inside
+    # the server). Docker's own default is also 10 s, which would SIGKILL just
+    # as the server was about to exit cleanly, so it gets a little more room.
+    stop_grace_period: 20s
+
     restart: unless-stopped
 
   frontend:
@@ -90,6 +95,12 @@ services:
       backend:
         condition: service_started
 
+    # nginx reads SIGTERM as "fast shutdown" and drops the connections it is
+    # proxying, cutting short the very downloads the backend stays alive to
+    # finish. SIGQUIT is its graceful one.
+    stop_signal: SIGQUIT
+    stop_grace_period: 20s
+
     restart: unless-stopped
 
   # The same server and web app in ONE container, which is what most people
@@ -112,6 +123,8 @@ services:
       COLLAPSE_MAX_UPLOAD_MB: "${COLLAPSE_MAX_UPLOAD_MB:-500}"
       COLLAPSE_JOB_TTL_MINUTES: "${COLLAPSE_JOB_TTL_MINUTES:-60}"
       RUST_LOG: "${RUST_LOG:-info}"
+
+    stop_grace_period: 20s
 
     ports:
       - "127.0.0.1:${COLLAPSE_WEB_PORT:-8080}:8080"

@@ -17,7 +17,8 @@ collapse-server-backend \
     --port 8000 \
     --storage-dir /var/lib/collapse \
     --max-upload-mb "${COLLAPSE_MAX_UPLOAD_MB:-500}" \
-    --job-ttl-minutes "${COLLAPSE_JOB_TTL_MINUTES:-60}" "$@" &
+    --job-ttl-minutes "${COLLAPSE_JOB_TTL_MINUTES:-60}" \
+    --shutdown-grace-seconds "${COLLAPSE_SHUTDOWN_GRACE_SECONDS:-10}" "$@" &
 api=$!
 
 nginx -g 'daemon off;' &
@@ -26,8 +27,14 @@ web=$!
 # Pass a stop on to both children. Without a handler installed, PID 1 ignores
 # SIGTERM outright, so `docker stop` would wait out its grace period and then
 # kill the container instead of shutting it down.
+#
+# The two are told differently on purpose. nginx reads SIGTERM as "fast
+# shutdown" and drops the connections it is proxying, which would cut short the
+# very downloads the API is staying alive to finish; SIGQUIT is its graceful
+# one. The API drains on SIGTERM and exits on its own deadline.
 shutdown() {
-    kill -TERM "$api" "$web" 2>/dev/null || true
+    kill -TERM "$api" 2>/dev/null || true
+    kill -QUIT "$web" 2>/dev/null || true
 }
 trap shutdown TERM INT
 

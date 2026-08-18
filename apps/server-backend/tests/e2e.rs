@@ -572,3 +572,161 @@ fn the_reaping_window_is_configurable_and_reported() {
         "the job from the previous run is still there, untouched"
     );
 }
+
+// --------------------------------------------------------------- stopping --
+
+#[cfg(unix)]
+impl Server {
+    /// Ask it to stop the way `docker stop` and systemd do.
+    fn terminate(&self) {
+        Command::new("kill")
+            .args(["-TERM", &self.child.id().to_string()])
+            .status()
+            .expect("kill runs");
+    }
+
+    /// Wait for the process to be gone, up to a deadline.
+    fn await_exit(&mut self, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        while Instant::now() < deadline {
+            if matches!(self.child.try_wait(), Ok(Some(_))) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+}
+
+/// An archive big enough that its transfer cannot sit in a socket buffer, so a
+/// slow reader really does hold the request open.
+#[cfg(unix)]
+fn staged_archive(server: &Server, megabytes: usize) -> String {
+    // Random bytes stored in a tar: incompressible and uncompressed, so the
+    // archive is the size of what went in.
+    let mut content = Vec::with_capacity(megabytes * 1024 * 1024);
+    let mut seed = 0x2545_f491_4f6c_dd1du64;
+    while content.len() < megabytes * 1024 * 1024 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        content.extend_from_slice(&seed.to_le_bytes());
+    }
+
+    let (status, body) = post(
+        &server.url("/compress?name=big.bin&algorithm=tar"),
+        &content,
+    );
+    assert_eq!(status, 202, "{body}");
+    let id = job_id(&body);
+    assert_eq!(server.await_status(&id)["status"], "completed");
+    id
+}
+
+#[test]
+#[cfg(unix)]
+fn a_download_in_flight_survives_a_stop() {
+    // The reason graceful shutdown is worth having: before it, this same
+    // sequence handed the client a truncated archive.
+    let storage = TempDir::new().unwrap();
+    let mut server = Server::start(storage.path(), &[]);
+    let id = staged_archive(&server, 24);
+
+    let response = ureq::get(&server.url(&format!("/jobs/{id}/download")))
+        .call()
+        .expect("the download starts");
+    let expected: usize = response
+        .header("content-length")
+        .expect("the archive's length is known")
+        .parse()
+        .unwrap();
+    let mut body = response.into_reader();
+
+    // Read a little, so the request is unmistakably in flight, then stop the
+    // server. The rest of the archive is still on the far side of the socket.
+    let mut received = vec![0u8; 8 * 1024];
+    let first = body.read(&mut received).unwrap();
+    assert!(first > 0);
+    server.terminate();
+    std::thread::sleep(Duration::from_millis(200));
+
+    let mut rest = Vec::new();
+    body.read_to_end(&mut rest)
+        .expect("the rest of the archive arrives");
+
+    assert_eq!(
+        first + rest.len(),
+        expected,
+        "the whole archive arrived, not a truncated one"
+    );
+    assert!(
+        server.await_exit(Duration::from_secs(10)),
+        "and the server exited once it was done"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_stop_refuses_new_work_while_it_drains() {
+    let storage = TempDir::new().unwrap();
+    let mut server = Server::start(storage.path(), &[]);
+    let id = staged_archive(&server, 24);
+
+    let response = ureq::get(&server.url(&format!("/jobs/{id}/download")))
+        .call()
+        .expect("the download starts");
+    let mut body = response.into_reader();
+    let mut opening = vec![0u8; 8 * 1024];
+    body.read(&mut opening).unwrap();
+
+    server.terminate();
+    std::thread::sleep(Duration::from_millis(300));
+
+    // Draining is not the same as still open for business.
+    assert!(
+        ureq::get(&server.url("/health")).call().is_err(),
+        "a stopping server takes no new connections"
+    );
+
+    let mut rest = Vec::new();
+    body.read_to_end(&mut rest).expect("the download still finishes");
+    assert!(server.await_exit(Duration::from_secs(10)));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_clean_stop_takes_the_temporary_staging_area_with_it() {
+    // Without --storage-dir the staging area is a temporary directory whose
+    // guard only runs on a clean exit. A process killed mid-response leaves it
+    // behind, one directory per restart.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_collapse-server-backend"))
+        .args(["--host", "127.0.0.1", "--port", "0"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("the server binary runs");
+
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let log = Arc::new(Mutex::new(Vec::new()));
+    read_bound_address(&mut stdout, &log);
+
+    let line = log.lock().unwrap().last().unwrap().clone();
+    let staging = line
+        .split("storage_dir=")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("the staging directory is in the startup line")
+        .to_string();
+    assert!(Path::new(&staging).is_dir());
+
+    Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap();
+    child.wait().unwrap();
+
+    assert!(
+        !Path::new(&staging).exists(),
+        "the temporary staging area goes with the process"
+    );
+}

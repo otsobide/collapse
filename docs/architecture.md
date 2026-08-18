@@ -211,6 +211,14 @@ end-to-end tests, drive in-process; `main.rs` only parses `--host` / `--port`
 `127.0.0.1` by default, and the default staging dir is a temporary directory
 removed when the server stops.
 
+A stop (SIGTERM, or Ctrl+C) is graceful: `main.rs` hands axum a shutdown future
+so it stops accepting connections and finishes the requests it already has,
+with `--shutdown-grace-seconds` as the deadline for a client that stops reading.
+The worker is deliberately not waited for, since a compression can outlast any
+container runtime's patience; a job caught mid-flight is resolved to `failed` by
+the next startup's reconciliation. The clean exit is also what lets the default
+staging TempDir's guard run.
+
 It logs through `tracing` (`logging.rs` sets up the subscriber, `RUST_LOG`
 picks the level): one line per HTTP request from `tower-http`'s `TraceLayer`,
 plus the job lifecycle from the handlers and the worker, every line tagged with

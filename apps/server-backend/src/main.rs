@@ -33,6 +33,59 @@ struct Cli {
     /// 0 keeps them until a client deletes them.
     #[arg(long, default_value_t = DEFAULT_JOB_TTL_MINUTES)]
     job_ttl_minutes: u64,
+
+    /// On a stop, how long to keep serving the requests already in flight
+    /// before exiting anyway.
+    #[arg(long, default_value_t = DEFAULT_SHUTDOWN_GRACE_SECONDS)]
+    shutdown_grace_seconds: u64,
+}
+
+/// How long a stop waits for what is already in flight.
+///
+/// Docker's own grace period is ten seconds by default, after which it sends
+/// SIGKILL and none of this matters, so a deployment that wants long transfers
+/// to survive a restart has to raise `stop_grace_period` to match.
+const DEFAULT_SHUTDOWN_GRACE_SECONDS: u64 = 10;
+
+/// Wait for a stop, then let the server drain.
+///
+/// Returning from this future is what makes axum stop accepting connections
+/// while it finishes the requests it already has. The watchdog is the other
+/// half: a client that stops reading its download would otherwise hold the
+/// process open for as long as it liked.
+async fn shutdown_signal(grace: Duration) {
+    let interrupt = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            // Nothing to wait for, so wait forever and let ctrl_c decide.
+            Err(_) => std::future::pending().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
+    }
+
+    tracing::info!(
+        grace_seconds = grace.as_secs(),
+        "stopping: no new connections, finishing what is in flight"
+    );
+
+    tokio::spawn(async move {
+        tokio::time::sleep(grace).await;
+        tracing::warn!("requests were still in flight after the grace period, exiting anyway");
+        std::process::exit(0);
+    });
 }
 
 /// Report a startup failure the way the rest of the server reports events, and
@@ -91,7 +144,15 @@ async fn main() {
         "collapse-server-backend listening"
     );
 
-    if let Err(e) = axum::serve(listener, app).await {
+    let grace = Duration::from_secs(cli.shutdown_grace_seconds);
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal(grace))
+        .await
+    {
         fatal(format!("Server error: {e}"));
     }
+
+    // Reached only on a clean stop, which is also what lets the staging
+    // TempDir's guard run: a process killed mid-response leaves it behind.
+    tracing::info!("stopped");
 }

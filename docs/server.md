@@ -68,6 +68,7 @@ takes flags. Everything has a working default.
 | `COLLAPSE_PORT` | `8000` | Host port for the API (compose only) |
 | `COLLAPSE_WEB_PORT` | `8080` | Host port for the web app (compose only) |
 | `COLLAPSE_BACKEND` | `127.0.0.1:8000` | Where nginx proxies the API to. Only worth changing in the split setup, where it is `backend:8000`. |
+| `COLLAPSE_SHUTDOWN_GRACE_SECONDS` | `10` | On a stop, how long transfers already in flight get to finish. Raise the container's `stop_grace_period` alongside it. See [Stopping it](#stopping-it). |
 | `RUST_LOG` | `info` | Log level, or a per-target spec like `collapse_server_backend=debug,tower_http=warn`. See [Logs](#logs). |
 
 The API binary's own flags, for a deployment without containers or for
@@ -79,6 +80,7 @@ overriding what the image pins:
 | `--port` | `8000` | |
 | `--max-upload-mb` | `500` | |
 | `--job-ttl-minutes` | `60` | `0` disables the reaper |
+| `--shutdown-grace-seconds` | `10` | On a stop, how long transfers already in flight get to finish |
 | `--storage-dir` | a temporary directory | Removed when the process exits. Give a path to keep jobs across restarts. Both images pin `/var/lib/collapse`. |
 
 Anything you append to `docker run` reaches the binary, and clap takes the last
@@ -126,6 +128,11 @@ services:
     # archive's expansion, so a container-level ceiling is what stands between
     # a large upload and the host's RAM. Size it well above the upload cap.
     mem_limit: 2g
+
+    # A stop lets transfers already in flight finish. Docker's default here is
+    # ten seconds, the same as the server's own deadline, which would SIGKILL
+    # just as it was about to exit cleanly.
+    stop_grace_period: 20s
 
 volumes:
   jobs:
@@ -433,6 +440,38 @@ data the server owns. Sizing it, worst case per job:
 With the 500 MB default cap that is up to 1.5 GB of disk for a single job, and
 concurrent uploads add up. Give the volume room, or lower the cap.
 
+### Stopping it
+
+A stop is graceful: the server **stops accepting connections and finishes the
+requests it already has**, then exits.
+
+```
+INFO collapse_server_backend: stopping: no new connections, finishing what is in flight grace_seconds=10
+INFO collapse_server_backend: stopped
+```
+
+That matters most for downloads. Without it, restarting while someone was
+fetching a 40 MB archive handed them a truncated file; now the transfer
+completes and the server leaves afterwards. A clean exit is also what removes
+the default temporary staging directory, which a killed process leaves behind.
+
+Two limits worth knowing:
+
+- **`--shutdown-grace-seconds` (10) is a deadline, not a promise.** A client
+  that stops reading its download cannot hold the server open forever, so once
+  the window passes the process exits anyway.
+- **Docker's own grace period has to be at least as long.** It defaults to ten
+  seconds and then sends SIGKILL, which would cut the drain short at exactly
+  the wrong moment; the compose file gives both services `stop_grace_period:
+  20s`. The web container also gets `stop_signal: SIGQUIT`, because nginx reads
+  SIGTERM as "fast shutdown" and would drop the connections it is proxying.
+
+**Compression in progress is not waited for.** A job that was running when the
+server stopped comes back `failed`, with `error_message` saying the server
+restarted, so a client is told rather than left polling forever. Waiting for it
+would mean holding a stop open for as long as an archive takes, which no
+container runtime will allow anyway.
+
 ### Upgrades
 
 ```bash
@@ -440,11 +479,9 @@ docker compose build --pull && docker compose up -d
 ```
 
 Finished jobs survive it: the registry is on disk, so a client can still poll,
-download and delete across the restart. A job that was **running** does not,
-because the server does not yet shut down gracefully and no worker survives the
-stop. Those come back marked `failed`, with `error_message` saying the server
-restarted, so a client is told rather than left polling forever. Still worth
-upgrading when nothing is running.
+download and delete across the restart. In-flight transfers survive it too, as
+long as they fit in the grace period. Jobs mid-compression do not, so it is
+still worth upgrading when nothing is running.
 
 The reconciliation that does this reports itself when it finds anything:
 
@@ -477,8 +514,9 @@ Worth knowing before deploying this unattended:
   (see [Jobs are collected](#jobs-are-collected)), but the flip side is that a
   client which comes back for an archive more than an hour after downloading it
   finds a 404. Raise `COLLAPSE_JOB_TTL_MINUTES` if your clients work that way.
-- **No graceful shutdown.** `docker stop` cuts in-flight uploads, downloads and
-  compressions immediately.
+- **A stop still costs whatever is compressing.** Requests in flight are
+  finished (see [Stopping it](#stopping-it)), but the worker is not waited for,
+  so a job mid-compression comes back `failed` and has to be uploaded again.
 - **Uploads and downloads are buffered whole in memory** by the backend, on top
   of what the compression itself buffers. Keep `mem_limit` well above
   `COLLAPSE_MAX_UPLOAD_MB` and expect concurrency to multiply it.
@@ -511,7 +549,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 123 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 126 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
 make server-frontend/test    # 40 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
