@@ -433,6 +433,9 @@ Everything under `jobs/` is a job: anything there that no row in the registry
 claims is deleted at startup. The database is not in that directory at all, so
 the sweep cannot reach it.
 
+The layout, what survives what, and how to read or repair the registry by
+hand are in [registry.md](registry.md).
+
 ### Jobs are collected
 
 Every client deletes its job after downloading, and all three of ours do. For
@@ -587,7 +590,7 @@ COLLAPSE_BACKEND=http://192.168.1.10:8000 make server-frontend/dev
 ## Testing
 
 ```bash
-make server-backend/test     # 131 Rust tests: unit, a hostile-tar suite, and
+make server-backend/test     # 141 Rust tests: unit, a hostile-tar suite, and
                              # an end-to-end suite that runs the real binary
 make server-frontend/test    # 42 Vitest cases
 make server-aio/smoke        # the packaged container, both ports (needs Docker)
