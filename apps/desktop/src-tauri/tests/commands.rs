@@ -5,8 +5,9 @@
 //! commands in-process and assert what lands on disk. Nothing here starts a
 //! server; the remote branch of `compress_path` is `tests/remote.rs`'s job.
 //!
-//! Every command stringifies the underlying error with `.to_string()`, so the
-//! assertions match on the message rather than on an error variant.
+//! Every command reports failure as a plain `String` (the backend errors are
+//! stringified with `.to_string()`, and `Algorithm`'s own `FromStr` already
+//! yields one), so the assertions match on the message, not on a variant.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,26 @@ use tempfile::TempDir;
 /// extension for all of them, which is why one array serves both roles.
 const FORMATS: [&str; 3] = ["zip", "7z", "tar"];
 
-fn compress_local(source: &Path, output: &Path, format: &str, level: u32) -> Result<String, String> {
+/// Names a real user produces and a tidy-ASCII test suite never would: a
+/// space, an accent, a `#`, a `%`, a leading dash (which a shell would read as
+/// a flag) and a non-Latin script. They cross three boundaries here: the
+/// arcname the command derives from the path, the entry name the backend
+/// writes, and the file name extraction recreates.
+const AWKWARD_NAMES: [&str; 6] = [
+    "piñata report 2024 #1 (final)",
+    "-dash",
+    "100% done",
+    "naïve café",
+    "報告書",
+    "a b  c",
+];
+
+fn compress_local(
+    source: &Path,
+    output: &Path,
+    format: &str,
+    level: u32,
+) -> Result<String, String> {
     compress_path(
         source.to_string_lossy().into_owned(),
         output.to_string_lossy().into_owned(),
@@ -55,6 +75,29 @@ fn make_tree(parent: &Path) -> PathBuf {
     root
 }
 
+/// Deterministic pseudo-random prose: words drawn from a small vocabulary by a
+/// linear congruential generator, so the bytes are compressible (repeated
+/// words) without being trivial (a repeated literal collapses to the same
+/// handful of bytes at every level, which is exactly what hid the level
+/// argument from this suite before).
+fn prose(bytes: usize) -> Vec<u8> {
+    const WORDS: [&str; 16] = [
+        "collapse", "archive", "compress", "desktop", "level", "entry", "folder", "bytes",
+        "window", "native", "dialog", "server", "remote", "listing", "extract", "tarball",
+    ];
+    let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+    let mut out = Vec::with_capacity(bytes + 16);
+    while out.len() < bytes {
+        seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        out.extend_from_slice(WORDS[((seed >> 33) as usize) % WORDS.len()].as_bytes());
+        out.push(b' ');
+    }
+    out.truncate(bytes);
+    out
+}
+
 // -------------------------------------------------------------- is_directory --
 
 #[test]
@@ -87,34 +130,15 @@ fn is_directory_follows_symlinks_because_it_uses_is_dir() {
     std::os::unix::fs::symlink(&target_file, &link_to_file).unwrap();
 
     // `is_dir()` resolves the link, so the UI shows a link to a folder as a
-    // folder. Pinned because the compression side deliberately does the
-    // opposite (walk_tree never follows a link).
+    // folder. That agrees with the compression side, which selects the
+    // directory branch with the same following `is_dir()`: a symlinked *root*
+    // is archived (see the test below), while symlinked *children* are skipped
+    // by core's `walk_tree`.
     assert!(is_directory(link_to_dir.to_string_lossy().into_owned()));
     assert!(!is_directory(link_to_file.to_string_lossy().into_owned()));
 }
 
 // ------------------------------------------------------- compress happy path --
-
-#[test]
-fn compressing_a_file_produces_a_non_empty_archive_at_the_requested_path() {
-    for format in FORMATS {
-        let dir = TempDir::new().unwrap();
-        let source = dir.path().join("notes.txt");
-        fs::write(&source, b"collapse desktop").unwrap();
-        let output = dir.path().join(format!("out.{format}"));
-
-        let returned = compress_local(&source, &output, format, 3).unwrap();
-
-        // The command echoes back the very path it was asked to write, which
-        // is what the UI shows the user afterwards.
-        assert_eq!(returned, output.to_string_lossy(), "{format}");
-        assert!(output.is_file(), "{format}: no archive was written");
-        assert!(
-            fs::metadata(&output).unwrap().len() > 0,
-            "{format}: the archive is empty"
-        );
-    }
-}
 
 #[test]
 fn compressing_a_file_round_trips_byte_identically_under_its_base_name() {
@@ -129,14 +153,25 @@ fn compressing_a_file_round_trips_byte_identically_under_its_base_name() {
         fs::write(&source, &content).unwrap();
 
         let archive = dir.path().join(format!("out.{format}"));
-        compress_local(&source, &archive, format, 3).unwrap();
+        let returned = compress_local(&source, &archive, format, 3).unwrap();
+
+        // The command echoes back the path it was asked to write (what the UI
+        // shows afterwards), never the source it read.
+        assert_eq!(returned, archive.to_string_lossy(), "{format}");
+        assert_ne!(returned, source.to_string_lossy(), "{format}");
 
         let out_dir = dir.path().join("extracted");
         let extracted = extract_to(&archive, &out_dir).unwrap();
 
-        assert_eq!(listing(extracted), vec!["notes.txt".to_string()], "{format}");
         assert_eq!(
-            fs::read(out_dir.join("notes.txt")).unwrap(),
+            listing(extracted.clone()),
+            vec!["notes.txt".to_string()],
+            "{format}"
+        );
+        // Read through the returned entry rather than a hardcoded path: that is
+        // what makes "the listing is relative to the output dir" load bearing.
+        assert_eq!(
+            fs::read(out_dir.join(&extracted[0])).unwrap(),
             content,
             "{format}: the round-trip changed the bytes"
         );
@@ -156,8 +191,11 @@ fn compressing_a_directory_round_trips_the_whole_tree_prefixed_with_its_own_name
         let out_dir = dir.path().join("extracted");
         let extracted = extract_to(&archive, &out_dir).unwrap();
 
+        // Files only, relative to the output dir, forward-slashed: the two
+        // parent directories and `photos/empty` are created on disk but never
+        // listed.
         assert_eq!(
-            listing(extracted),
+            listing(extracted.clone()),
             vec![
                 "photos/a.txt".to_string(),
                 "photos/sub/b.txt".to_string(),
@@ -165,13 +203,33 @@ fn compressing_a_directory_round_trips_the_whole_tree_prefixed_with_its_own_name
             ],
             "{format}: wrong entry shape"
         );
-        assert_eq!(fs::read(out_dir.join("photos").join("a.txt")).unwrap(), b"top level");
+        // Each entry, joined to the output dir, is a file that is really on
+        // disk: the listing names what extraction wrote, not merely what the
+        // archive claimed to hold. (Containment is pinned by the equality
+        // above, which admits no absolute or `..`-bearing entry.)
+        for entry in &extracted {
+            assert!(
+                out_dir.join(entry).is_file(),
+                "{format}: {entry} does not resolve to a file under the output dir"
+            );
+        }
+        assert_eq!(
+            fs::read(out_dir.join("photos").join("a.txt")).unwrap(),
+            b"top level"
+        );
         assert_eq!(
             fs::read(out_dir.join("photos").join("sub").join("b.txt")).unwrap(),
             b"one down"
         );
         assert_eq!(
-            fs::read(out_dir.join("photos").join("sub").join("deep").join("c.txt")).unwrap(),
+            fs::read(
+                out_dir
+                    .join("photos")
+                    .join("sub")
+                    .join("deep")
+                    .join("c.txt")
+            )
+            .unwrap(),
             b"two down"
         );
         // Directory entries are excluded from the listing but must still be
@@ -184,22 +242,255 @@ fn compressing_a_directory_round_trips_the_whole_tree_prefixed_with_its_own_name
 }
 
 #[test]
-fn every_level_from_one_to_five_is_accepted() {
+fn a_file_whose_name_is_not_tidy_ascii_round_trips_under_that_name() {
+    // The desktop is where such names are the norm, and the arcname is derived
+    // from the path by the command itself, so a mangled name here would ship a
+    // wrong entry name to every archive the app writes.
+    for format in FORMATS {
+        for name in AWKWARD_NAMES {
+            let dir = TempDir::new().unwrap();
+            let file_name = format!("{name}.txt");
+            let source = dir.path().join(&file_name);
+            let content = format!("content of {name}").into_bytes();
+            fs::write(&source, &content).unwrap();
+            let archive = dir.path().join(format!("out.{format}"));
+
+            compress_local(&source, &archive, format, 3)
+                .unwrap_or_else(|e| panic!("{format} {file_name:?}: {e}"));
+
+            let out_dir = dir.path().join("extracted");
+            let extracted = extract_to(&archive, &out_dir)
+                .unwrap_or_else(|e| panic!("{format} {file_name:?}: {e}"));
+
+            assert_eq!(
+                listing(extracted),
+                vec![file_name.clone()],
+                "{format}: the entry name did not survive"
+            );
+            assert_eq!(
+                fs::read(out_dir.join(&file_name)).unwrap(),
+                content,
+                "{format} {file_name:?}: the bytes did not survive"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_directory_whose_name_is_not_tidy_ascii_round_trips_under_that_name() {
+    // Same names one level up: here the name becomes the prefix core's
+    // `walk_tree` puts in front of every entry, and the child name comes back
+    // from `read_dir` rather than from the caller's string.
+    for format in FORMATS {
+        for name in AWKWARD_NAMES {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path().join(name);
+            fs::create_dir(&root).unwrap();
+            fs::write(root.join("café.txt"), b"inside").unwrap();
+            let archive = dir.path().join(format!("out.{format}"));
+
+            compress_local(&root, &archive, format, 3)
+                .unwrap_or_else(|e| panic!("{format} {name:?}: {e}"));
+
+            let out_dir = dir.path().join("extracted");
+            let extracted =
+                extract_to(&archive, &out_dir).unwrap_or_else(|e| panic!("{format} {name:?}: {e}"));
+
+            assert_eq!(
+                listing(extracted),
+                vec![format!("{name}/café.txt")],
+                "{format}: the folder prefix did not survive"
+            );
+            assert_eq!(
+                fs::read(out_dir.join(name).join("café.txt")).unwrap(),
+                b"inside",
+                "{format} {name:?}: the bytes did not survive"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_zero_byte_file_round_trips_as_a_zero_byte_file() {
+    // Pins the real behaviour: all three backends accept an empty source and
+    // give the entry back with a length of zero, rather than skipping it or
+    // refusing the archive.
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("empty.txt");
+        fs::write(&source, b"").unwrap();
+        let archive = dir.path().join(format!("out.{format}"));
+
+        compress_local(&source, &archive, format, 3).unwrap_or_else(|e| panic!("{format}: {e}"));
+
+        let out_dir = dir.path().join("extracted");
+        let extracted = extract_to(&archive, &out_dir).unwrap_or_else(|e| panic!("{format}: {e}"));
+
+        assert_eq!(
+            listing(extracted),
+            vec!["empty.txt".to_string()],
+            "{format}"
+        );
+        assert_eq!(
+            fs::metadata(out_dir.join("empty.txt")).unwrap().len(),
+            0,
+            "{format}: the empty file came back with bytes in it"
+        );
+    }
+}
+
+#[test]
+fn an_empty_directory_comes_back_as_a_directory_with_an_empty_listing() {
+    // Pins the real behaviour for the one archive shape the UI can produce
+    // whose entries are *all* directories: compression succeeds, extraction
+    // succeeds, and the listing is empty because directories are never listed.
+    // The UI therefore reports "0 files" for a folder that did materialize,
+    // which is worth knowing before anyone treats an empty listing as failure.
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("nothing");
+        fs::create_dir(&root).unwrap();
+        let archive = dir.path().join(format!("out.{format}"));
+
+        compress_local(&root, &archive, format, 3).unwrap_or_else(|e| panic!("{format}: {e}"));
+
+        let out_dir = dir.path().join("extracted");
+        let extracted = extract_to(&archive, &out_dir).unwrap_or_else(|e| panic!("{format}: {e}"));
+
+        assert!(
+            extracted.is_empty(),
+            "{format}: a directory-only archive listed {extracted:?}"
+        );
+        assert!(
+            out_dir.join("nothing").is_dir(),
+            "{format}: the empty folder was not recreated"
+        );
+    }
+}
+
+#[test]
+fn every_level_from_one_to_five_is_accepted_and_keeps_the_content() {
+    // Acceptance only: that the number changes the *output* is the next test's
+    // job. Extracting is what proves the archive holds the source, where a
+    // length check would not: every one of these formats writes a header (and
+    // zip a central directory) before any entry, so an archive holding nothing
+    // at all is still comfortably longer than zero bytes.
     for format in FORMATS {
         for level in 1..=5 {
             let dir = TempDir::new().unwrap();
             let source = dir.path().join("notes.txt");
-            fs::write(&source, b"levels are 1..=5 ".repeat(32)).unwrap();
+            let content = b"levels are 1..=5 ".repeat(32);
+            fs::write(&source, &content).unwrap();
             let output = dir.path().join(format!("out.{format}"));
 
             compress_local(&source, &output, format, level)
                 .unwrap_or_else(|e| panic!("{format} level {level} was refused: {e}"));
-            assert!(
-                fs::metadata(&output).unwrap().len() > 0,
-                "{format} level {level}: empty archive"
+
+            let out_dir = dir.path().join("extracted");
+            let extracted = extract_to(&output, &out_dir)
+                .unwrap_or_else(|e| panic!("{format} level {level}: {e}"));
+            assert_eq!(
+                listing(extracted),
+                vec!["notes.txt".to_string()],
+                "{format} level {level}"
+            );
+            assert_eq!(
+                fs::read(out_dir.join("notes.txt")).unwrap(),
+                content,
+                "{format} level {level}: the content did not survive"
             );
         }
     }
+}
+
+#[test]
+fn the_level_reaches_the_backend_because_one_and_five_compress_differently() {
+    // Without this, `compress_path` could drop its `level` argument and hand a
+    // hardcoded 3 to core with the whole suite still green. A megabyte of
+    // pseudo-random prose is the fixture because the gap has to be far outside
+    // any noise: measured here, zip 183447 bytes at level 1 against 118492 at
+    // level 5, and 7z 157920 against 98969.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("prose.txt");
+    let content = prose(1_000_000);
+    fs::write(&source, &content).unwrap();
+
+    for format in ["zip", "7z"] {
+        let mut sizes = Vec::new();
+        for level in [1u32, 5] {
+            let archive = dir.path().join(format!("level{level}.{format}"));
+            compress_local(&source, &archive, format, level)
+                .unwrap_or_else(|e| panic!("{format} level {level}: {e}"));
+            sizes.push(fs::metadata(&archive).unwrap().len());
+
+            // A smaller archive must still be the same archive: a mutation that
+            // "compressed better" by dropping bytes would pass on size alone.
+            let out_dir = dir.path().join(format!("out{level}{format}"));
+            let extracted = extract_to(&archive, &out_dir).unwrap();
+            assert_eq!(
+                listing(extracted),
+                vec!["prose.txt".to_string()],
+                "{format}"
+            );
+            assert_eq!(
+                fs::read(out_dir.join("prose.txt")).unwrap(),
+                content,
+                "{format} level {level}: the round-trip changed the bytes"
+            );
+        }
+        assert!(
+            sizes[0] > sizes[1],
+            "{format}: level 1 produced {} bytes and level 5 {}, so the level never reached the backend",
+            sizes[0],
+            sizes[1]
+        );
+    }
+
+    // tar is the exception and it is not forced: it stores without compressing,
+    // so the level is validated and then ignored, and the two archives come out
+    // byte for byte identical. Asserting that is the honest pin.
+    let mut tars = Vec::new();
+    for level in [1u32, 5] {
+        let archive = dir.path().join(format!("level{level}.tar"));
+        compress_local(&source, &archive, "tar", level).unwrap();
+        tars.push(fs::read(&archive).unwrap());
+    }
+    assert_eq!(
+        tars[0], tars[1],
+        "tar started reacting to the level: the comment above is now wrong"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_symlinked_directory_is_archived_under_the_links_own_name() {
+    // Pins the real behaviour, which the two `is_dir()` calls make inevitable:
+    // the command follows a symlinked *root* (so the link's target is archived)
+    // and stores it under the link's own name, while core's `walk_tree` skips
+    // any symlinked child it meets inside the tree. Nothing refuses this, so
+    // the app happily archives a folder the user only pointed at indirectly.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a.txt"), b"top level").unwrap();
+    let link = dir.path().join("pictures");
+    std::os::unix::fs::symlink(&root, &link).unwrap();
+
+    let archive = dir.path().join("out.zip");
+    compress_local(&link, &archive, "zip", 3).expect("a symlinked directory is accepted");
+
+    let out_dir = dir.path().join("extracted");
+    let extracted = extract_to(&archive, &out_dir).unwrap();
+
+    assert_eq!(
+        listing(extracted),
+        vec!["pictures/a.txt".to_string()],
+        "the target's content is archived under the link's name"
+    );
+    assert_eq!(
+        fs::read(out_dir.join("pictures").join("a.txt")).unwrap(),
+        b"top level"
+    );
 }
 
 #[test]
@@ -222,7 +513,54 @@ fn an_empty_server_string_is_treated_as_local() {
     .expect("an empty server string must compress locally");
 
     assert_eq!(returned, output.to_string_lossy());
-    assert!(fs::metadata(&output).unwrap().len() > 0);
+
+    // The same archive the `None` path produces, proven by opening it: "did not
+    // error" would also be satisfied by an empty archive of the wrong source.
+    let out_dir = dir.path().join("extracted");
+    assert_eq!(
+        extract_to(&output, &out_dir).unwrap(),
+        vec!["notes.txt".to_string()]
+    );
+    assert_eq!(
+        fs::read(out_dir.join("notes.txt")).unwrap(),
+        b"local please"
+    );
+}
+
+#[test]
+fn a_whitespace_only_server_string_takes_the_remote_branch() {
+    // KNOWN DEFECT, pinned rather than endorsed. The dispatcher filters on
+    // `!s.is_empty()`, not on a trim, so a server string of blanks is treated
+    // as a real destination: the compression leaves the machine (or tries to)
+    // instead of running locally. A stale or half-cleared localStorage entry in
+    // the settings sheet is enough to produce one. If the filter ever learns to
+    // trim, this test should be rewritten to assert the local result, not
+    // deleted.
+    let dir = TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    fs::write(&source, b"should have stayed here").unwrap();
+    let output = dir.path().join("out.zip");
+
+    let error = compress_path(
+        source.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        "zip".to_string(),
+        3,
+        Some("   ".to_string()),
+    )
+    .expect_err("blanks are not a reachable server");
+
+    // The wording is the remote client's, which is the proof the branch was
+    // taken: no local error can mention a server.
+    assert!(
+        error.starts_with("cannot reach the server at"),
+        "the remote branch must be what failed: {error}"
+    );
+    assert!(
+        !output.exists(),
+        "nothing was compressed locally, so no archive may exist"
+    );
+    assert_eq!(fs::read(&source).unwrap(), b"should have stayed here");
 }
 
 // ----------------------------------------------------------- compress guards --
@@ -236,7 +574,11 @@ fn a_missing_source_is_refused_before_any_output_is_created() {
 
         let err = compress_local(&missing, &output, format, 3).unwrap_err();
 
-        assert_eq!(err, format!("Not found: {}", missing.to_string_lossy()), "{format}");
+        assert_eq!(
+            err,
+            format!("Not found: {}", missing.to_string_lossy()),
+            "{format}"
+        );
         // core's `compress_zip` creates its output before opening the source,
         // so without the command's own existence check a missing source would
         // leave a zero-byte .zip behind. This pins that the check runs first.
@@ -253,12 +595,18 @@ fn a_source_that_is_neither_file_nor_directory_is_refused() {
     // /dev/null exists, so the existence check passes, but it is a character
     // device: the second guard is the only thing standing between it and a
     // backend that would try to read it as a file.
+    let dev_null = Path::new("/dev/null");
+    assert!(
+        dev_null.exists() && !dev_null.is_file() && !dev_null.is_dir(),
+        "the fixture must be an existing non-file non-directory, or this test \
+         is exercising the existence check instead"
+    );
     let dir = TempDir::new().unwrap();
     let output = dir.path().join("out.zip");
 
-    let err = compress_local(Path::new("/dev/null"), &output, "zip", 3).unwrap_err();
+    let err = compress_local(dev_null, &output, "zip", 3).unwrap_err();
 
-    assert!(err.contains("Unsupported source"), "{err}");
+    assert_eq!(err, "Unsupported source (not a regular file or directory).");
     assert!(!output.exists(), "a stray output was left behind");
 }
 
@@ -294,9 +642,10 @@ fn a_level_out_of_range_is_refused_for_every_format_and_never_panics() {
 
             let err = compress_local(&source, &output, format, level).unwrap_err();
 
-            assert!(
-                err.contains("Invalid compression level"),
-                "{format} level {level}: {err}"
+            assert_eq!(
+                err,
+                format!("Invalid compression level: {level}. Must be between 1 and 5."),
+                "{format} level {level}"
             );
             assert!(
                 !output.exists(),
@@ -317,13 +666,21 @@ fn a_level_out_of_range_is_refused_for_a_directory_too() {
 
         let err = compress_local(&root, &output, format, 0).unwrap_err();
 
-        assert!(err.contains("Invalid compression level"), "{format}: {err}");
+        assert_eq!(
+            err, "Invalid compression level: 0. Must be between 1 and 5.",
+            "{format}"
+        );
         assert!(!output.exists(), "{format}: a stray output was left behind");
     }
 }
 
 #[test]
 fn an_output_inside_a_missing_directory_fails_instead_of_panicking() {
+    // The command does not create the parent directory of its output, so the
+    // failure comes from the backend. The two spellings below are the real
+    // messages a user would see; they differ because zip and tar reach it
+    // through `File::create` (surfacing as `CompressionError::Io`) while the
+    // 7z writer stringifies its own error into `Failed`.
     for format in FORMATS {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("notes.txt");
@@ -333,16 +690,21 @@ fn an_output_inside_a_missing_directory_fails_instead_of_panicking() {
 
         let err = compress_local(&source, &output, format, 3).unwrap_err();
 
-        assert!(!err.is_empty(), "{format}: an empty error message");
-        assert!(
-            !missing_dir.exists(),
-            "{format}: the command created the missing parent directory"
-        );
-        if format != "7z" {
-            // zip and tar hit it through `File::create`, so it surfaces as
-            // CompressionError::Io; 7z's writer stringifies its own error.
-            assert!(err.contains("IO error"), "{format}: {err}");
+        if format == "7z" {
+            assert!(err.starts_with("Compression failed:"), "{format}: {err}");
+            assert!(
+                err.contains("NotFound") && err.contains("out.7z"),
+                "the message must name the path it could not write: {err}"
+            );
+        } else {
+            assert!(err.starts_with("IO error:"), "{format}: {err}");
+            #[cfg(unix)]
+            assert_eq!(
+                err, "IO error: No such file or directory (os error 2)",
+                "{format}"
+            );
         }
+        assert!(!output.exists(), "{format}: an archive appeared anyway");
     }
 }
 
@@ -361,7 +723,10 @@ fn compressing_a_file_onto_itself_is_refused_and_leaves_it_untouched() {
 
         let err = compress_local(&source, &source, format, 3).unwrap_err();
 
-        assert_eq!(err, "The output is the same file as the source.", "{format}");
+        assert_eq!(
+            err, "The output is the same file as the source.",
+            "{format}"
+        );
         assert_eq!(
             fs::read(&source).unwrap(),
             content,
@@ -416,7 +781,11 @@ fn a_symlink_at_the_output_path_pointing_at_the_source_is_refused() {
     let err = compress_local(&source, &alias, "zip", 3).unwrap_err();
 
     assert_eq!(err, "The output is the same file as the source.");
-    assert_eq!(fs::read(&source).unwrap(), content, "the source was modified");
+    assert_eq!(
+        fs::read(&source).unwrap(),
+        content,
+        "the source was modified"
+    );
     assert_eq!(
         fs::read_link(&alias).unwrap(),
         source,
@@ -427,6 +796,8 @@ fn a_symlink_at_the_output_path_pointing_at_the_source_is_refused() {
 #[test]
 #[cfg(unix)]
 fn a_hardlink_to_the_source_is_refused_even_though_the_paths_differ() {
+    use std::os::unix::fs::MetadataExt;
+
     // Two names for one inode: the canonical paths are genuinely different, so
     // only the inode/device comparison catches this one.
     let dir = TempDir::new().unwrap();
@@ -436,36 +807,69 @@ fn a_hardlink_to_the_source_is_refused_even_though_the_paths_differ() {
     let hardlink = dir.path().join("also_notes.zip");
     fs::hard_link(&source, &hardlink).unwrap();
 
+    // Without this the fixture could degenerate into two spellings of one path,
+    // and the test would no longer reach the inode branch it is named after.
+    assert_ne!(
+        source.canonicalize().unwrap(),
+        hardlink.canonicalize().unwrap(),
+        "the fixture is pointless unless the two names canonicalize apart"
+    );
+
     let err = compress_local(&source, &hardlink, "zip", 3).unwrap_err();
 
     assert_eq!(err, "The output is the same file as the source.");
-    assert_eq!(fs::read(&source).unwrap(), content, "the source was modified");
     assert_eq!(
-        fs::read(&hardlink).unwrap(),
+        fs::read(&source).unwrap(),
         content,
-        "the shared inode was modified"
+        "the source was modified"
+    );
+    // A backend that unlinked the output path and created a fresh archive there
+    // would leave the source readable but drop the link count to 1.
+    assert_eq!(
+        fs::metadata(&source).unwrap().nlink(),
+        2,
+        "the hardlink was replaced instead of being refused"
     );
 }
 
 #[test]
-fn the_earlier_guards_win_when_several_apply_at_once() {
-    // The documented order is: exists, source kind, format parse, same file.
-    // Reordering it is what would turn a typo into data loss, so pin it.
+fn the_first_failing_guard_is_the_one_reported() {
+    // Order is exists, source kind, format parse, same file. None of these
+    // orderings is data-loss relevant on its own (all four return before any
+    // backend runs, so nothing is written whichever fires); what they decide is
+    // which message the user gets, and a "Unknown algorithm" shown for a path
+    // that is simply not there sends people hunting the wrong problem. The
+    // ordering that *is* data-loss relevant, same file before any write or
+    // upload, is pinned with effect checks by
+    // `compressing_a_file_onto_itself_is_refused_and_leaves_it_untouched` and by
+    // `an_output_equal_to_the_source_is_refused_before_any_network_io` in
+    // tests/remote.rs.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
-    let content = b"irreplaceable".to_vec();
-    fs::write(&source, &content).unwrap();
+    fs::write(&source, b"irreplaceable").unwrap();
 
-    // A bad format on top of a same-file output reports the format.
+    // Existence before the format parse.
+    let missing = dir.path().join("nope.txt");
+    let err = compress_local(&missing, &dir.path().join("out.rar"), "rar", 3).unwrap_err();
+    assert_eq!(err, format!("Not found: {}", missing.to_string_lossy()));
+
+    // Source kind before the format parse.
+    #[cfg(unix)]
+    {
+        let err = compress_local(
+            Path::new("/dev/null"),
+            &dir.path().join("out.rar"),
+            "rar",
+            3,
+        )
+        .unwrap_err();
+        assert_eq!(err, "Unsupported source (not a regular file or directory).");
+    }
+
+    // Format parse before the same-file check.
     let err = compress_local(&source, &source, "rar", 3).unwrap_err();
     assert_eq!(err, "Unknown algorithm: rar");
-    assert_eq!(fs::read(&source).unwrap(), content);
-
-    // A missing source reports the absence, not the same-file coincidence.
-    let missing = dir.path().join("nope.txt");
-    let err = compress_local(&missing, &missing, "zip", 3).unwrap_err();
-    assert_eq!(err, format!("Not found: {}", missing.to_string_lossy()));
-    assert!(!missing.exists());
+    assert_eq!(fs::read(&source).unwrap(), b"irreplaceable");
 }
 
 #[test]
@@ -567,7 +971,10 @@ fn extracting_an_unknown_extension_is_refused() {
 
         // The format is chosen from the extension alone: there is no magic-byte
         // sniffing, so an unknown suffix never reaches a backend.
-        assert_eq!(err, format!("Compression failed: Unknown archive extension: .{ext}"));
+        assert_eq!(
+            err,
+            format!("Compression failed: Unknown archive extension: .{ext}")
+        );
     }
 }
 
@@ -599,37 +1006,70 @@ fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
 }
 
 #[test]
-fn the_returned_listing_is_relative_to_the_output_dir_and_excludes_directories() {
+fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
+    // Half a download, a full disk, a copy from a dying drive: the UI has to
+    // show something a person can act on, and the process must survive. The
+    // three messages below are the real ones, and they are pinned by their
+    // recognizable half so a zip/7z/tar version bump does not rewrite the test
+    // while a change of *variant* (an `IO error:` prefix, or the extension
+    // error, meaning the dispatch went wrong) still fails it.
     for format in FORMATS {
         let dir = TempDir::new().unwrap();
-        let root = make_tree(dir.path());
-        let archive = dir.path().join(format!("tree.{format}"));
-        compress_local(&root, &archive, format, 3).unwrap();
+        let source = dir.path().join("notes.txt");
+        fs::write(&source, b"repeatable filler content ".repeat(2000)).unwrap();
+        let archive = dir.path().join(format!("out.{format}"));
+        compress_local(&source, &archive, format, 3).unwrap();
 
-        let out_dir = dir.path().join("out");
-        let extracted = extract_to(&archive, &out_dir).unwrap();
+        let whole = fs::read(&archive).unwrap();
+        fs::write(&archive, &whole[..whole.len() / 2]).unwrap();
 
-        // Relative, forward-slashed, files only: `photos/empty` and the two
-        // parent directories are created on disk but never listed.
-        assert_eq!(
-            listing(extracted.clone()),
-            vec![
-                "photos/a.txt".to_string(),
-                "photos/sub/b.txt".to_string(),
-                "photos/sub/deep/c.txt".to_string(),
-            ],
-            "{format}"
+        let out_dir = dir.path().join("extracted");
+        let err = extract_to(&archive, &out_dir).unwrap_err();
+
+        assert!(err.starts_with("Compression failed:"), "{format}: {err}");
+        assert!(
+            !err.contains("Unknown archive extension"),
+            "{format}: the extension dispatch failed before the archive was even read: {err}"
         );
-        for entry in &extracted {
-            let relative = Path::new(entry);
-            assert!(
-                relative.is_relative(),
-                "{format}: {entry} is not relative to the output dir"
-            );
-            assert!(
-                out_dir.join(relative).is_file(),
-                "{format}: {entry} does not resolve under the output dir"
-            );
+        match format {
+            // "Compression failed: invalid Zip archive: Could not find EOCD"
+            "zip" => {
+                assert!(err.contains("Zip"), "{err}");
+                assert!(
+                    !out_dir.exists(),
+                    "zip refuses the archive before creating the output directory"
+                );
+            }
+            // "Compression failed: Io(Error { kind: UnexpectedEof, message:
+            //  \"failed to fill whole buffer\" }, \"\")"
+            "7z" => {
+                assert!(err.contains("UnexpectedEof"), "{err}");
+                let leftovers: Vec<PathBuf> = fs::read_dir(&out_dir)
+                    .map(|entries| entries.map(|e| e.unwrap().path()).collect())
+                    .unwrap_or_default();
+                assert!(leftovers.is_empty(), "7z left {leftovers:?} behind");
+            }
+            // "Compression failed: failed to unpack `<output dir>/notes.txt`"
+            _ => {
+                assert!(err.contains("failed to unpack"), "{err}");
+                assert!(
+                    err.contains("notes.txt"),
+                    "the message names the entry: {err}"
+                );
+                // KNOWN DEFECT, pinned rather than endorsed: tar streams entries
+                // straight to disk, so a failure part-way leaves a truncated
+                // file where a complete one is expected, and the caller gets an
+                // Err with no list of what was written. Nothing cleans it up.
+                let partial = out_dir.join("notes.txt");
+                assert!(
+                    partial.is_file(),
+                    "tar wrote nothing at all: update this test"
+                );
+                assert!(
+                    fs::metadata(&partial).unwrap().len() < 52_000,
+                    "the partial file is somehow complete: update this test"
+                );
+            }
         }
     }
 }
@@ -653,11 +1093,50 @@ fn extracting_twice_into_the_same_directory_overwrites_instead_of_failing() {
         fs::write(out_dir.join("notes.txt"), b"locally edited, much longer").unwrap();
         let second = extract_to(&archive, &out_dir).unwrap();
 
-        assert_eq!(first, second, "{format}: the second run reported differently");
+        assert_eq!(
+            first, second,
+            "{format}: the second run reported differently"
+        );
         assert_eq!(
             fs::read(out_dir.join("notes.txt")).unwrap(),
             b"archived content",
             "{format}: the local edit was not overwritten"
+        );
+    }
+}
+
+#[test]
+fn extracting_into_a_directory_that_already_holds_files_leaves_them_alone() {
+    // The dialog lets a user extract into any folder, most often one that is
+    // already full. Extraction adds to it: it never empties the destination
+    // first, and the returned listing names only what this archive wrote.
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("notes.txt");
+        fs::write(&source, b"archived content").unwrap();
+        let archive = dir.path().join(format!("out.{format}"));
+        compress_local(&source, &archive, format, 3).unwrap();
+
+        let out_dir = dir.path().join("busy");
+        fs::create_dir(&out_dir).unwrap();
+        fs::write(out_dir.join("unrelated.txt"), b"keep me").unwrap();
+        fs::create_dir(out_dir.join("unrelated_dir")).unwrap();
+
+        let extracted = extract_to(&archive, &out_dir).unwrap();
+
+        assert_eq!(
+            listing(extracted),
+            vec!["notes.txt".to_string()],
+            "{format}"
+        );
+        assert_eq!(
+            fs::read(out_dir.join("unrelated.txt")).unwrap(),
+            b"keep me",
+            "{format}: an unrelated file was clobbered"
+        );
+        assert!(
+            out_dir.join("unrelated_dir").is_dir(),
+            "{format}: an unrelated directory was removed"
         );
     }
 }
