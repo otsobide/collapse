@@ -1,35 +1,68 @@
 //! Lockstep guard for the JS/Rust IPC boundary.
 //!
-//! Three places describe the same set of commands and **nothing type-checks
+//! Four places describe the same set of commands and **nothing type-checks
 //! the crossing**, so a rename compiles, ships, and only breaks when a user
 //! clicks the button:
 //!
-//!   1. `src/lib.rs`            -> `tauri::generate_handler![...]`
-//!   2. `../src/App.vue`        -> the `invoke('...')` string literals
-//!   3. `../tests/App.test.js`  -> the `if (cmd === '...')` stub switch
+//!   1. `src/lib.rs`               -> `tauri::generate_handler![...]`
+//!   2. `src/commands.rs`          -> the `#[tauri::command]` functions
+//!   3. `../src/**/*.{vue,js,ts}`  -> the `invoke('...')` string literals
+//!   4. `../tests/App.test.js`     -> the `if (cmd === '...')` stub switch
 //!
 //! Argument names cross camelCase on the JS side and snake_case on the Rust
-//! side (Tauri derives the argument struct with serde's `rename_all =
-//! "camelCase"`), so App.vue's `outputDir` binds to `extract_archive`'s
-//! `output_dir` parameter. Pinning that mapping is the main point of this
-//! file.
+//! side, so App.vue's `outputDir` binds to `extract_archive`'s `output_dir`
+//! parameter, and the wire name of a command is its function name. Neither is
+//! a law of nature: both are defaults of `#[tauri::command]` (tauri-macros
+//! 2.6.3 starts from `ArgumentCase::Camel` and `RenamePolicy::Keep`), and the
+//! attribute can switch either off with `rename_all = "snake_case"` or
+//! `rename = "compressPath"`. This whole file models the defaults, so one test
+//! pins the assumption instead of trusting it:
+//! `no_command_attribute_renames_the_wire_contract` reads the arguments of
+//! every `#[tauri::command]` and fails if the model stops applying.
 //!
-//! The tests read the real source files at run time and parse them, rather
-//! than restating the command list, so they fail on a genuine rename and not
-//! on a reformat. Everything the parsers depend on is ordinary syntax
-//! (whitespace, line breaks, either quote style, trailing commas are all
-//! tolerated), and any file that cannot be read or parsed panics loudly: a
-//! lockstep test that quietly finds zero commands is worse than no test at
-//! all, which is why `the_parsers_find_the_commands_this_app_ships` exists.
+//! What this file does NOT check is **types**. Payload keys are matched to
+//! Rust parameter names only, never to the values behind them, because the
+//! frontend sends expressions (`level: level.value`) rather than literals a
+//! parser could type. `command_signatures_are_pinned_with_their_types` freezes
+//! the Rust half of that gap, so `level: u32` cannot quietly become
+//! `level: String`; a frontend that starts sending a string for a `u32` is
+//! still caught at runtime only.
+//!
+//! Invocations are read from the script blocks of `.vue` files and from whole
+//! `.js`/`.ts` files. A `.vue` template is deliberately skipped: an apostrophe
+//! in ordinary prose would open a string literal for the scanner and swallow
+//! the rest of the file. The consequence is a real limitation, so keep calling
+//! `invoke` from a script block, never from an inline template handler, or
+//! this guard cannot see the call.
+//!
+//! The cross-checks read the real source files at run time and compare the
+//! four sides against each other, so they fail on a genuine rename and not on
+//! a reformat: whitespace, line breaks, either quote style and trailing commas
+//! are all tolerated (verified by reformatting the handler list onto one line
+//! and the `invoke` call across several, which changes nothing here). Any file
+//! that cannot be read or parsed panics loudly, because a lockstep test that
+//! quietly finds zero commands is worse than no test at all.
+//!
+//! Two tables are restated by hand on purpose, and only two: `BASELINE`, read
+//! by `the_parsers_find_the_commands_this_app_ships`, and the signature table
+//! in `command_signatures_are_pinned_with_their_types`. Comparing the sources
+//! only to each other cannot notice a parser that has gone blind, nor a type
+//! that changed on both sides at once, so those two anchor the rest. Each is
+//! compared for equality, not containment, so a fifth command cannot slip past
+//! either one without a deliberate edit here.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The commands this app has shipped since the remote-compression work
 /// landed. Purely a canary for the parsers below: if a parse silently starts
 /// returning nothing, every other test in this file would pass vacuously.
-/// Deliberately removing a command means updating this list on purpose.
+///
+/// The handler list is compared against this one for **equality**, not
+/// containment, so adding a fifth command is also a deliberate edit here.
+/// That matters: a command missing from this list would get none of the
+/// anti-vacuity protection the canary exists to provide.
 const BASELINE: [&str; 4] = [
     "check_server",
     "compress_path",
@@ -43,6 +76,9 @@ const BASELINE: [&str; 4] = [
 const JS_QUOTES: [char; 3] = ['\'', '"', '`'];
 const RUST_QUOTES: [char; 1] = ['"'];
 
+/// Frontend file extensions that may contain an `invoke(...)` call.
+const FRONTEND_EXTENSIONS: [&str; 3] = ["vue", "js", "ts"];
+
 // ------------------------------------------------------------------ reading --
 
 /// Read a file relative to this crate's manifest directory, or fail with a
@@ -52,8 +88,8 @@ fn read_source(relative: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "tests/ipc.rs cannot read {}: {e}\n\
-             This test only means something if it can read all three sides of the IPC \
-             boundary. Restore the file or fix the path in tests/ipc.rs.",
+             This test only means something if it can read every side of the IPC boundary. \
+             Restore the file or fix the path in tests/ipc.rs.",
             path.display()
         )
     })
@@ -67,12 +103,136 @@ fn commands_rs() -> String {
     read_source("src/commands.rs")
 }
 
-fn app_vue() -> String {
-    read_source("../src/App.vue")
-}
-
 fn app_test_js() -> String {
     read_source("../tests/App.test.js")
+}
+
+/// A chunk of frontend source that may hold `invoke(...)` calls: a `.vue`
+/// script block, or a whole `.js`/`.ts` file.
+#[derive(Debug)]
+struct FrontendChunk {
+    /// Path as a human reads it in the repo, for example `src/App.vue`.
+    label: String,
+    /// The scannable text.
+    body: String,
+    /// Lines that precede `body` in its file, so reported line numbers match.
+    lines_above: usize,
+}
+
+/// Every `<script ...>` block of a `.vue` file, with the number of lines above
+/// each one. A file with no script block yields nothing (it cannot invoke).
+fn vue_scripts(src: &str, label: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = src[from..].find("<script") {
+        let tag = from + rel;
+        let Some(rel_gt) = src[tag..].find('>') else {
+            panic!("tests/ipc.rs: a <script> tag in {label} is never closed.");
+        };
+        let body = tag + rel_gt + 1;
+        let rel_end = src[body..].find("</script>").unwrap_or_else(|| {
+            panic!("tests/ipc.rs: a <script> block in {label} is never closed.")
+        });
+        let end = body + rel_end;
+        out.push((
+            src[body..end].to_string(),
+            src[..body].matches('\n').count(),
+        ));
+        from = end + "</script>".len();
+    }
+    out
+}
+
+/// Every scannable chunk of the desktop frontend, walked from `../src`.
+///
+/// Walking beats naming `App.vue`: the guard must not silently narrow to
+/// nothing the day a call moves into a composable or a second component.
+fn frontend_chunks() -> Vec<FrontendChunk> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../src");
+    let mut chunks = Vec::new();
+    let mut files = 0usize;
+    let mut stack = vec![root.clone()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = fs::read_dir(&dir).unwrap_or_else(|e| {
+            panic!(
+                "tests/ipc.rs cannot list {}: {e}\n\
+                 The desktop frontend is one side of the IPC boundary; without it this file \
+                 guards nothing.",
+                dir.display()
+            )
+        });
+        let mut paths: Vec<PathBuf> = entries
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "tests/ipc.rs cannot read an entry of {}: {e}",
+                            dir.display()
+                        )
+                    })
+                    .path()
+            })
+            .collect();
+        // Deterministic order, so two runs report the same file first.
+        paths.sort();
+
+        for path in paths {
+            if path.is_dir() {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                // Nothing generated or vendored is part of this app's source.
+                if matches!(name.as_str(), "node_modules" | "dist" | "target") {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            let extension = path
+                .extension()
+                .map(|e| e.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !FRONTEND_EXTENSIONS.contains(&extension.as_str()) {
+                continue;
+            }
+            files += 1;
+            let label = label_of(&root, &path);
+            let src = fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("tests/ipc.rs cannot read {}: {e}", path.display()));
+            if extension == "vue" {
+                for (body, lines_above) in vue_scripts(&src, &label) {
+                    chunks.push(FrontendChunk {
+                        label: label.clone(),
+                        body,
+                        lines_above,
+                    });
+                }
+            } else {
+                chunks.push(FrontendChunk {
+                    label,
+                    body: src,
+                    lines_above: 0,
+                });
+            }
+        }
+    }
+
+    assert!(
+        files > 0,
+        "tests/ipc.rs walked {} and found no .vue/.js/.ts file. Either the frontend moved, or \
+         this path is wrong; either way the IPC boundary is unguarded until it is fixed.",
+        root.display()
+    );
+    chunks
+}
+
+/// `src/App.vue` and the like, for messages a human can act on.
+fn label_of(root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    format!("src/{}", relative.display())
 }
 
 // ------------------------------------------------------------------ scanning --
@@ -265,11 +425,19 @@ fn line_of(chars: &[char], idx: usize) -> usize {
         .count()
 }
 
+/// A type as written, minus whitespace, so `Option < String >` and
+/// `Option<String>` compare equal.
+fn normalized_type(ty: &str) -> String {
+    ty.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
 // ------------------------------------------------------------------- naming --
 
-/// Rust parameter name to the payload key Tauri expects, mirroring the serde
-/// `rename_all = "camelCase"` Tauri puts on the generated argument struct.
-/// This is the authoritative direction: `output_dir` -> `outputDir`.
+/// Rust parameter name to the payload key Tauri expects, mirroring the
+/// camelCase the `#[tauri::command]` macro applies to argument names by
+/// default. This is the authoritative direction: `output_dir` -> `outputDir`.
+/// Valid only while no command carries `rename_all`, which is exactly what
+/// `no_command_attribute_renames_the_wire_contract` pins.
 fn snake_to_camel(name: &str) -> String {
     let mut out = String::new();
     let mut upper_next = false;
@@ -356,21 +524,48 @@ struct RustParam {
     ty: String,
 }
 
-/// Parameters Tauri injects itself. The webview never sends these, so they are
-/// not part of the payload contract. None exist today; the allowance is here
-/// so adding an `AppHandle` does not produce a failure that says nothing.
+/// One `#[tauri::command]` function in `src/commands.rs`.
+#[derive(Debug)]
+struct RustCommand {
+    /// The attribute's arguments: empty for the bare `#[tauri::command]`, or
+    /// the text inside the parentheses (`rename_all = "snake_case"`, `async`,
+    /// and so on). Read by `no_command_attribute_renames_the_wire_contract`,
+    /// which is what keeps the rest of this file's naming model honest.
+    attribute_args: String,
+    params: Vec<RustParam>,
+    /// Line of the attribute in src/commands.rs.
+    line: usize,
+}
+
+/// Parameters Tauri fills in itself, so the webview never sends them and they
+/// are not part of the payload contract. None exist in this app today; the
+/// allowance is here so adding an `AppHandle` does not produce a failure that
+/// says nothing.
+///
+/// Checked against tauri 2.11.5 (the version in Cargo.lock): each of these has
+/// a `CommandArg` impl that reads the invoke message rather than the argument
+/// key. `Channel<T>` looks like one and is not: `ipc/channel.rs` deserializes
+/// a `String` out of the payload under the argument key, so the webview MUST
+/// send it, and listing it here would hide a missing key in both directions.
 fn injected_by_tauri(ty: &str) -> bool {
     let ty = ty.trim().trim_start_matches('&').trim();
     let ty = ty.rsplit("::").next().unwrap_or(ty);
     let head = ty.split(['<', ' ']).next().unwrap_or(ty);
     matches!(
         head,
-        "AppHandle" | "Window" | "WebviewWindow" | "Webview" | "State" | "Request" | "Channel"
+        "AppHandle"
+            | "Window"
+            | "WebviewWindow"
+            | "Webview"
+            | "State"
+            | "Request"
+            | "CommandScope"
+            | "GlobalScope"
     )
 }
 
 /// Signatures of every `#[tauri::command]` in `src/commands.rs`.
-fn parse_rust_commands(src: &str) -> BTreeMap<String, Vec<RustParam>> {
+fn parse_rust_commands(src: &str) -> BTreeMap<String, RustCommand> {
     let stripped = strip_comments(src, &RUST_QUOTES);
     let chars: Vec<char> = stripped.chars().collect();
     let mut out = BTreeMap::new();
@@ -382,11 +577,49 @@ fn parse_rust_commands(src: &str) -> BTreeMap<String, Vec<RustParam>> {
             i += 1;
             continue;
         }
-        let fn_at = find_word(&chars, "fn", i).unwrap_or_else(|| {
+        // `#[tauri::commander]` and friends are not this attribute.
+        if is_ident_char(chars.get(i + attribute.len()).copied().unwrap_or(' ')) {
+            i += 1;
+            continue;
+        }
+        let line = line_of(&chars, i);
+
+        // Capture the whole attribute, arguments included: `rename_all` and
+        // `rename` change the wire contract this file models, so the parser
+        // has to at least see them.
+        let attribute_end = matching_delimiter(&chars, i + 1, &RUST_QUOTES).unwrap_or_else(|| {
             panic!(
-                "tests/ipc.rs: a `#[tauri::command]` in src/commands.rs (line {}) is not \
-                 followed by a function.",
-                line_of(&chars, i)
+                "tests/ipc.rs: the `#[tauri::command` at line {line} of src/commands.rs is \
+                 never closed."
+            )
+        });
+        let inside: String = chars[i + 2..attribute_end].iter().collect();
+        let tail = inside
+            .strip_prefix("tauri::command")
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let attribute_args = if tail.is_empty() {
+            String::new()
+        } else {
+            tail.strip_prefix('(')
+                .and_then(|t| t.strip_suffix(')'))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "tests/ipc.rs: cannot read the arguments of `#[tauri::command{tail}]` at \
+                         line {line} of src/commands.rs. This parser has to read them: \
+                         `rename_all` and `rename` silently change the names the webview must \
+                         send."
+                    )
+                })
+                .trim()
+                .to_string()
+        };
+
+        let fn_at = find_word(&chars, "fn", attribute_end).unwrap_or_else(|| {
+            panic!(
+                "tests/ipc.rs: a `#[tauri::command]` in src/commands.rs (line {line}) is not \
+                 followed by a function."
             )
         });
         let name_start = skip_ws(&chars, fn_at + 2);
@@ -410,7 +643,9 @@ fn parse_rust_commands(src: &str) -> BTreeMap<String, Vec<RustParam>> {
              this parser can read (generic commands are not supported here)."
         );
         let paren_end = matching_delimiter(&chars, paren, &RUST_QUOTES).unwrap_or_else(|| {
-            panic!("tests/ipc.rs: the parameter list of `{name}` in src/commands.rs is never closed.")
+            panic!(
+                "tests/ipc.rs: the parameter list of `{name}` in src/commands.rs is never closed."
+            )
         });
 
         let params = split_top_level(&chars[paren + 1..paren_end], &RUST_QUOTES, true)
@@ -433,46 +668,37 @@ fn parse_rust_commands(src: &str) -> BTreeMap<String, Vec<RustParam>> {
             })
             .collect();
 
-        out.insert(name, params);
+        out.insert(
+            name,
+            RustCommand {
+                attribute_args,
+                params,
+                line,
+            },
+        );
         i = paren_end;
     }
     out
 }
 
-/// One `invoke('name', { ... })` call site in App.vue.
+/// One `invoke('name', { ... })` call site in the frontend.
 #[derive(Debug)]
 struct Invocation {
     command: String,
     keys: Vec<String>,
+    file: String,
     line: usize,
 }
 
-/// The `<script setup>` body of a `.vue` file, plus the number of lines above
-/// it, so reported line numbers match the real file.
-fn vue_script(src: &str) -> (String, usize) {
-    let tag = src
-        .find("<script")
-        .expect("tests/ipc.rs: App.vue has no <script> block.");
-    let body = src[tag..]
-        .find('>')
-        .map(|k| tag + k + 1)
-        .expect("tests/ipc.rs: the <script> tag in App.vue is never closed.");
-    let end = src[body..]
-        .find("</script>")
-        .map(|k| body + k)
-        .expect("tests/ipc.rs: the <script> block in App.vue is never closed.");
-    let lines_above = src[..body].matches('\n').count();
-    (src[body..end].to_string(), lines_above)
-}
-
-/// Every `invoke(...)` call in App.vue's script, with the payload keys each
-/// one supplies. Shorthand properties (`{ path }`) and quoted keys are both
-/// understood; a payload that is not an object literal is a hard failure,
-/// because this test could not verify it and must not pretend otherwise.
-fn parse_invocations(src: &str) -> Vec<Invocation> {
-    let (script, lines_above) = vue_script(src);
-    let stripped = strip_comments(&script, &JS_QUOTES);
+/// Every `invoke(...)` call in one chunk of frontend source, with the payload
+/// keys each one supplies. Shorthand properties (`{ path }`) and quoted keys
+/// are both understood; a payload that is not an object literal is a hard
+/// failure, because this test could not verify it and must not pretend
+/// otherwise.
+fn parse_invocations(chunk: &FrontendChunk) -> Vec<Invocation> {
+    let stripped = strip_comments(&chunk.body, &JS_QUOTES);
     let chars: Vec<char> = stripped.chars().collect();
+    let file = chunk.label.clone();
     let mut out = Vec::new();
 
     let mut from = 0;
@@ -486,16 +712,16 @@ fn parse_invocations(src: &str) -> Vec<Invocation> {
         if chars.get(i) != Some(&'(') {
             continue;
         }
-        let line = lines_above + line_of(&chars, at);
+        let line = chunk.lines_above + line_of(&chars, at);
         let call_end = matching_delimiter(&chars, i, &JS_QUOTES).unwrap_or_else(|| {
-            panic!("tests/ipc.rs: an `invoke(` call at App.vue line {line} is never closed.")
+            panic!("tests/ipc.rs: an `invoke(` call at {file} line {line} is never closed.")
         });
 
         i = skip_ws(&chars, i + 1);
         let quote = *chars.get(i).unwrap_or(&' ');
         assert!(
             JS_QUOTES.contains(&quote),
-            "tests/ipc.rs: the `invoke(` at App.vue line {line} is not called with a literal \
+            "tests/ipc.rs: the `invoke(` at {file} line {line} is not called with a literal \
              command name. Keep the name a literal so this lockstep test can see it."
         );
         i += 1;
@@ -516,23 +742,24 @@ fn parse_invocations(src: &str) -> Vec<Invocation> {
                 assert_eq!(
                     chars.get(i),
                     Some(&'{'),
-                    "tests/ipc.rs: `invoke('{command}')` at App.vue line {line} passes a payload \
+                    "tests/ipc.rs: `invoke('{command}')` at {file} line {line} passes a payload \
                      that is not an object literal, so the argument names cannot be checked. \
                      Pass a literal, or this guard is blind."
                 );
                 let obj_end = matching_delimiter(&chars, i, &JS_QUOTES).unwrap_or_else(|| {
                     panic!(
-                        "tests/ipc.rs: the payload of `invoke('{command}')` at App.vue line \
+                        "tests/ipc.rs: the payload of `invoke('{command}')` at {file} line \
                          {line} is never closed."
                     )
                 });
-                keys = parse_object_keys(&chars[i + 1..obj_end], &command, line);
+                keys = parse_object_keys(&chars[i + 1..obj_end], &command, &file, line);
             }
         }
 
         out.push(Invocation {
             command,
             keys,
+            file: file.clone(),
             line,
         });
         from = call_end;
@@ -540,13 +767,21 @@ fn parse_invocations(src: &str) -> Vec<Invocation> {
     out
 }
 
-fn parse_object_keys(inner: &[char], command: &str, line: usize) -> Vec<String> {
+/// Every `invoke(...)` call in the whole desktop frontend.
+fn all_invocations() -> Vec<Invocation> {
+    frontend_chunks()
+        .iter()
+        .flat_map(parse_invocations)
+        .collect()
+}
+
+fn parse_object_keys(inner: &[char], command: &str, file: &str, line: usize) -> Vec<String> {
     split_top_level(inner, &JS_QUOTES, false)
         .into_iter()
         .map(|entry| {
             assert!(
                 !entry.starts_with("..."),
-                "tests/ipc.rs: the payload of `invoke('{command}')` at App.vue line {line} \
+                "tests/ipc.rs: the payload of `invoke('{command}')` at {file} line {line} \
                  spreads `{entry}`, so its argument names cannot be checked. Spell the keys \
                  out, or this guard is blind."
             );
@@ -560,7 +795,7 @@ fn parse_object_keys(inner: &[char], command: &str, line: usize) -> Vec<String> 
                 .to_string();
             assert!(
                 !key.is_empty() && key.chars().all(is_ident_char),
-                "tests/ipc.rs: `{key}` in the payload of `invoke('{command}')` at App.vue line \
+                "tests/ipc.rs: `{key}` in the payload of `invoke('{command}')` at {file} line \
                  {line} is not a plain identifier key, so it cannot be matched to a Rust \
                  parameter."
             );
@@ -580,8 +815,8 @@ fn parse_stub_commands(src: &str) -> BTreeSet<String> {
     while let Some(at) = find_word(&chars, "cmd", from) {
         from = at + 3;
         let mut i = skip_ws(&chars, from);
-        // Accept `===` and `==`, in either order of operands is not needed:
-        // the repo writes `cmd === 'name'`.
+        // Accept `===` and `==`; matching the operands the other way round is
+        // not needed, the repo writes `cmd === 'name'`.
         if chars.get(i) != Some(&'=') {
             continue;
         }
@@ -611,18 +846,36 @@ fn the_parsers_find_the_commands_this_app_ships() {
     // A lockstep test that silently parses nothing passes every other check in
     // this file vacuously. This canary is the only thing standing between a
     // broken parser and a green, useless suite.
-    let handler = parse_handler_commands(&lib_rs());
+    let handler: BTreeSet<String> = parse_handler_commands(&lib_rs()).into_iter().collect();
+    let baseline: BTreeSet<String> = BASELINE.iter().map(|s| s.to_string()).collect();
+    // Equality here, containment below: a command that never enters BASELINE
+    // would be exempt from this canary, so adding one has to be deliberate.
+    assert_eq!(
+        handler, baseline,
+        "the commands registered in `tauri::generate_handler![...]` (src/lib.rs) are no longer \
+         the ones BASELINE in tests/ipc.rs names.\n\
+         If a command was added, add it to BASELINE so the parsers in this file are proved to \
+         see it; if one was removed, remove it here too."
+    );
+
+    let chunks = frontend_chunks();
+    let scanned: Vec<&str> = chunks.iter().map(|c| c.label.as_str()).collect();
+    assert!(
+        !scanned.is_empty(),
+        "tests/ipc.rs found no frontend source to scan for `invoke(...)` calls."
+    );
+
     let rust: BTreeSet<String> = parse_rust_commands(&commands_rs()).into_keys().collect();
-    let invoked: BTreeSet<String> = parse_invocations(&app_vue())
-        .into_iter()
+    let invoked: BTreeSet<String> = chunks
+        .iter()
+        .flat_map(parse_invocations)
         .map(|i| i.command)
         .collect();
     let stubs = parse_stub_commands(&app_test_js());
 
     for (label, found) in [
-        ("generate_handler! in src/lib.rs", handler.iter().cloned().collect::<BTreeSet<_>>()),
         ("#[tauri::command] fns in src/commands.rs", rust),
-        ("invoke('...') in src/App.vue", invoked),
+        ("invoke('...') across the frontend", invoked),
         ("the stub switch in tests/App.test.js", stubs),
     ] {
         for expected in BASELINE {
@@ -630,9 +883,56 @@ fn the_parsers_find_the_commands_this_app_ships() {
                 found.contains(expected),
                 "tests/ipc.rs parsed {label} and did not find `{expected}`.\n\
                  Found: {found:?}\n\
+                 Frontend sources scanned: {scanned:?}\n\
                  Either the parser in tests/ipc.rs broke on a formatting change, or the \
                  command really was removed everywhere; in that second case update BASELINE \
                  in tests/ipc.rs deliberately."
+            );
+        }
+    }
+}
+
+#[test]
+fn no_command_attribute_renames_the_wire_contract() {
+    // Everything else in this file assumes the defaults of `#[tauri::command]`:
+    // the wire name of a command is its function name, and its argument keys
+    // are the camelCase of its parameter names. Both are one attribute argument
+    // away from being false (tauri-macros 2.6.3 accepts `rename`, `rename_all`,
+    // `root` and `async`), and either change would ship a broken app with every
+    // other test here green. So pin the assumption rather than trust it.
+    for (name, command) in parse_rust_commands(&commands_rs()) {
+        let args = command.attribute_args.trim().to_string();
+        if args.is_empty() {
+            continue;
+        }
+        let chars: Vec<char> = args.chars().collect();
+        assert!(
+            find_word(&chars, "rename_all", 0).is_none(),
+            "`{name}` in src/commands.rs carries `#[tauri::command({args})]` (line {}).\n\
+             `rename_all` changes the argument keys the webview has to send, and tests/ipc.rs \
+             models them as the camelCase of the Rust parameter names, so every payload check \
+             in this file is now wrong. Drop the argument, or teach `snake_to_camel` and its \
+             call sites the new casing.",
+            command.line
+        );
+        assert!(
+            find_word(&chars, "rename", 0).is_none(),
+            "`{name}` in src/commands.rs carries `#[tauri::command({args})]` (line {}).\n\
+             `rename` changes the name the webview has to invoke, while tests/ipc.rs matches \
+             the function name, so every registration check in this file is now comparing the \
+             wrong string. Drop the argument, or teach this file to read the renamed literal.",
+            command.line
+        );
+        for argument in split_top_level(&chars, &RUST_QUOTES, false) {
+            let head: String = argument.chars().take_while(|c| is_ident_char(*c)).collect();
+            assert!(
+                matches!(head.as_str(), "async" | "root"),
+                "`{name}` in src/commands.rs carries the unknown attribute argument \
+                 `{argument}` (line {}).\n\
+                 tests/ipc.rs only knows that `async` and `root` leave the wire contract alone. \
+                 Work out what this one does to the command name and to the argument keys, \
+                 then either allow it here or fix the model in this file.",
+                command.line
             );
         }
     }
@@ -643,34 +943,35 @@ fn the_parsers_find_the_commands_this_app_ships() {
 #[test]
 fn every_invoked_command_is_registered_in_generate_handler() {
     let handler: BTreeSet<String> = parse_handler_commands(&lib_rs()).into_iter().collect();
-    for call in parse_invocations(&app_vue()) {
+    for call in all_invocations() {
         assert!(
             handler.contains(&call.command),
-            "App.vue line {} calls invoke('{}'), which is NOT in \
+            "{} line {} calls invoke('{}'), which is NOT in \
              `tauri::generate_handler![...]` in src/lib.rs.\n\
              Nothing type-checks this crossing: the app compiles and the call fails at \
-             runtime with \"command {} not found\". Fix it by adding \
-             `commands::{}` to the handler list, or by correcting the string in App.vue.",
-            call.line, call.command, call.command, call.command
+             runtime with \"command {} not found\". Fix it by adding `commands::{}` to the \
+             handler list, or by correcting the string in the frontend.",
+            call.file,
+            call.line,
+            call.command,
+            call.command,
+            call.command
         );
     }
 }
 
 #[test]
-fn every_registered_command_is_invoked_by_app_vue() {
+fn every_registered_command_is_invoked_by_the_frontend() {
     // Not symmetry for its own sake: the reference implementation shipped a
     // registered-but-unused `extract_file` command, dead surface nobody
     // noticed because nothing checks this direction.
-    let invoked: BTreeSet<String> = parse_invocations(&app_vue())
-        .into_iter()
-        .map(|c| c.command)
-        .collect();
+    let invoked: BTreeSet<String> = all_invocations().into_iter().map(|c| c.command).collect();
     for command in parse_handler_commands(&lib_rs()) {
         assert!(
             invoked.contains(&command),
             "`{command}` is registered in `tauri::generate_handler![...]` in src/lib.rs but \
-             never invoked from src/App.vue.\n\
-             Either the frontend call was renamed or dropped (fix App.vue), or the command \
+             never invoked anywhere under apps/desktop/src.\n\
+             Either the frontend call was renamed or dropped (fix the caller), or the command \
              is dead surface (drop it from the handler list and from src/commands.rs). The \
              reference implementation carried exactly this defect."
         );
@@ -694,20 +995,50 @@ fn every_registered_command_exists_in_commands_rs() {
 }
 
 #[test]
+fn every_command_in_commands_rs_is_registered() {
+    // The converse of the test above, and the one that catches dead surface at
+    // its source: a `#[tauri::command]` nobody registered reads like part of
+    // the IPC contract, is documented as such, and can never be called. The
+    // reference implementation's unused `extract_file` is this same defect
+    // seen from the handler side.
+    let handler: BTreeSet<String> = parse_handler_commands(&lib_rs()).into_iter().collect();
+    for (command, defined) in parse_rust_commands(&commands_rs()) {
+        assert!(
+            handler.contains(&command),
+            "`{command}` is a `#[tauri::command]` in src/commands.rs (line {}) that no \
+             `tauri::generate_handler![...]` in src/lib.rs registers.\n\
+             The webview cannot reach it: invoking it fails with \"command {command} not \
+             found\". Register it, or delete it.",
+            defined.line
+        );
+    }
+}
+
+#[test]
 fn every_command_is_covered_by_the_vitest_stub_switch() {
-    // tests/App.test.js mocks invoke with a switch that falls through to
-    // `return null`. An uncovered command therefore does not fail the Vitest
-    // run, it silently resolves to null and the assertions around it lose all
-    // meaning.
+    // The Vitest mock in apps/desktop/tests/App.test.js is a switch on the
+    // command name that ends in a bare `return null`, so an unstubbed command
+    // does not fail the JS run: it resolves to null. What that costs depends on
+    // the command, and it was measured by deleting each branch and re-running
+    // the Vitest suite. Two branches are load-bearing: dropping `compress_path`
+    // or `extract_archive` turns a case red, because both cases assert on what
+    // the component renders from the returned value. Two are cosmetic:
+    // `is_directory` returns false and `check_server` returns null, and with
+    // either branch gone the suite still passes 7 of 7, since no assertion can
+    // tell those values from the fallthrough null.
+    //
+    // So this test does not claim every branch is load-bearing. It keeps the
+    // switch in lockstep with the handler list, so a command added on the Rust
+    // side starts life with a deliberate stub instead of a silent null.
     let stubs = parse_stub_commands(&app_test_js());
     for command in parse_handler_commands(&lib_rs()) {
         assert!(
             stubs.contains(&command),
             "`{command}` is registered in src/lib.rs but the stub switch in \
              apps/desktop/tests/App.test.js has no `if (cmd === '{command}')` branch.\n\
-             The mock falls through to `return null`, so a Vitest run would exercise this \
-             command against a stub that knows nothing about it and still pass. Add the \
-             branch to tests/App.test.js."
+             The mock ends in a bare `return null`, so a Vitest case that reaches this command \
+             gets null instead of an answer the component can use, and may pass while \
+             exercising nothing. Add the branch, returning what the real command returns."
         );
     }
 }
@@ -716,12 +1047,19 @@ fn every_command_is_covered_by_the_vitest_stub_switch() {
 
 #[test]
 fn every_invoke_payload_key_binds_to_a_rust_parameter() {
+    // Names only. Nothing here compares a payload value against the Rust type
+    // it has to deserialize into, because the frontend sends expressions
+    // (`level: level.value`) rather than literals this parser could type: a
+    // frontend that starts sending `String(level.value)` for a `u32` is still
+    // a runtime-only failure. `command_signatures_are_pinned_with_their_types`
+    // freezes the Rust half of that gap.
     let commands = parse_rust_commands(&commands_rs());
-    for call in parse_invocations(&app_vue()) {
-        let Some(params) = commands.get(&call.command) else {
+    for call in all_invocations() {
+        let Some(command) = commands.get(&call.command) else {
             continue; // covered by every_invoked_command_is_registered_in_generate_handler
         };
-        let expected: BTreeSet<String> = params
+        let expected: BTreeSet<String> = command
+            .params
             .iter()
             .filter(|p| !injected_by_tauri(&p.ty))
             .map(|p| snake_to_camel(&p.name))
@@ -730,13 +1068,15 @@ fn every_invoke_payload_key_binds_to_a_rust_parameter() {
         for key in &call.keys {
             assert!(
                 expected.contains(key),
-                "App.vue line {} sends `{key}` to invoke('{}'), but `{}` in \
-                 src/commands.rs has no such parameter.\n\
+                "{} line {} sends `{key}` to invoke('{}'), but `{}` in src/commands.rs has no \
+                 such parameter.\n\
                  Tauri camelCases the Rust parameter names, so `{key}` would need a Rust \
                  parameter called `{}`. Parameters it does have (as the webview must spell \
                  them): {:?}\n\
                  Nothing type-checks this crossing: an unknown key makes the call fail at \
-                 runtime only. Fix the key in App.vue or the signature in src/commands.rs.",
+                 runtime only. Fix the key in the frontend or the signature in \
+                 src/commands.rs.",
+                call.file,
                 call.line,
                 call.command,
                 call.command,
@@ -749,26 +1089,28 @@ fn every_invoke_payload_key_binds_to_a_rust_parameter() {
 
 #[test]
 fn every_rust_parameter_is_supplied_by_the_invoke_payload() {
+    // Names only, for the same reason as the test above.
     let commands = parse_rust_commands(&commands_rs());
-    for call in parse_invocations(&app_vue()) {
-        let Some(params) = commands.get(&call.command) else {
+    for call in all_invocations() {
+        let Some(command) = commands.get(&call.command) else {
             continue;
         };
         let supplied: BTreeSet<&String> = call.keys.iter().collect();
-        for param in params.iter().filter(|p| !injected_by_tauri(&p.ty)) {
+        for param in command.params.iter().filter(|p| !injected_by_tauri(&p.ty)) {
             let key = snake_to_camel(&param.name);
             assert!(
                 supplied.contains(&key),
-                "`{}` in src/commands.rs takes `{}: {}`, but the invoke('{}') call at \
-                 App.vue line {} does not send `{key}`. It sends: {:?}\n\
+                "`{}` in src/commands.rs takes `{}: {}`, but the invoke('{}') call at {} line \
+                 {} does not send `{key}`. It sends: {:?}\n\
                  An `Option<..>` left unsupplied quietly deserializes to None (a remote \
                  compression would silently run locally), and a required one fails the call \
-                 at runtime. Add the key to App.vue, or drop the parameter in \
+                 at runtime. Add the key to the frontend, or drop the parameter in \
                  src/commands.rs.",
                 call.command,
                 param.name,
                 param.ty,
                 call.command,
+                call.file,
                 call.line,
                 call.keys
             );
@@ -777,72 +1119,73 @@ fn every_rust_parameter_is_supplied_by_the_invoke_payload() {
 }
 
 #[test]
-fn extract_archive_receives_output_dir_camel_cased() {
-    // The concrete hazard the whole file exists for: App.vue writes
-    // `outputDir` and Rust declares `output_dir`. Get either half wrong and
-    // extraction fails only when a user clicks Extract.
-    let commands = parse_rust_commands(&commands_rs());
-    let params = commands
-        .get("extract_archive")
-        .expect("src/commands.rs no longer defines `extract_archive`.");
-    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+fn command_signatures_are_pinned_with_their_types() {
+    // The payload checks above match names; serde matches names AND types, and
+    // rejects the call either way. `level: u32` becoming `level: String`, or
+    // `server: Option<String>` becoming `server: String` (which turns every
+    // local compression into a failed call, since the frontend sends null for
+    // it), is invisible to every other test in this file. So freeze the
+    // declared signatures and make a change to them deliberate.
+    //
+    // Sets, not sequences: Tauri binds arguments by key, so reordering two
+    // parameters changes nothing on the wire and must not fail here.
+    let expected: [(&str, &[(&str, &str)]); 4] = [
+        ("check_server", &[("url", "String")]),
+        (
+            "compress_path",
+            &[
+                ("path", "String"),
+                ("output", "String"),
+                ("format", "String"),
+                ("level", "u32"),
+                ("server", "Option<String>"),
+            ],
+        ),
+        (
+            "extract_archive",
+            &[("archive", "String"), ("output_dir", "String")],
+        ),
+        ("is_directory", &[("path", "String")]),
+    ];
+
+    // One list of commands, not two: BASELINE decides what ships, this table
+    // has to keep up with it.
     assert_eq!(
-        names,
-        vec!["archive", "output_dir"],
-        "`extract_archive` in src/commands.rs no longer takes (archive, output_dir). The \
-         payload in src/App.vue and the assertion in tests/App.test.js both spell these \
-         names out and neither is type-checked."
+        expected
+            .iter()
+            .map(|(name, _)| *name)
+            .collect::<BTreeSet<_>>(),
+        BASELINE.iter().copied().collect::<BTreeSet<_>>(),
+        "the signature table in tests/ipc.rs no longer covers the same commands as BASELINE. \
+         A new command needs its signature pinned here too, or it crosses the boundary \
+         untyped."
     );
 
-    let call = parse_invocations(&app_vue())
-        .into_iter()
-        .find(|c| c.command == "extract_archive")
-        .expect("src/App.vue no longer invokes `extract_archive`.");
-    assert!(
-        call.keys.iter().any(|k| k == "outputDir"),
-        "src/App.vue line {} sends {:?} to `extract_archive`. Tauri camelCases the Rust \
-         parameter names, so `output_dir` must be sent as `outputDir`; the snake_case \
-         spelling deserializes to nothing and the call fails at runtime.",
-        call.line,
-        call.keys
-    );
-    assert!(
-        !call.keys.iter().any(|k| k == "output_dir"),
-        "src/App.vue sends `output_dir` to `extract_archive`. Tauri expects the camelCase \
-         `outputDir`; the snake_case spelling is dropped and the command fails at runtime."
-    );
-}
-
-#[test]
-fn compress_path_receives_the_whole_option_set() {
-    // compress_path is the widest crossing (five arguments, one of them the
-    // Option that chooses local versus remote), so pin its shape explicitly:
-    // a dropped `server` key would make every remote compression run locally
-    // with no error anywhere.
     let commands = parse_rust_commands(&commands_rs());
-    let params = commands
-        .get("compress_path")
-        .expect("src/commands.rs no longer defines `compress_path`.");
-    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
-    assert_eq!(
-        names,
-        vec!["path", "output", "format", "level", "server"],
-        "`compress_path` in src/commands.rs changed shape. src/App.vue builds this payload \
-         by hand and nothing type-checks it."
-    );
-
-    let call = parse_invocations(&app_vue())
-        .into_iter()
-        .find(|c| c.command == "compress_path")
-        .expect("src/App.vue no longer invokes `compress_path`.");
-    let keys: BTreeSet<&str> = call.keys.iter().map(String::as_str).collect();
-    for expected in ["path", "output", "format", "level", "server"] {
-        assert!(
-            keys.contains(expected),
-            "the invoke('compress_path') at src/App.vue line {} does not send `{expected}`. \
-             It sends: {:?}",
-            call.line,
-            call.keys
+    for (name, params) in expected {
+        let command = commands.get(name).unwrap_or_else(|| {
+            panic!(
+                "src/commands.rs no longer defines a `#[tauri::command]` called `{name}`. It \
+                 defines: {:?}",
+                commands.keys().collect::<Vec<_>>()
+            )
+        });
+        let found: BTreeSet<(String, String)> = command
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), normalized_type(&p.ty)))
+            .collect();
+        let want: BTreeSet<(String, String)> = params
+            .iter()
+            .map(|(n, t)| (n.to_string(), normalized_type(t)))
+            .collect();
+        assert_eq!(
+            found, want,
+            "the signature of `{name}` in src/commands.rs changed.\n\
+             The frontend builds this payload by hand and nothing type-checks it: serde \
+             rejects a value of the wrong type exactly as it rejects an unknown key, at \
+             runtime, in front of the user. If the change is intended, update this table and \
+             the invoke call that feeds it."
         );
     }
 }
