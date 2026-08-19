@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-/// True when both paths resolve to the same existing file — by resolved path
+/// True when both paths resolve to the same existing file: by resolved path
 /// (symlinks, `.`/`..`) and, on Unix, by inode/device so two hardlinks to the
 /// same file are also caught.
 ///

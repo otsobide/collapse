@@ -49,7 +49,7 @@ pub fn compress_path(
     let output_path = PathBuf::from(&output);
 
     // Never write the archive onto its own source (that would truncate the
-    // source before it is read — irrecoverable data loss).
+    // source before it is read, which is irrecoverable data loss).
     if same_file(&source, &output_path) {
         return Err("The output is the same file as the source.".to_string());
     }
