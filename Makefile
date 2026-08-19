@@ -16,10 +16,13 @@ $(foreach app,$(APPS),$(eval $(call APP_DELEGATE,$(app))))
 # Global targets
 # ---------------------------------------------------------------------------
 .PHONY: test
-test: core/test remote/test cli/test server-backend/test server-frontend/test desktop/test ## Run every test suite
+test: core/test remote/test cli/test server-backend/test server-frontend/test desktop/test desktop/test-rust ## Run every test suite
 
+# desktop/test-rust is deliberately absent: the src-tauri crate does not compile
+# without the frontend bundle, so its Rust suite needs the Node toolchain that
+# this target exists to avoid.
 .PHONY: test/rust
-test/rust: core/test remote/test cli/test server-backend/test ## Run only the Rust tests
+test/rust: core/test remote/test cli/test server-backend/test ## Run the Rust tests that need no Node toolchain
 
 .PHONY: build
 build: core/build remote/build cli/build server-backend/build ## Build the Rust crates (debug)
