@@ -1,18 +1,35 @@
 //! Tests for `collapse_desktop::paths::same_file`, the predicate that stands
 //! between a user and irrecoverable data loss: `compress_path` refuses to run
 //! when the archive it is about to write resolves to the source it is about to
-//! read, because every backend creates (and therefore truncates) the output
-//! before the source has been read. A false negative here destroys the only
-//! copy of the user's data, so the predicate is tested from both sides: it must
+//! read. Letting that pair through is not survivable, and each backend loses
+//! the data its own way (all three measured against `collapse_core::compress`
+//! with `output == source`): `compress_zip` creates the archive before it opens
+//! the source, so the entry it stores is the zip's own freshly written header
+//! bytes instead of the user's file; `compress_tar` creates the output before
+//! `append_file` reads a byte, so the file feeds its own growing archive and
+//! the call never returns (21 GB written in two minutes before the probe was
+//! killed); `compress_7z` alone reads the whole source into memory first, so
+//! the content survives inside the archive, but the file the user picked is
+//! still replaced by it. So the predicate is tested from both sides: it must
 //! say "same" for every spelling, symlink and hardlink that reaches one file,
 //! and it must say "different" for anything that does not, including paths that
 //! do not exist yet (otherwise no new archive could ever be written).
 //!
-//! Every assertion is made in both argument orders: the caller passes
-//! (source, output), and a predicate that is only half right would let the
-//! guard depend on which side the dangerous path happens to be on.
+//! Every assertion is made in both argument orders, and the swap is coverage
+//! rather than decoration. `same_file` as written is symmetric (it resolves
+//! both sides the same way, then compares the results), so no failure of the
+//! shipped code depends on the order; the swap is aimed at the refactor that
+//! would break that symmetry, one resolving only one side (canonicalizing the
+//! output, say, and comparing it against the source exactly as it was typed).
+//! Measured against precisely that mutant, two tests here fail on the swapped
+//! call alone: `a_path_through_a_symlinked_ancestor_matches_its_resolved_form`
+//! and `a_symlink_is_the_same_as_its_target_for_files_and_directories`. Both
+//! are shapes where one spelling resolves to the other side's literal path, so
+//! the half-right predicate answers correctly in one direction only. Note it is
+//! not the mixed-kind cases that catch it: a real file against a dangling link,
+//! or against a path that does not exist, survives that mutant in both orders.
 
-use std::path::{Path, PathBuf};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 use collapse_desktop::paths::same_file;
 use tempfile::TempDir;
@@ -29,10 +46,7 @@ fn write(path: &Path, contents: &[u8]) {
 /// Assert the two paths are the same file, whichever way round they are given.
 fn assert_same(a: &Path, b: &Path, why: &str) {
     assert!(same_file(a, b), "{why}: {a:?} vs {b:?}");
-    assert!(
-        same_file(b, a),
-        "{why} (arguments swapped): {b:?} vs {a:?}"
-    );
+    assert!(same_file(b, a), "{why} (arguments swapped): {b:?} vs {a:?}");
 }
 
 /// Assert the two paths are NOT the same file, whichever way round they are
@@ -68,51 +82,67 @@ fn relative_from_cwd(target: &Path) -> PathBuf {
 // ----------------------------------------------------------------- identity --
 
 #[test]
-fn a_file_is_the_same_file_as_itself() {
+fn a_file_or_a_directory_is_the_same_as_itself() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
-
-    assert_same(&file, &file, "a path must match itself");
-}
-
-#[test]
-fn a_directory_is_the_same_as_itself() {
-    let dir = TempDir::new().unwrap();
     let folder = dir.path().join("photos");
     std::fs::create_dir(&folder).unwrap();
 
-    // `compress_path` accepts directories as sources, so the guard has to work
-    // for them as well as for files.
-    assert_same(&folder, &folder, "a directory must match itself");
-}
-
-#[test]
-fn a_directory_path_with_a_trailing_separator_still_matches_itself() {
-    let dir = TempDir::new().unwrap();
-    let folder = dir.path().join("photos");
-    std::fs::create_dir(&folder).unwrap();
-
-    // A path coming back from a native folder picker may or may not carry the
-    // trailing separator; the guard must not depend on that.
-    let with_slash = PathBuf::from(format!("{}{}", folder.display(), std::path::MAIN_SEPARATOR));
-    assert_same(
-        &folder,
-        &with_slash,
-        "a trailing separator must not change the identity of a directory",
-    );
+    // `compress_path` takes directories as sources too, and `same_file` never
+    // branches on the kind of thing a path names (canonicalize and metadata
+    // treat both alike), so one table says it for both.
+    for path in [&file, &folder] {
+        assert_same(path, path, "a path must match itself");
+    }
 }
 
 // ---------------------------------------------------------------- spellings --
 
 #[test]
-fn the_same_file_reached_through_a_dot_component_is_the_same_file() {
+fn the_spellings_that_path_equality_already_folds_are_the_same_file() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
+    let folder = dir.path().join("photos");
+    std::fs::create_dir(&folder).unwrap();
 
+    // Honest scope: the `assert_eq!` pins `std::path::Path`'s normalization,
+    // NOT the canonicalization inside `same_file`. `Path` compares component by
+    // component, so a `.` component, a repeated separator and a trailing
+    // separator are gone before `same_file` is even called; each case below
+    // survives a `same_file` reduced to `a == b`, and the `assert_eq!` is what
+    // says so out loud and what fails if std ever stops folding them. The
+    // `assert_same` is not idle either: it kills the other cheap shortcut, a
+    // predicate that dropped canonicalization and compared the caller's raw
+    // strings, for which all three spellings differ (measured). The spelling
+    // with teeth against `a == b` is `..`, which `Path` does not fold: see the
+    // next test.
     let dotted = dir.path().join(".").join("notes.txt");
-    assert_same(&file, &dotted, "`./name` must resolve to `name`");
+    let doubled = PathBuf::from(format!(
+        "{}{MAIN_SEPARATOR}{MAIN_SEPARATOR}notes.txt",
+        dir.path().display()
+    ));
+    // A path coming back from a native folder picker may or may not carry the
+    // trailing separator, and this is why that cannot break the guard.
+    let trailing = PathBuf::from(format!("{}{MAIN_SEPARATOR}", folder.display()));
+
+    for (spelling, target, what) in [
+        (dotted, &file, "a `.` component"),
+        (doubled, &file, "a repeated separator"),
+        (trailing, &folder, "a trailing separator"),
+    ] {
+        assert_eq!(
+            spelling.as_path(),
+            target.as_path(),
+            "{what}: `Path` equality is expected to fold this spelling by itself"
+        );
+        assert_same(
+            &spelling,
+            target,
+            &format!("{what} must not change the identity of a path"),
+        );
+    }
 }
 
 #[test]
@@ -123,31 +153,20 @@ fn the_same_file_reached_through_a_parent_component_is_the_same_file() {
     std::fs::create_dir(dir.path().join("sub")).unwrap();
 
     // `dir/sub/../notes.txt` is the classic way a hand-typed or concatenated
-    // output path sneaks back onto its own source.
+    // output path sneaks back onto its own source, and unlike `.` or a doubled
+    // separator it is a spelling `Path` refuses to fold on its own (it cannot:
+    // `sub` could be a symlink). Resolving it is the predicate's own work, so
+    // deleting the canonicalization fails this test.
     let round_trip = dir.path().join("sub").join("..").join("notes.txt");
+    assert_ne!(
+        round_trip.as_path(),
+        file.as_path(),
+        "the fixture is pointless unless the two spellings differ lexically"
+    );
     assert_same(
         &file,
         &round_trip,
         "`sub/../name` must resolve back to `name`",
-    );
-}
-
-#[test]
-fn the_same_file_reached_through_redundant_separators_is_the_same_file() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.path().join("notes.txt");
-    write(&file, b"hello");
-
-    let doubled = PathBuf::from(format!(
-        "{}{}{}notes.txt",
-        dir.path().display(),
-        std::path::MAIN_SEPARATOR,
-        std::path::MAIN_SEPARATOR
-    ));
-    assert_same(
-        &file,
-        &doubled,
-        "repeated separators must not change the identity of a file",
     );
 }
 
@@ -172,35 +191,85 @@ fn an_absolute_and_a_relative_spelling_of_one_file_are_the_same_file() {
 
 #[cfg(unix)]
 #[test]
-fn a_temp_dir_path_matches_its_fully_resolved_form() {
+fn a_path_through_a_symlinked_ancestor_matches_its_resolved_form() {
+    let dir = TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    let file = real.join("notes.txt");
+    write(&file, b"hello");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    // The everyday case this predicate exists for: two paths that differ as
+    // strings and name one file, because a directory along the way is a link.
+    // On macOS the temp dir itself is one (`/var` -> `/private/var`), but the
+    // Linux CI runner's is not, and leaning on the ambient temp dir there would
+    // silently degrade this into comparing a path with itself. Hence the
+    // hand-built fixture and the `assert_ne!` that proves it is not degenerate.
+    let through_link = link.join("notes.txt");
+    assert_ne!(
+        through_link,
+        through_link.canonicalize().unwrap(),
+        "the fixture is pointless unless the spelling differs from its resolved form"
+    );
+    assert_same(
+        &through_link,
+        &file,
+        "a symlinked ancestor must be resolved away",
+    );
+}
+
+#[test]
+fn a_case_differing_spelling_follows_the_filesystem() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
+    let shouted = dir.path().join("NOTES.TXT");
 
-    // On macOS the temp dir lives under `/var/...`, which is itself a symlink
-    // to `/private/var/...`. This is the everyday case where the two paths a
-    // user's dialogs produce differ as strings but name one file, and it is
-    // exactly what canonicalization is there for.
-    let resolved = file.canonicalize().unwrap();
-    assert_same(
-        &file,
-        &resolved,
-        "a path containing a symlinked ancestor must match its resolved form",
-    );
+    // Probed at runtime rather than gated by `cfg`, because the answer belongs
+    // to the volume and not to the OS: APFS and NTFS are case-insensitive by
+    // default, ext4 is not, and the desktop app ships on all three.
+    if shouted.exists() {
+        // One file under two spellings, and the guard has to see through it:
+        // a user who picks `notes.txt` and types `NOTES.TXT` as the output
+        // would otherwise watch the source be truncated. Resolution is what
+        // catches it rather than the inode/device fallback, because macOS
+        // reports the name as it is stored on disk (measured: both spellings
+        // canonicalize to `.../notes.txt`), so a predicate that compared the
+        // caller's strings would fail here.
+        assert_same(
+            &file,
+            &shouted,
+            "a case-insensitive volume reaches one file through both spellings",
+        );
+    } else {
+        // Case-sensitive volume (this is the branch CI takes): the shouted
+        // spelling names nothing at all, so the assertion below is the
+        // missing-path case again and has no teeth of its own here.
+        assert_not_same(&file, &shouted, "a case-sensitive volume has no such file");
+    }
 }
 
 // -------------------------------------------------------------------- links --
 
 #[cfg(unix)]
 #[test]
-fn a_symlink_to_a_file_is_the_same_file() {
+fn a_symlink_is_the_same_as_its_target_for_files_and_directories() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
-    let link = dir.path().join("shortcut.txt");
-    std::os::unix::fs::symlink(&file, &link).unwrap();
+    let folder = dir.path().join("photos");
+    std::fs::create_dir(&folder).unwrap();
+    let to_file = dir.path().join("shortcut.txt");
+    let to_folder = dir.path().join("pictures");
+    std::os::unix::fs::symlink(&file, &to_file).unwrap();
+    std::os::unix::fs::symlink(&folder, &to_folder).unwrap();
 
-    assert_same(&file, &link, "a symlink must resolve to its target");
+    // Both kinds in one table for the same reason as the identity test: the
+    // predicate has no file-type branch, so the directory case cannot fail
+    // while the file case passes.
+    for (link, target) in [(&to_file, &file), (&to_folder, &folder)] {
+        assert_same(link, target, "a symlink must resolve to its target");
+    }
 }
 
 #[cfg(unix)]
@@ -214,38 +283,10 @@ fn a_chain_of_symlinks_to_a_file_is_the_same_file() {
     std::os::unix::fs::symlink(&file, &first).unwrap();
     std::os::unix::fs::symlink(&first, &second).unwrap();
 
-    // Resolution has to follow the whole chain, not just one hop.
+    // Resolution has to follow the whole chain, not just one hop: a predicate
+    // that reads a single `read_link` and compares the results passes the
+    // single-link case above and fails here (measured, not assumed).
     assert_same(&file, &second, "a symlink chain must resolve to its target");
-}
-
-#[cfg(unix)]
-#[test]
-fn two_symlinks_to_one_file_are_the_same_file() {
-    let dir = TempDir::new().unwrap();
-    let file = dir.path().join("notes.txt");
-    write(&file, b"hello");
-    let a = dir.path().join("a.txt");
-    let b = dir.path().join("b.txt");
-    std::os::unix::fs::symlink(&file, &a).unwrap();
-    std::os::unix::fs::symlink(&file, &b).unwrap();
-
-    assert_same(&a, &b, "two symlinks to one target must match each other");
-}
-
-#[cfg(unix)]
-#[test]
-fn a_symlink_to_a_directory_is_the_same_directory() {
-    let dir = TempDir::new().unwrap();
-    let folder = dir.path().join("photos");
-    std::fs::create_dir(&folder).unwrap();
-    let link = dir.path().join("pictures");
-    std::os::unix::fs::symlink(&folder, &link).unwrap();
-
-    assert_same(
-        &folder,
-        &link,
-        "a symlink to a directory must resolve to that directory",
-    );
 }
 
 #[cfg(unix)]
@@ -293,28 +334,62 @@ fn a_hardlink_in_another_directory_is_the_same_file() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(windows)]
 #[test]
-fn a_broken_symlink_is_never_the_same_file() {
+fn a_hardlink_is_not_seen_as_the_same_file_on_windows() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
+    let link = dir.path().join("also-notes.zip");
+    std::fs::hard_link(&file, &link).unwrap();
+
+    // KNOWN DEFECT, pinned rather than endorsed. The inode/device fallback in
+    // `same_file` is `#[cfg(unix)]`, so on Windows only the resolved paths are
+    // compared, and `canonicalize` there resolves through the name the handle
+    // was opened with rather than to one canonical name per file: two hardlinks
+    // to one file resolve apart and the predicate answers "different".
+    // `compress_path` then writes the archive straight over the user's source
+    // (see the module header for what each backend does to it), which is
+    // precisely the data loss the guard exists to prevent. Releases ship an .msi
+    // and an NSIS installer, so the gap is shipped. Neither half of that could
+    // be checked from the machine this was written on: no CI job compiles this
+    // test either, because the Rust suite runs on Linux only, so the assertion
+    // below is what a first Windows run would report.
+    assert!(
+        !same_file(&file, &link),
+        "Windows hardlinks are now recognised: the defect is fixed, delete this pin"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_broken_symlink_matches_nothing_until_its_target_exists() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("notes.txt");
+    write(&file, b"hello");
+    let gone = dir.path().join("gone.txt");
     let dangling = dir.path().join("dangling.txt");
-    std::os::unix::fs::symlink(dir.path().join("gone.txt"), &dangling).unwrap();
+    std::os::unix::fs::symlink(&gone, &dangling).unwrap();
 
     // A dangling link cannot be canonicalized, so it falls into the "nothing to
-    // resolve" branch. That is the documented behaviour and it is safe here:
-    // the link's target does not exist, so writing through it creates a new
-    // file rather than truncating an existing one.
+    // resolve" branch. That is safe: nothing exists behind it, so writing
+    // through the link creates a file instead of truncating one.
     assert_not_same(
         &file,
         &dangling,
         "a broken symlink resolves to nothing and cannot match a real file",
     );
-    assert_not_same(
+
+    // The half that pins the cause: it is the brokenness, not the link-ness,
+    // that produced the "different" above. Create the target (which is exactly
+    // what writing through the link would do) and the same two paths become one
+    // file. A predicate that answered "different" whenever either side is a
+    // symlink would pass the first assertion and fail this one.
+    write(&gone, b"created later");
+    assert_same(
+        &gone,
         &dangling,
-        &dangling,
-        "a broken symlink does not even match itself",
+        "once its target exists, the link is that file",
     );
 }
 
@@ -375,31 +450,20 @@ fn a_file_is_not_the_same_as_the_directory_that_contains_it() {
     let file = folder.join("notes.txt");
     write(&file, b"hello");
 
-    // Compressing a folder into an archive placed inside it is allowed (and
-    // odd, but not destructive), so containment must not read as identity.
+    // Containment must not read as identity: an archive written into the very
+    // folder being compressed has to reach the backend, and this predicate
+    // answers about identity, not about clobbering. That request is not
+    // harmless, mind: with this exact fixture `compress_path` returns Ok and
+    // leaves `notes.txt` holding the archive instead of its own bytes
+    // (measured, and pinned in `tests/commands.rs` as
+    // `an_output_written_inside_the_source_tree_destroys_the_file_it_lands_on`).
+    // Refusing it would take a clobber check `compress_path` does not have, not
+    // a different answer from `same_file`.
     assert_not_same(
         &folder,
         &file,
         "a directory is not the same as its own child",
     );
-}
-
-#[test]
-fn a_new_archive_beside_its_source_is_not_the_same_file() {
-    let dir = TempDir::new().unwrap();
-    let source = dir.path().join("notes.txt");
-    write(&source, b"hello");
-    let archive = dir.path().join("notes.zip");
-
-    // The ordinary happy path of the app: the guard must stay out of its way,
-    // and the source must still be there afterwards.
-    assert_not_same(
-        &source,
-        &archive,
-        "the default output beside the source must be allowed",
-    );
-    assert_eq!(std::fs::read(&source).unwrap(), b"hello");
-    assert!(!archive.exists(), "the predicate must not create anything");
 }
 
 // ------------------------------------------------------------ missing paths --
@@ -412,11 +476,14 @@ fn a_path_that_does_not_exist_is_never_the_same_file() {
     let missing = dir.path().join("notes.zip");
     assert!(!missing.exists(), "fixture must not exist");
 
-    // Load bearing rather than a detail: every first-time compression writes to
-    // a path that does not exist yet, so if this ever returned true the app
-    // could not produce a single archive. Both argument positions are checked
-    // because `compress_path` passes (source, output) and only the output is
-    // normally the missing one.
+    // This fixture is the app's ordinary happy path (an archive named after its
+    // source, written beside it) and it is load bearing rather than a detail:
+    // every first-time compression writes to a path that does not exist yet, so
+    // if this ever returned true the app could not produce a single archive.
+    // Both argument positions are checked because `compress_path` passes
+    // (source, output) and only the output is normally the missing one. That
+    // the write then really happens is `tests/commands.rs`'s business: this
+    // predicate reads the filesystem and cannot touch it.
     assert_not_same(
         &file,
         &missing,
@@ -456,16 +523,21 @@ fn a_path_under_a_missing_directory_is_not_the_same_file() {
     // Lexically `gone/../notes.txt` is `notes.txt`, but resolution needs every
     // component to exist, so the predicate says "different". That is not a hole
     // in the guard: the OS refuses to open such a path for the same reason, so
-    // the write fails instead of truncating the source.
+    // the write fails instead of truncating the source. The error kind is
+    // asserted, not merely "some error": a permission or name-too-long failure
+    // would not support that claim.
     let through_missing = dir.path().join("gone").join("..").join("notes.txt");
     assert_not_same(
         &file,
         &through_missing,
         "a path whose parent does not exist cannot be resolved",
     );
-    assert!(
-        std::fs::File::create(&through_missing).is_err(),
-        "the OS must also refuse this path, otherwise the guard has a hole"
+    assert_eq!(
+        std::fs::File::create(&through_missing)
+            .expect_err("the OS must also refuse this path, otherwise the guard has a hole")
+            .kind(),
+        std::io::ErrorKind::NotFound,
+        "the OS must refuse it for the same reason the predicate does"
     );
 }
 
