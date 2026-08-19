@@ -28,6 +28,17 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Integration tests (tests/) drive the commands through the crate's public
+# API. tests/remote.rs serves a real collapse-server-backend in-process on an
+# ephemeral port, the same way the CLI and collapse-remote test their own
+# halves of that exchange; a path dependency reaches across this crate's
+# workspace boundary without trouble.
+[dev-dependencies]
+collapse-server-backend = { path = "../../server-backend" }
+tempfile = "3"
+tokio = { version = "1", features = ["rt", "net"] }
+axum = "0.8"
+
 [profile.release]
 codegen-units = 1
 lto = true
