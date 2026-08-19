@@ -21,9 +21,14 @@ mode, so the picker only appears when compressing.
 apps/desktop/
   src/                Vue 3 frontend (App.vue is the UI; paths.js holds the
                       path/format helpers, split out for unit testing)
-  tests/              Vitest suite (App.test.js, paths.test.js — Tauri IPC mocked)
+  tests/              Vitest suite (App.test.js, paths.test.js, Tauri IPC mocked)
   src-tauri/          Rust backend
-    src/lib.rs        Tauri commands: is_directory, compress_path, extract_archive
+    src/lib.rs        app wiring: the plugin, the command registry, run()
+    src/commands.rs   the commands the webview invokes: is_directory,
+                      compress_path, extract_archive, check_server
+    src/paths.rs      same_file, the guard that stops an archive overwriting
+                      its own source
+    tests/            Cargo integration tests (see below)
     tauri.conf.json   window, bundle, identifier (com.cervantic.collapse)
     capabilities/     window permissions (core + dialog)
     icons/            generated icon set (from app-icon.png)
@@ -52,7 +57,8 @@ cd apps/desktop
 npm install
 npm run tauri dev       # hot-reloading dev window
 npm run tauri build     # produce installers/bundles for the current OS
-npm run test            # frontend Vitest suite (or make desktop/test) — Node only
+npm run test            # frontend Vitest suite (or make desktop/test), Node only
+make desktop/test-rust  # the src-tauri Rust suite (needs the Tauri toolchain)
 ```
 
 `tauri build` outputs to `apps/desktop/src-tauri/target/release/bundle/`:
