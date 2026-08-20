@@ -186,8 +186,13 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (286 Rust tests + 76 Vitest cases)
+make test              # run every suite (367 Rust tests + 76 Vitest cases)
+make test/rust         # only the Rust tests that need no Node toolchain (286)
 ```
+
+`make test` includes the desktop app's own Rust suite, which compiles Tauri, so
+it needs the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/)
+for your OS. `make test/rust` is the subset that does not.
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
 running the apps.
@@ -209,8 +214,9 @@ docs/          architecture.md, threat_model.md, server.md, registry.md,
 ```
 
 Each app carries its own tests, in that ecosystem's conventional place: the Rust
-crates keep Cargo integration tests in `apps/<crate>/tests/`; the desktop app
-keeps its Vitest suite in `apps/desktop/tests/`.
+crates keep Cargo integration tests in `apps/<crate>/tests/`; the desktop app has
+both, a Vitest suite in `apps/desktop/tests/` for the Vue half and Cargo
+integration tests in `apps/desktop/src-tauri/tests/` for the Rust half.
 
 ## Documentation
 

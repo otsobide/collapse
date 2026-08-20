@@ -18,7 +18,8 @@ apps/
   server-backend/  collapse-server-backend — HTTP compression server, lib + bin (src/ + tests/)
   server-frontend/ collapse-server-frontend — Vue web app for that server (src/ + tests/ = Vitest)
   server-aio/      the two above packaged into one container (a Dockerfile, no code)
-  desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
+  desktop/     collapse-desktop, the Tauri v2 desktop app (Vue + Rust;
+               tests/ = Vitest, src-tauri/tests/ = Cargo integration tests)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, server.md, desktop.md, deployment.md, git_flow.md
 ```
@@ -376,6 +377,14 @@ Each app carries its own tests, in that ecosystem's conventional place:
   `sources` cover the pure helpers, including what the app remembers between
   launches, and `App` mounts the component to check the IPC payloads and the
   destination picker.
+- `apps/desktop/src-tauri/tests/`, the Rust half, which used to have no tests
+  at all: `paths` hammers the `same_file` guard from both argument orders
+  (spellings, symlinks, hardlinks, paths that do not exist yet), `commands`
+  drives the command surface against real files and asserts the effect on disk
+  rather than only the `Result`, `remote` runs the whole remote flow against a
+  real server backend served in-process, and `ipc` reads `App.vue`, `lib.rs`
+  and the Vitest stub to prove the three stay in lockstep, since nothing type
+  checks that crossing.
 
 The Rust integration tests compile as separate crates, so they only see each
 crate's **public** surface — anything a test needs must be reachable from
