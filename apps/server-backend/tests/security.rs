@@ -19,7 +19,8 @@ use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
+    let router =
+        build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     (router, storage)
 }
 
@@ -41,7 +42,10 @@ async fn json_of(response: Response) -> serde_json::Value {
 async fn settle(router: &Router, name: &str, tar: &[u8]) -> serde_json::Value {
     let accepted = post_envelope(router, name, tar).await;
     assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-    let job_id = json_of(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = json_of(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     for _ in 0..500 {
         let request = Request::builder()
@@ -112,7 +116,11 @@ async fn a_traversing_entry_never_escapes_the_staging_area() {
     let job = settle(&router, "photos", &tar_with_smuggled_name("../escaped.txt")).await;
 
     assert_eq!(job["status"], "failed", "job was {job}");
-    assert!(!outside.exists(), "the entry escaped to {}", outside.display());
+    assert!(
+        !outside.exists(),
+        "the entry escaped to {}",
+        outside.display()
+    );
     assert!(
         !staged(&storage).iter().any(|p| p.contains("escaped")),
         "staged: {:?}",
@@ -124,7 +132,12 @@ async fn a_traversing_entry_never_escapes_the_staging_area() {
 async fn an_absolute_entry_never_escapes_the_staging_area() {
     let (router, _storage) = app();
 
-    let job = settle(&router, "photos", &tar_with_smuggled_name("/tmp/escaped.txt")).await;
+    let job = settle(
+        &router,
+        "photos",
+        &tar_with_smuggled_name("/tmp/escaped.txt"),
+    )
+    .await;
 
     // Either the extractor refuses it or it lands inside; what must never
     // happen is a write to the absolute path.
@@ -132,7 +145,10 @@ async fn an_absolute_entry_never_escapes_the_staging_area() {
         !std::path::Path::new("/tmp/escaped.txt").exists(),
         "the entry was written to an absolute path"
     );
-    assert!(job["status"] == "failed" || job["status"] == "completed", "job was {job}");
+    assert!(
+        job["status"] == "failed" || job["status"] == "completed",
+        "job was {job}"
+    );
 }
 
 /// A symlink entry must not be materialized, so nothing can be written
@@ -150,7 +166,9 @@ async fn a_symlink_entry_is_not_materialized() {
     let mut link = Header::new_gnu();
     link.set_size(0);
     link.set_mode(0o777);
-    builder.append_link(&mut link, "photos/sneak", "/etc/passwd").unwrap();
+    builder
+        .append_link(&mut link, "photos/sneak", "/etc/passwd")
+        .unwrap();
     let tar = builder.into_inner().unwrap();
 
     settle(&router, "photos", &tar).await;
@@ -177,7 +195,9 @@ async fn an_envelope_that_is_not_a_directory_is_refused() {
     let mut header = Header::new_gnu();
     header.set_size(content.len() as u64);
     header.set_mode(0o644);
-    builder.append_data(&mut header, "photos", &content[..]).unwrap();
+    builder
+        .append_data(&mut header, "photos", &content[..])
+        .unwrap();
     let tar = builder.into_inner().unwrap();
 
     let job = settle(&router, "photos", &tar).await;

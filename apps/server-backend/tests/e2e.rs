@@ -13,11 +13,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::INTERRUPTED;
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::Registry;
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
-use collapse_core::Algorithm;
 use tempfile::TempDir;
 
 /// A running `collapse-server-backend` process.
@@ -261,7 +261,10 @@ fn a_file_round_trips_through_the_whole_flow() {
     std::fs::write(&archive_path, &archive).unwrap();
     let extracted = collapse_core::extract(&archive_path, out.path()).unwrap();
     assert_eq!(extracted, vec!["notes.txt"]);
-    assert_eq!(std::fs::read(out.path().join("notes.txt")).unwrap(), content);
+    assert_eq!(
+        std::fs::read(out.path().join("notes.txt")).unwrap(),
+        content
+    );
 
     let (status, body) = delete(&server.url(&format!("/jobs/{id}")));
     assert_eq!(status, 200);
@@ -333,8 +336,14 @@ fn bad_requests_are_rejected_before_anything_is_staged() {
         ("/compress?name=../escape.txt", "a path, not a bare name"),
         ("/compress?name=sub/dir.txt", "a separator in the name"),
         ("/compress?name=notes.txt&level=9", "a level out of range"),
-        ("/compress?name=notes.txt&algorithm=rar", "an unknown format"),
-        ("/compress?name=notes.txt&envelope=zip", "an unknown envelope"),
+        (
+            "/compress?name=notes.txt&algorithm=rar",
+            "an unknown format",
+        ),
+        (
+            "/compress?name=notes.txt&envelope=zip",
+            "an unknown envelope",
+        ),
     ];
     for (query, what) in cases {
         let (status, body) = post(&server.url(query), b"payload");
@@ -697,7 +706,8 @@ fn a_stop_refuses_new_work_while_it_drains() {
     );
 
     let mut rest = Vec::new();
-    body.read_to_end(&mut rest).expect("the download still finishes");
+    body.read_to_end(&mut rest)
+        .expect("the download still finishes");
     assert!(server.await_exit(Duration::from_secs(10)));
 }
 

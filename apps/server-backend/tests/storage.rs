@@ -1,7 +1,7 @@
 //! Unit tests for the per-job on-disk staging.
 
-use collapse_server_backend::storage::{single_root_dir, Storage, UPLOAD_FILE};
 use collapse_core::Algorithm;
+use collapse_server_backend::storage::{single_root_dir, Storage, UPLOAD_FILE};
 
 fn storage() -> (Storage, tempfile::TempDir) {
     let base = tempfile::TempDir::new().unwrap();
@@ -54,10 +54,7 @@ fn input_and_output_paths_never_collide() {
 #[test]
 fn each_job_gets_its_own_directory() {
     let (storage, _base) = storage();
-    assert_ne!(
-        storage.input_path("job1"),
-        storage.input_path("job2")
-    );
+    assert_ne!(storage.input_path("job1"), storage.input_path("job2"));
 }
 
 // ------------------------------------------------------------------- saving --
@@ -92,7 +89,10 @@ fn same_file_name_in_two_jobs_does_not_collide() {
     storage.save_input("job2", b"second").unwrap();
 
     assert_eq!(std::fs::read(storage.input_path("job1")).unwrap(), b"first");
-    assert_eq!(std::fs::read(storage.input_path("job2")).unwrap(), b"second");
+    assert_eq!(
+        std::fs::read(storage.input_path("job2")).unwrap(),
+        b"second"
+    );
 }
 
 // ----------------------------------------------------------------- deletion --
@@ -123,7 +123,10 @@ fn delete_job_leaves_other_jobs_alone() {
     storage.delete_job("job1");
 
     assert!(!storage.input_path("job1").exists());
-    assert_eq!(std::fs::read(storage.input_path("job2")).unwrap(), b"second");
+    assert_eq!(
+        std::fs::read(storage.input_path("job2")).unwrap(),
+        b"second"
+    );
 }
 
 // ------------------------------------------------- unpacked tar envelopes --

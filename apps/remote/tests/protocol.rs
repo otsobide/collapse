@@ -39,7 +39,12 @@ fn job_id_is_read_from_the_accepted_body() {
 #[test]
 fn a_body_without_a_usable_job_id_is_an_error() {
     // Missing, wrong type, or null: all unusable, and none may panic.
-    for body in [json!({ "status": "queued" }), json!({ "job_id": 42 }), json!({ "job_id": null }), json!({})] {
+    for body in [
+        json!({ "status": "queued" }),
+        json!({ "job_id": 42 }),
+        json!({ "job_id": null }),
+        json!({}),
+    ] {
         let error = job_id_of(&body).expect_err("should be rejected");
         assert!(
             message_of(error).contains("no job_id"),

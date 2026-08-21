@@ -7,8 +7,8 @@
 
 use std::path::Path;
 
-use collapse_remote::{check_health, compress_path, RemoteError};
 use collapse_core::Algorithm;
+use collapse_remote::{check_health, compress_path, RemoteError};
 
 /// Serve something on an ephemeral port for the rest of the test process.
 ///
@@ -53,9 +53,7 @@ const FINISHED_JOB: &str = r#"{"job_id":"stub","name":"notes.txt","archive_name"
 /// Speak HTTP by hand, so a response can promise one length and deliver
 /// another. Nothing built on hyper will do that for you, and that is exactly
 /// the case worth testing.
-fn raw_server(
-    respond: impl Fn(&str, &mut std::net::TcpStream) + Send + Sync + 'static,
-) -> String {
+fn raw_server(respond: impl Fn(&str, &mut std::net::TcpStream) + Send + Sync + 'static) -> String {
     use std::io::{BufRead, Read};
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -89,7 +87,11 @@ fn raw_server(
                 let _ = reader.read_exact(&mut body);
             }
 
-            let path = request_line.split_whitespace().nth(1).unwrap_or("/").to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .to_string();
             respond(&path, &mut stream);
         }
     });
@@ -158,7 +160,10 @@ fn a_rejection_carries_the_servers_reason() {
         .expect_err("level 9 is out of range");
 
     match error {
-        RemoteError::Rejected { status, ref message } => {
+        RemoteError::Rejected {
+            status,
+            ref message,
+        } => {
             assert_eq!(status, 400);
             assert!(message.contains("level"), "got {message}");
         }
@@ -243,7 +248,12 @@ fn the_same_stub_telling_the_truth_delivers_the_archive() {
 fn a_status_response_cut_short_does_not_look_like_a_finished_job() {
     let server = raw_server(|path, out| {
         if path.starts_with("/jobs/") {
-            respond_with(out, 4096, &FINISHED_JOB.as_bytes()[..20], "application/json")
+            respond_with(
+                out,
+                4096,
+                &FINISHED_JOB.as_bytes()[..20],
+                "application/json",
+            )
         } else {
             respond_with(
                 out,
@@ -283,7 +293,12 @@ fn a_path_with_no_name_cannot_be_uploaded() {
 fn a_missing_source_fails_before_any_request() {
     // Pointed at an unreachable server: reaching the network would be the bug.
     let dir = tempfile::tempdir().unwrap();
-    let error = compress_path(UNREACHABLE, &dir.path().join("ghost.txt"), Algorithm::Zip, 3)
-        .expect_err("the source does not exist");
+    let error = compress_path(
+        UNREACHABLE,
+        &dir.path().join("ghost.txt"),
+        Algorithm::Zip,
+        3,
+    )
+    .expect_err("the source does not exist");
     assert!(matches!(error, RemoteError::Io(_)), "got {error:?}");
 }

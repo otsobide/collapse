@@ -138,7 +138,9 @@ pub(crate) async fn download(
 
     match job.status {
         JobStatus::Queued | JobStatus::Compressing => {
-            return Err(ApiError::Conflict("Compression is still in progress.".into()));
+            return Err(ApiError::Conflict(
+                "Compression is still in progress.".into(),
+            ));
         }
         JobStatus::Failed => {
             return Err(ApiError::Conflict(
@@ -164,7 +166,10 @@ pub(crate) async fn download(
             (header::CONTENT_TYPE, job.algorithm.media_type().to_string()),
             (
                 header::CONTENT_DISPOSITION,
-                format!("attachment; filename=\"{}\"", header_safe(&job.archive_name)),
+                format!(
+                    "attachment; filename=\"{}\"",
+                    header_safe(&job.archive_name)
+                ),
             ),
         ],
         archive,
@@ -195,7 +200,9 @@ pub(crate) async fn delete_job(
     state.registry.forget(&job_id)?;
     tracing::info!(job = %job_id, files_removed = deleted, "deleted");
 
-    Ok(Json(serde_json::json!({ "job_id": job_id, "deleted": deleted })))
+    Ok(Json(
+        serde_json::json!({ "job_id": job_id, "deleted": deleted }),
+    ))
 }
 
 /// Require `name` to be a bare file name.

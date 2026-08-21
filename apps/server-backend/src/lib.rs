@@ -139,7 +139,10 @@ pub fn build_app_with(
         .route("/docs", get(routes::docs))
         .route("/openapi.json", get(routes::openapi))
         .route("/compress", post(routes::compress_create))
-        .route("/jobs/{job_id}", get(routes::job_status).delete(routes::delete_job))
+        .route(
+            "/jobs/{job_id}",
+            get(routes::job_status).delete(routes::delete_job),
+        )
         .route("/jobs/{job_id}/download", get(routes::download))
         .layer(DefaultBodyLimit::max(max_upload_mb * 1024 * 1024))
         // Applied after the body limit, which makes it the outer layer, so an

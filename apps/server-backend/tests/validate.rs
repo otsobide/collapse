@@ -12,9 +12,9 @@ fn ordinary_file_names_are_accepted() {
         "notes.txt",
         "archive.tar.gz",
         ".hidden",
-        "..hidden",       // leading dots, but not the `..` component
-        "a..b.txt",       // `..` inside a name is just characters
-        "...",            // three dots is a legal file name
+        "..hidden", // leading dots, but not the `..` component
+        "a..b.txt", // `..` inside a name is just characters
+        "...",      // three dots is a legal file name
         "résumé.pdf",
         "file name with spaces.txt",
         "-",
@@ -38,10 +38,10 @@ fn traversal_and_separator_names_are_rejected() {
         "a/b.txt",
         "./a.txt",
         "dir/",
-        "a\\b.txt",       // backslash: a path separator on Windows
+        "a\\b.txt", // backslash: a path separator on Windows
         "..\\..\\evil",
         "\\\\server\\share",
-        "a\0b.txt",       // NUL: rejected before it can truncate a path
+        "a\0b.txt", // NUL: rejected before it can truncate a path
     ] {
         assert!(!is_bare_file_name(name), "{name:?} should be rejected");
     }
