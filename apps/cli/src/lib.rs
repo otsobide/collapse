@@ -80,8 +80,13 @@ impl From<Format> for Algorithm {
 /// What a command did, so the caller can report it.
 #[derive(Debug)]
 pub enum Outcome {
-    Compressed { output: PathBuf },
-    Extracted { output_dir: PathBuf, files: Vec<String> },
+    Compressed {
+        output: PathBuf,
+    },
+    Extracted {
+        output_dir: PathBuf,
+        files: Vec<String>,
+    },
 }
 
 impl Outcome {
@@ -92,7 +97,11 @@ impl Outcome {
                 println!("Created {}", output.display());
             }
             Outcome::Extracted { output_dir, files } => {
-                println!("Extracted {} file(s) into {}", files.len(), output_dir.display());
+                println!(
+                    "Extracted {} file(s) into {}",
+                    files.len(),
+                    output_dir.display()
+                );
                 for file in files {
                     println!("  {file}");
                 }

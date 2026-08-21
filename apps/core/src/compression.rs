@@ -96,14 +96,10 @@ pub fn compress_dir(
 /// Returns the list of extracted file paths (relative to `output_dir`).
 /// The algorithm is detected from the archive file extension.
 pub fn extract(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
-    let ext = archive
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = archive.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-    let algorithm = Algorithm::from_extension(ext).ok_or_else(|| {
-        CompressionError::Failed(format!("Unknown archive extension: .{ext}"))
-    })?;
+    let algorithm = Algorithm::from_extension(ext)
+        .ok_or_else(|| CompressionError::Failed(format!("Unknown archive extension: .{ext}")))?;
 
     match algorithm {
         Algorithm::SevenZ => extract_7z(archive, output_dir),

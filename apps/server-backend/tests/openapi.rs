@@ -15,7 +15,8 @@ use collapse_server_backend::{build_app, DEFAULT_MAX_UPLOAD_MB};
 
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
+    let router =
+        build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     (router, storage)
 }
 
@@ -29,7 +30,13 @@ async fn send(router: &Router, method: Method, uri: &str, body: &[u8]) -> Respon
 }
 
 async fn bytes_of(response: Response) -> Vec<u8> {
-    response.into_body().collect().await.unwrap().to_bytes().to_vec()
+    response
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec()
 }
 
 async fn json_of(response: Response) -> serde_json::Value {
@@ -43,7 +50,11 @@ async fn spec(router: &Router) -> serde_json::Value {
 /// Post a file and return the accepted job.
 async fn queue(router: &Router, query: &str) -> serde_json::Value {
     let response = send(router, Method::POST, &format!("/compress?{query}"), b"body").await;
-    assert_eq!(response.status(), StatusCode::ACCEPTED, "query was {query:?}");
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "query was {query:?}"
+    );
     json_of(response).await
 }
 
@@ -77,7 +88,14 @@ async fn the_docs_page_is_served_as_html() {
 #[test]
 fn the_docs_page_has_no_external_dependencies() {
     let html = collapse_server_backend::openapi::DOCS_HTML;
-    for marker in ["http://", "https://", "//cdn", "unpkg", "jsdelivr", "fonts.googleapis"] {
+    for marker in [
+        "http://",
+        "https://",
+        "//cdn",
+        "unpkg",
+        "jsdelivr",
+        "fonts.googleapis",
+    ] {
         assert!(
             !html.contains(marker),
             "the docs page references {marker}, so it would break offline"
@@ -97,7 +115,12 @@ async fn every_documented_path_is_routed() {
     let methods = ["get", "post", "put", "patch", "delete"];
 
     for (path, item) in spec["paths"].as_object().unwrap() {
-        for (method, _) in item.as_object().unwrap().iter().filter(|(m, _)| methods.contains(&m.as_str())) {
+        for (method, _) in item
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(m, _)| methods.contains(&m.as_str()))
+        {
             let uri = path.replace("{job_id}", "does-not-exist");
             let verb = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
             let response = send(&router, verb.clone(), &uri, b"").await;
@@ -125,7 +148,10 @@ async fn documented_algorithms_are_all_accepted() {
     let (router, _storage) = app();
     let spec = spec(&router).await;
 
-    let algorithms = spec["components"]["schemas"]["Algorithm"]["enum"].as_array().unwrap().clone();
+    let algorithms = spec["components"]["schemas"]["Algorithm"]["enum"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert!(!algorithms.is_empty(), "the document lists no algorithms");
 
     for algorithm in algorithms {
@@ -140,7 +166,10 @@ async fn documented_envelopes_are_all_accepted() {
     let (router, _storage) = app();
     let spec = spec(&router).await;
 
-    let envelopes = spec["components"]["schemas"]["Envelope"]["enum"].as_array().unwrap().clone();
+    let envelopes = spec["components"]["schemas"]["Envelope"]["enum"]
+        .as_array()
+        .unwrap()
+        .clone();
     assert!(!envelopes.is_empty(), "the document lists no envelopes");
 
     for envelope in envelopes {

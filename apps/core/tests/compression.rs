@@ -105,7 +105,10 @@ fn extract_dispatches_zip() {
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
     assert_eq!(files, vec!["input.txt"]);
-    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch zip");
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"dispatch zip"
+    );
 }
 
 #[test]
@@ -120,7 +123,10 @@ fn extract_dispatches_7z() {
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
     assert_eq!(files, vec!["input.txt"]);
-    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch 7z");
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"dispatch 7z"
+    );
 }
 
 #[test]
@@ -135,7 +141,10 @@ fn extract_dispatches_tar() {
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
     assert_eq!(files, vec!["input.txt"]);
-    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch tar");
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"dispatch tar"
+    );
 }
 
 #[test]

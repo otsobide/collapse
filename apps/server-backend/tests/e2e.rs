@@ -13,11 +13,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::INTERRUPTED;
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::Registry;
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
-use collapse_core::Algorithm;
 use tempfile::TempDir;
 
 /// A running `collapse-server-backend` process.
@@ -261,7 +261,10 @@ fn a_file_round_trips_through_the_whole_flow() {
     std::fs::write(&archive_path, &archive).unwrap();
     let extracted = collapse_core::extract(&archive_path, out.path()).unwrap();
     assert_eq!(extracted, vec!["notes.txt"]);
-    assert_eq!(std::fs::read(out.path().join("notes.txt")).unwrap(), content);
+    assert_eq!(
+        std::fs::read(out.path().join("notes.txt")).unwrap(),
+        content
+    );
 
     let (status, body) = delete(&server.url(&format!("/jobs/{id}")));
     assert_eq!(status, 200);
@@ -333,8 +336,14 @@ fn bad_requests_are_rejected_before_anything_is_staged() {
         ("/compress?name=../escape.txt", "a path, not a bare name"),
         ("/compress?name=sub/dir.txt", "a separator in the name"),
         ("/compress?name=notes.txt&level=9", "a level out of range"),
-        ("/compress?name=notes.txt&algorithm=rar", "an unknown format"),
-        ("/compress?name=notes.txt&envelope=zip", "an unknown envelope"),
+        (
+            "/compress?name=notes.txt&algorithm=rar",
+            "an unknown format",
+        ),
+        (
+            "/compress?name=notes.txt&envelope=zip",
+            "an unknown envelope",
+        ),
     ];
     for (query, what) in cases {
         let (status, body) = post(&server.url(query), b"payload");
@@ -685,7 +694,12 @@ fn a_stop_refuses_new_work_while_it_drains() {
         .expect("the download starts");
     let mut body = response.into_reader();
     let mut opening = vec![0u8; 8 * 1024];
-    body.read(&mut opening).unwrap();
+    // Take the count rather than dropping it: a short read is normal on a
+    // socket, and both of these tests need the download to be genuinely in
+    // flight before the server is stopped. Nothing arriving would make the
+    // rest of the test pass for the wrong reason.
+    let opened = body.read(&mut opening).expect("the body starts arriving");
+    assert!(opened > 0, "the download produced no bytes to hold open");
 
     server.terminate();
     std::thread::sleep(Duration::from_millis(300));
@@ -697,7 +711,8 @@ fn a_stop_refuses_new_work_while_it_drains() {
     );
 
     let mut rest = Vec::new();
-    body.read_to_end(&mut rest).expect("the download still finishes");
+    body.read_to_end(&mut rest)
+        .expect("the download still finishes");
     assert!(server.await_exit(Duration::from_secs(10)));
 }
 
@@ -754,7 +769,12 @@ fn a_client_that_stops_reading_cannot_hold_the_stop_open() {
         .expect("the download starts");
     let mut body = response.into_reader();
     let mut opening = vec![0u8; 8 * 1024];
-    body.read(&mut opening).unwrap();
+    // Take the count rather than dropping it: a short read is normal on a
+    // socket, and both of these tests need the download to be genuinely in
+    // flight before the server is stopped. Nothing arriving would make the
+    // rest of the test pass for the wrong reason.
+    let opened = body.read(&mut opening).expect("the body starts arriving");
+    assert!(opened > 0, "the download produced no bytes to hold open");
 
     // From here the archive is never read again, so the request stays open.
     server.terminate();

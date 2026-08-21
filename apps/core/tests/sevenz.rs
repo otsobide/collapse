@@ -209,7 +209,10 @@ fn compress_7z_dir_round_trips_tree() {
     files.sort();
     assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
     assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
-    assert_eq!(std::fs::read(out.join("photos/sub/inner.txt")).unwrap(), b"inner");
+    assert_eq!(
+        std::fs::read(out.join("photos/sub/inner.txt")).unwrap(),
+        b"inner"
+    );
 }
 
 #[test]
@@ -224,7 +227,10 @@ fn compress_7z_dir_preserves_empty_subdir() {
 
     let out = dir.path().join("out");
     extract_7z(&archive, &out).unwrap();
-    assert!(out.join("photos/empty").is_dir(), "empty subdir was not preserved");
+    assert!(
+        out.join("photos/empty").is_dir(),
+        "empty subdir was not preserved"
+    );
 }
 
 #[test]

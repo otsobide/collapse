@@ -240,7 +240,8 @@ make test            # run every test suite (all seven apps)
 make core/test       # a single app's tests (also remote/test, cli/test,
                      # server-backend/test, server-frontend/test, desktop/test)
 make desktop/dev     # run an app target (here: the Tauri app in dev mode)
-make fmt  make lint  # format / clippy the Rust workspace
+make fmt  make lint  # format / clippy both Rust workspaces
+make fmt/check       # fail instead of reformatting (the tree is rustfmt clean)
 ```
 
 Work happens on `dev`, merged into `main` per release (see

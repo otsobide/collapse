@@ -124,8 +124,7 @@ async fn main() {
     // nothing to serve.
     // Zero disables the reaper; anything else is the window a finished job has
     // to be downloaded again before it is collected.
-    let job_ttl =
-        (cli.job_ttl_minutes > 0).then(|| Duration::from_secs(cli.job_ttl_minutes * 60));
+    let job_ttl = (cli.job_ttl_minutes > 0).then(|| Duration::from_secs(cli.job_ttl_minutes * 60));
 
     let app = build_app_with(storage_dir.clone(), cli.max_upload_mb, job_ttl)
         .unwrap_or_else(|e| fatal(e.to_string()));

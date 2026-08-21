@@ -85,15 +85,13 @@ pub fn compress_zip_dir(
 
 pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
     let file = File::open(archive)?;
-    let mut zip = zip::ZipArchive::new(file)
-        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+    let mut zip =
+        zip::ZipArchive::new(file).map_err(|e| CompressionError::Failed(e.to_string()))?;
 
-    let canonical_output = output_dir
-        .canonicalize()
-        .or_else(|_| {
-            fs::create_dir_all(output_dir)?;
-            output_dir.canonicalize()
-        })?;
+    let canonical_output = output_dir.canonicalize().or_else(|_| {
+        fs::create_dir_all(output_dir)?;
+        output_dir.canonicalize()
+    })?;
 
     let mut extracted = Vec::new();
 
@@ -108,9 +106,7 @@ pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Com
         // touching the filesystem, rather than trusting a resolved-path check
         // (which fails open when the target does not exist yet).
         let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
-            CompressionError::Failed(format!(
-                "Path traversal detected in archive entry: {name}"
-            ))
+            CompressionError::Failed(format!("Path traversal detected in archive entry: {name}"))
         })?;
         let dest = canonical_output.join(&rel);
 

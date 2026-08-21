@@ -2,11 +2,11 @@
 //! restart or a crash left disagreeing, and the reaper that collects jobs
 //! nobody came back for.
 
+use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::{reap, reconcile, Reconciled, INTERRUPTED};
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE};
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
-use collapse_core::Algorithm;
 use tempfile::TempDir;
 
 /// A deadline every job is older than, and one no job is older than. Passing

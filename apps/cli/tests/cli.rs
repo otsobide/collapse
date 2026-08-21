@@ -30,7 +30,14 @@ fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
 fn compress_parses_defaults() {
     let cli = parse(&["collapse", "compress", "file.txt"]).unwrap();
     match cli.command {
-        Command::Compress { path, level, output, force, format, server } => {
+        Command::Compress {
+            path,
+            level,
+            output,
+            force,
+            format,
+            server,
+        } => {
             assert_eq!(path.to_str().unwrap(), "file.txt");
             assert_eq!(level, 3);
             assert!(output.is_none());
@@ -53,7 +60,10 @@ fn level_out_of_range_is_rejected() {
 fn unknown_format_is_rejected() {
     assert!(parse(&["collapse", "compress", "f", "-f", "rar"]).is_err());
     for fmt in ["zip", "7z", "tar"] {
-        assert!(parse(&["collapse", "compress", "f", "-f", fmt]).is_ok(), "{fmt}");
+        assert!(
+            parse(&["collapse", "compress", "f", "-f", fmt]).is_ok(),
+            "{fmt}"
+        );
     }
 }
 
@@ -77,10 +87,15 @@ fn compress_file_round_trips_for_every_format() {
         let archive = dir.path().join(format!("out.{ext}"));
 
         let output = compressed_output(run_ok(&[
-            "collapse", "compress",
+            "collapse",
+            "compress",
             src.to_str().unwrap(),
-            "-f", fmt, "-l", "2",
-            "-o", archive.to_str().unwrap(),
+            "-f",
+            fmt,
+            "-l",
+            "2",
+            "-o",
+            archive.to_str().unwrap(),
         ]));
         assert_eq!(output, archive);
         assert!(archive.exists(), "{fmt}: archive not created");
@@ -100,11 +115,23 @@ fn compress_and_extract_aliases_round_trip() {
     std::fs::write(&src, b"aliased").unwrap();
     let archive = dir.path().join("data.zip");
 
-    run_ok(&["collapse", "c", src.to_str().unwrap(), "-o", archive.to_str().unwrap()]);
+    run_ok(&[
+        "collapse",
+        "c",
+        src.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+    ]);
     assert!(archive.exists());
 
     let out = dir.path().join("out");
-    let outcome = run_ok(&["collapse", "e", archive.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    let outcome = run_ok(&[
+        "collapse",
+        "e",
+        archive.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
     match outcome {
         Outcome::Extracted { files, .. } => assert_eq!(files, vec!["data.txt"]),
         _ => panic!("expected extracted"),
@@ -121,7 +148,13 @@ fn compress_directory_archives_the_tree() {
     std::fs::write(root.join("sub/b.txt"), b"b").unwrap();
     let archive = dir.path().join("photos.zip");
 
-    run_ok(&["collapse", "compress", root.to_str().unwrap(), "-o", archive.to_str().unwrap()]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        root.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+    ]);
 
     let out = dir.path().join("out");
     let mut files = collapse_core::extract(&archive, &out).unwrap();
@@ -137,7 +170,13 @@ fn default_output_for_file_is_beside_source() {
     let src = dir.path().join("notes.txt");
     std::fs::write(&src, b"x").unwrap();
 
-    let output = compressed_output(run_ok(&["collapse", "compress", src.to_str().unwrap(), "-f", "7z"]));
+    let output = compressed_output(run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "-f",
+        "7z",
+    ]));
     assert_eq!(output.file_name().unwrap(), "notes.txt.7z");
     assert!(output.exists());
 }
@@ -153,7 +192,10 @@ fn default_output_for_directory_is_dirname_archive_beside_it() {
     assert_eq!(output.file_name().unwrap(), "photos.zip");
     assert!(output.exists());
     let out = dir.path().join("out");
-    assert_eq!(collapse_core::extract(&output, &out).unwrap(), vec!["photos/a.txt"]);
+    assert_eq!(
+        collapse_core::extract(&output, &out).unwrap(),
+        vec!["photos/a.txt"]
+    );
 }
 
 // ---------------------------------------------------------- format inference --
@@ -165,10 +207,19 @@ fn format_is_inferred_from_output_extension() {
     std::fs::write(&src, b"body").unwrap();
     // No -f, but -o names a .7z → the archive must really be 7z.
     let archive = dir.path().join("backup.7z");
-    run_ok(&["collapse", "compress", src.to_str().unwrap(), "-o", archive.to_str().unwrap()]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+    ]);
 
     let out = dir.path().join("out");
-    assert_eq!(collapse_core::extract(&archive, &out).unwrap(), vec!["notes.txt"]);
+    assert_eq!(
+        collapse_core::extract(&archive, &out).unwrap(),
+        vec!["notes.txt"]
+    );
     assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"body");
 }
 
@@ -182,8 +233,28 @@ fn tar_output_is_independent_of_level() {
 
     let a1 = dir.path().join("l1.tar");
     let a5 = dir.path().join("l5.tar");
-    run_ok(&["collapse", "compress", src.to_str().unwrap(), "-f", "tar", "-l", "1", "-o", a1.to_str().unwrap()]);
-    run_ok(&["collapse", "compress", src.to_str().unwrap(), "-f", "tar", "-l", "5", "-o", a5.to_str().unwrap()]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "-f",
+        "tar",
+        "-l",
+        "1",
+        "-o",
+        a1.to_str().unwrap(),
+    ]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "-f",
+        "tar",
+        "-l",
+        "5",
+        "-o",
+        a5.to_str().unwrap(),
+    ]);
     assert_eq!(std::fs::read(&a1).unwrap(), std::fs::read(&a5).unwrap());
 }
 
@@ -198,7 +269,13 @@ fn extract_lists_and_writes_files() {
     collapse_core::compress(&src, &archive, "data.bin", collapse_core::Algorithm::Zip, 1).unwrap();
 
     let out = dir.path().join("out");
-    let outcome = run_ok(&["collapse", "extract", archive.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    let outcome = run_ok(&[
+        "collapse",
+        "extract",
+        archive.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
     match outcome {
         Outcome::Extracted { output_dir, files } => {
             assert_eq!(output_dir, out);
@@ -219,7 +296,13 @@ fn extract_creates_deep_nested_output_dir() {
 
     let out = dir.path().join("a/b/c");
     assert!(!out.exists());
-    run_ok(&["collapse", "extract", archive.to_str().unwrap(), "-o", out.to_str().unwrap()]);
+    run_ok(&[
+        "collapse",
+        "extract",
+        archive.to_str().unwrap(),
+        "-o",
+        out.to_str().unwrap(),
+    ]);
     assert_eq!(std::fs::read(out.join("data.bin")).unwrap(), b"deep");
 }
 
@@ -246,15 +329,31 @@ fn compress_refuses_existing_output_without_force() {
 
     // Without --force: refused, existing file untouched.
     assert!(matches!(
-        run_err(&["collapse", "compress", src.to_str().unwrap(), "-o", archive.to_str().unwrap()]),
+        run_err(&[
+            "collapse",
+            "compress",
+            src.to_str().unwrap(),
+            "-o",
+            archive.to_str().unwrap()
+        ]),
         CliError::OutputExists(_)
     ));
     assert_eq!(std::fs::read(&archive).unwrap(), b"pre-existing");
 
     // With --force: overwritten with a real archive.
-    run_ok(&["collapse", "compress", src.to_str().unwrap(), "-o", archive.to_str().unwrap(), "--force"]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        "--force",
+    ]);
     let out = dir.path().join("out");
-    assert_eq!(collapse_core::extract(&archive, &out).unwrap(), vec!["notes.txt"]);
+    assert_eq!(
+        collapse_core::extract(&archive, &out).unwrap(),
+        vec!["notes.txt"]
+    );
 }
 
 #[test]
@@ -319,7 +418,14 @@ fn compress_refuses_to_overwrite_its_own_source() {
 
     // Even with --force, writing the archive onto the source is refused.
     assert!(matches!(
-        run_err(&["collapse", "compress", src.to_str().unwrap(), "-o", src.to_str().unwrap(), "--force"]),
+        run_err(&[
+            "collapse",
+            "compress",
+            src.to_str().unwrap(),
+            "-o",
+            src.to_str().unwrap(),
+            "--force"
+        ]),
         CliError::OutputIsSource(_)
     ));
     // The original content is intact.

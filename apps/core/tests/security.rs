@@ -181,7 +181,10 @@ fn benign_nested_names_still_extract() {
         let out = dir.path().join(format!("out_{}", algo.extension()));
         let files = extract(&archive, &out).unwrap();
         assert_eq!(files, vec!["nested/dir/input.txt"], "{algo}");
-        assert_eq!(std::fs::read(out.join("nested/dir/input.txt")).unwrap(), b"safe");
+        assert_eq!(
+            std::fs::read(out.join("nested/dir/input.txt")).unwrap(),
+            b"safe"
+        );
     }
 }
 
@@ -262,7 +265,10 @@ fn tar_symlink_write_through_does_not_escape() {
         "a file escaped the output directory"
     );
     assert!(
-        out.join("sneak").symlink_metadata().map(|m| !m.file_type().is_symlink()).unwrap_or(true),
+        out.join("sneak")
+            .symlink_metadata()
+            .map(|m| !m.file_type().is_symlink())
+            .unwrap_or(true),
         "an outbound symlink was materialized"
     );
 }
@@ -303,13 +309,17 @@ fn tar_symlink_entry_is_not_materialized() {
         link.set_entry_type(EntryType::Symlink);
         link.set_size(0);
         link.set_mode(0o777);
-        builder.append_link(&mut link, "evil", "/etc/passwd").unwrap();
+        builder
+            .append_link(&mut link, "evil", "/etc/passwd")
+            .unwrap();
         let content = b"ok";
         let mut file = Header::new_gnu();
         file.set_entry_type(EntryType::Regular);
         file.set_size(content.len() as u64);
         file.set_mode(0o644);
-        builder.append_data(&mut file, "ok.txt", &content[..]).unwrap();
+        builder
+            .append_data(&mut file, "ok.txt", &content[..])
+            .unwrap();
         builder.finish().unwrap();
     }
     let out = dir.path().join("out");
@@ -353,7 +363,8 @@ fn sevenz_rejects_malicious_entry_after_benign_ones() {
         w.push_archive_entry(ok, Some(b"fine".as_slice())).unwrap();
         let mut evil = SevenZArchiveEntry::default();
         evil.name = "../escape.txt".to_string();
-        w.push_archive_entry(evil, Some(b"pwned".as_slice())).unwrap();
+        w.push_archive_entry(evil, Some(b"pwned".as_slice()))
+            .unwrap();
         w.finish().unwrap();
     }
     let out = dir.path().join("out");
