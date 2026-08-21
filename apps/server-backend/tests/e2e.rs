@@ -694,7 +694,12 @@ fn a_stop_refuses_new_work_while_it_drains() {
         .expect("the download starts");
     let mut body = response.into_reader();
     let mut opening = vec![0u8; 8 * 1024];
-    body.read(&mut opening).unwrap();
+    // Take the count rather than dropping it: a short read is normal on a
+    // socket, and both of these tests need the download to be genuinely in
+    // flight before the server is stopped. Nothing arriving would make the
+    // rest of the test pass for the wrong reason.
+    let opened = body.read(&mut opening).expect("the body starts arriving");
+    assert!(opened > 0, "the download produced no bytes to hold open");
 
     server.terminate();
     std::thread::sleep(Duration::from_millis(300));
@@ -764,7 +769,12 @@ fn a_client_that_stops_reading_cannot_hold_the_stop_open() {
         .expect("the download starts");
     let mut body = response.into_reader();
     let mut opening = vec![0u8; 8 * 1024];
-    body.read(&mut opening).unwrap();
+    // Take the count rather than dropping it: a short read is normal on a
+    // socket, and both of these tests need the download to be genuinely in
+    // flight before the server is stopped. Nothing arriving would make the
+    // rest of the test pass for the wrong reason.
+    let opened = body.read(&mut opening).expect("the body starts arriving");
+    assert!(opened > 0, "the download produced no bytes to hold open");
 
     // From here the archive is never read again, so the request stays open.
     server.terminate();
