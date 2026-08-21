@@ -9,6 +9,31 @@ on:
   pull_request:
 
 jobs:
+  # The one job that is not per-app, and so the one exception to the naming
+  # convention below. It gates nothing and depends on nothing: rustfmt needs no
+  # build, so this reports in seconds.
+  #
+  # It exists because the tree drifted out of rustfmt once already, and then a
+  # second time within the hour: two PRs that were each formatted correctly were
+  # merged one after the other, and git combined them textually, which is all it
+  # can do. Only a check that runs on the merged result catches that.
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Covers both workspaces: apps/desktop/src-tauri is its own, so a plain
+      # --all at the root does not reach it.
+      - name: Check formatting
+        run: make fmt/check
+
   # Job display names follow one convention: `test (<app>)` and `build (<app>)`,
   # so a check's name says what it does and which app it belongs to.
   #
