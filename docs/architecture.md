@@ -135,8 +135,12 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
    source.
 4. **Safety guards** (before writing anything):
    - refuse if the output would overwrite its **own source** (this would truncate
-     the source before it is read — data loss);
-   - refuse an existing output unless `--force`;
+     the source before it is read, which is data loss);
+   - refuse an existing output that sits **inside the folder being compressed**,
+     even with `--force`: the tree is listed before the archive is created, so
+     that file would be truncated and then archived in its truncated state,
+     losing it from the archive as much as from disk;
+   - refuse any other existing output unless `--force`;
    - reject a source that is neither a regular file nor a directory (e.g. a FIFO).
 5. Dispatch to `compress_dir` (directory) or `compress` (file). With
    `--server <URL>`, the source is instead compressed by a remote
@@ -332,8 +336,10 @@ archives, in the cervantic visual style (warm cream + terracotta, monospace), an
 targets macOS, Windows and Linux from one codebase.
 
 The backend exposes four Tauri commands: `is_directory` (UI icon/name hint),
-`compress_path` (dispatches file vs. folder, refuses to overwrite its own
-source, and hands the work to a remote server when one is chosen),
+`compress_path` (dispatches file vs. folder, refuses to overwrite its own source
+or a file inside the folder being compressed, replaces an existing output only
+when `overwrite` says the user agreed to it in the save dialog, and hands the
+work to a remote server when one is chosen),
 `extract_archive`, and `check_server` (a health probe for the settings panel).
 Remote work goes through [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server)
 from Rust rather than the webview, so the app's CSP stays `default-src 'self'`. Every path is chosen through the native

@@ -26,8 +26,8 @@ apps/desktop/
     src/lib.rs        app wiring: the plugin, the command registry, run()
     src/commands.rs   the commands the webview invokes: is_directory,
                       compress_path, extract_archive, check_server
-    src/paths.rs      same_file, the guard that stops an archive overwriting
-                      its own source
+    src/paths.rs      same_file and inside, the guards that stop an archive
+                      overwriting its own source or a file within it
     tests/            Cargo integration tests (see below)
     tauri.conf.json   window, bundle, identifier (com.cervantic.collapse)
     capabilities/     window permissions (core + dialog)

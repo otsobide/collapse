@@ -1139,6 +1139,7 @@ fn command_signatures_are_pinned_with_their_types() {
                 ("format", "String"),
                 ("level", "u32"),
                 ("server", "Option<String>"),
+                ("overwrite", "bool"),
             ],
         ),
         (

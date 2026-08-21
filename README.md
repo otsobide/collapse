@@ -58,8 +58,10 @@ collapse e notes.txt.zip
 Formats: `zip` (default, or inferred from `-o`'s extension), `7z`, `tar`. Level
 `1`–`5` (default `3`, ignored by tar). The archive defaults to `<source>.<ext>`
 next to the source; override with `-o`. It **won't overwrite** an existing
-archive (or its own source) unless you pass `--force`. Run `collapse --help` for
-the full surface.
+archive unless you pass `--force`, and `--force` still refuses to write onto its
+own source or onto a file inside the folder being compressed, because either
+would destroy the data instead of archiving it. Run `collapse --help` for the
+full surface.
 
 Prebuilt macOS binaries (Apple Silicon and Intel tarballs, with sha256
 checksums) are attached to every
@@ -186,8 +188,8 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (367 Rust tests + 76 Vitest cases)
-make test/rust         # only the Rust tests that need no Node toolchain (286)
+make test              # run every suite (374 Rust tests + 76 Vitest cases)
+make test/rust         # only the Rust tests that need no Node toolchain (288)
 ```
 
 `make test` includes the desktop app's own Rust suite, which compiles Tauri, so

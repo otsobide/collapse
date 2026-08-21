@@ -27,3 +27,17 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     }
     false
 }
+
+/// True when `candidate` resolves to something strictly inside `dir`.
+///
+/// Only meaningful for paths that exist, which is exactly when it matters: an
+/// archive aimed at a file that is part of the tree being archived destroys it
+/// and stores its own header bytes under that entry, because the backends list
+/// the tree before creating the output. A name nothing occupies yet cannot be
+/// harmed that way, so this answers `false` for it and lets it through.
+pub fn inside(dir: &Path, candidate: &Path) -> bool {
+    let (Ok(dir), Ok(candidate)) = (dir.canonicalize(), candidate.canonicalize()) else {
+        return false;
+    };
+    candidate != dir && candidate.starts_with(&dir)
+}
