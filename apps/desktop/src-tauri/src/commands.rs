@@ -49,9 +49,24 @@ pub fn compress_path(
     let output_path = PathBuf::from(&output);
 
     // Never write the archive onto its own source (that would truncate the
-    // source before it is read, which is irrecoverable data loss).
+    // source before it is read, which is irrecoverable data loss). This stays
+    // ahead of the check below so the more precise message wins when the output
+    // is literally the source.
     if same_file(&source, &output_path) {
         return Err("The output is the same file as the source.".to_string());
+    }
+
+    // Never replace a file that is already there. Refusing is what closes the
+    // data loss this command used to allow: the backends list the tree before
+    // creating the archive, so an output landing on an existing member of that
+    // tree was truncated to hold the archive's own header bytes, destroying the
+    // original in the archive as much as on disk. Deleting is left to whoever
+    // owns the file, because this command cannot tell an archive nobody wants
+    // from the only copy of something.
+    if output_path.exists() {
+        return Err(format!(
+            "The output already exists: {output}. Delete it first, or choose another name."
+        ));
     }
 
     match server.as_deref().filter(|s| !s.is_empty()) {

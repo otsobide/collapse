@@ -27,7 +27,7 @@ apps/desktop/
     src/commands.rs   the commands the webview invokes: is_directory,
                       compress_path, extract_archive, check_server
     src/paths.rs      same_file, the guard that stops an archive overwriting
-                      its own source
+                      its own source (an existing output is refused outright)
     tests/            Cargo integration tests (see below)
     tauri.conf.json   window, bundle, identifier (com.cervantic.collapse)
     capabilities/     window permissions (core + dialog)

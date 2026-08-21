@@ -332,8 +332,9 @@ archives, in the cervantic visual style (warm cream + terracotta, monospace), an
 targets macOS, Windows and Linux from one codebase.
 
 The backend exposes four Tauri commands: `is_directory` (UI icon/name hint),
-`compress_path` (dispatches file vs. folder, refuses to overwrite its own
-source, and hands the work to a remote server when one is chosen),
+`compress_path` (dispatches file vs. folder, refuses to overwrite its own source
+or any file already at the output path, and hands the work to a remote server
+when one is chosen),
 `extract_archive`, and `check_server` (a health probe for the settings panel).
 Remote work goes through [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server)
 from Rust rather than the webview, so the app's CSP stays `default-src 'self'`. Every path is chosen through the native

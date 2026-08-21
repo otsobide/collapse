@@ -873,37 +873,47 @@ fn the_first_failing_guard_is_the_one_reported() {
 }
 
 #[test]
-fn an_existing_unrelated_output_is_overwritten_without_warning() {
-    // Pins the real behaviour: the only guard here is "not the source itself".
-    // There is no clobber check and no `--force` equivalent, unlike the CLI, so
-    // the native save dialog's own "replace?" prompt is the sole protection an
-    // unrelated file gets. Any future caller that skips a dialog gets none.
+fn an_existing_output_is_refused_and_left_untouched() {
+    // The desktop used to overwrite whatever sat at the output path, unlike the
+    // CLI, which refuses without --force. It now refuses too, and deleting is
+    // left to whoever owns the file: this command cannot tell an archive nobody
+    // wants from the only copy of something.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
     let output = dir.path().join("out.zip");
     fs::write(&output, b"an older archive nobody asked to replace").unwrap();
 
-    compress_local(&source, &output, "zip", 3).unwrap();
+    let err = compress_local(&source, &output, "zip", 3).unwrap_err();
 
-    let bytes = fs::read(&output).unwrap();
-    assert_ne!(
-        bytes, b"an older archive nobody asked to replace",
-        "the old file survived, so a clobber guard appeared: update this test"
+    assert_eq!(
+        err,
+        format!(
+            "The output already exists: {}. Delete it first, or choose another name.",
+            output.display()
+        )
     );
-    assert_eq!(&bytes[..2], b"PK", "the output is not the new zip");
+    assert_eq!(
+        fs::read(&output).unwrap(),
+        b"an older archive nobody asked to replace",
+        "the refusal must leave the existing file exactly as it was"
+    );
+
+    // Removing it is all the caller has to do, which is what makes the refusal
+    // a speed bump rather than a dead end.
+    fs::remove_file(&output).unwrap();
+    compress_local(&source, &output, "zip", 3).expect("the path is free now");
+    assert_eq!(&fs::read(&output).unwrap()[..2], b"PK");
 }
 
 #[test]
-fn an_output_written_inside_the_source_tree_destroys_the_file_it_lands_on() {
-    // KNOWN DEFECT, pinned rather than endorsed. `same_file` only compares the
-    // source against the output, so an output *inside* the directory being
-    // archived slips through: the backend truncates it to create the archive
-    // and then archives the truncated file, storing its own header bytes under
-    // that entry. The original content is unrecoverable, from the archive as
-    // much as from disk. This is the same hazard the server backend hit when
-    // its staging layout was flat. If a containment guard is ever added, this
-    // test should be rewritten to assert the refusal, not deleted.
+fn an_output_landing_on_a_member_of_the_source_tree_is_refused() {
+    // This is the data loss the guard above exists for, and the reason it is a
+    // refusal rather than a prompt. The backends list the tree BEFORE creating
+    // the archive, so an output landing on an existing member used to be
+    // truncated to hold the archive's own header bytes: the original was then
+    // unrecoverable from the archive as much as from disk. Verified through the
+    // CLI too, where only the clobber check stood in the way.
     let dir = TempDir::new().unwrap();
     let root = dir.path().join("photos");
     fs::create_dir_all(&root).unwrap();
@@ -911,36 +921,49 @@ fn an_output_written_inside_the_source_tree_destroys_the_file_it_lands_on() {
     fs::write(&victim, b"irreplaceable member").unwrap();
     fs::write(root.join("b.txt"), b"other member").unwrap();
 
-    // The archive is asked to land on one of the files it is archiving.
-    compress_local(&root, &victim, "zip", 3).unwrap();
+    for format in FORMATS {
+        let err = compress_local(&root, &victim, format, 3).unwrap_err();
+        assert_eq!(
+            err,
+            format!(
+                "The output already exists: {}. Delete it first, or choose another name.",
+                victim.display()
+            ),
+            "{format}"
+        );
+        assert_eq!(
+            fs::read(&victim).unwrap(),
+            b"irreplaceable member",
+            "{format}: the member the archive was aimed at must survive byte for byte"
+        );
+    }
 
-    assert_ne!(
-        fs::read(&victim).unwrap(),
-        b"irreplaceable member",
-        "the source member survived, so a guard appeared: update this test"
-    );
+    // The sibling is untouched as well, so nothing was half written before the
+    // refusal.
+    assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"other member");
+}
 
-    // Rename so the extension dispatch can read it back, then look at what the
-    // archive actually stored for the file it overwrote.
-    let archive = dir.path().join("recovered.zip");
-    fs::rename(&victim, &archive).unwrap();
+#[test]
+fn an_output_inside_the_source_tree_under_a_free_name_is_still_allowed() {
+    // Deliberately NOT refused. The guard is about replacing a file, not about
+    // containment: walk_tree snapshots the entries before the archive is
+    // created, so an archive written under a name nothing occupies cannot
+    // destroy anything and cannot contain itself. It just leaves the archive
+    // inside the folder it describes, which is odd but is the caller's choice.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.txt"), b"first").unwrap();
+
+    let inside = root.join("photos.zip");
+    compress_local(&root, &inside, "zip", 3).expect("a free name inside the tree is allowed");
+
     let out_dir = dir.path().join("extracted");
-    let extracted = extract_to(&archive, &out_dir).unwrap();
-
+    let extracted = extract_to(&inside, &out_dir).unwrap();
     assert_eq!(
         listing(extracted),
-        vec!["photos/a.txt".to_string(), "photos/b.txt".to_string()]
-    );
-    // The untouched sibling round-trips fine, which is what isolates the damage
-    // to the entry the output landed on.
-    assert_eq!(
-        fs::read(out_dir.join("photos").join("b.txt")).unwrap(),
-        b"other member"
-    );
-    assert_ne!(
-        fs::read(out_dir.join("photos").join("a.txt")).unwrap(),
-        b"irreplaceable member",
-        "the archived copy is intact, so the truncation window closed: update this test"
+        vec!["photos/a.txt".to_string()],
+        "the archive lists the tree as it was before the archive existed"
     );
 }
 
