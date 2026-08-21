@@ -834,16 +834,20 @@ fn a_hardlink_to_the_source_is_refused_even_though_the_paths_differ() {
 
 #[test]
 fn the_first_failing_guard_is_the_one_reported() {
-    // Order is exists, source kind, format parse, same file. None of these
-    // orderings is data-loss relevant on its own (all four return before any
-    // backend runs, so nothing is written whichever fires); what they decide is
+    // Order is source exists, source kind, format parse, same file, output
+    // exists. None of these orderings is data-loss relevant on its own (all
+    // five return before any backend runs, so nothing is written whichever
+    // fires); what they decide is
     // which message the user gets, and a "Unknown algorithm" shown for a path
     // that is simply not there sends people hunting the wrong problem. The
     // ordering that *is* data-loss relevant, same file before any write or
     // upload, is pinned with effect checks by
     // `compressing_a_file_onto_itself_is_refused_and_leaves_it_untouched` and by
     // `an_output_equal_to_the_source_is_refused_before_any_network_io` in
-    // tests/remote.rs.
+    // tests/remote.rs. Those two also pin the last pair by construction: an
+    // output equal to the source obviously exists, so asserting the exact
+    // same-file message is what proves the coarser "already exists" refusal
+    // does not fire first and bury the useful one.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"irreplaceable").unwrap();

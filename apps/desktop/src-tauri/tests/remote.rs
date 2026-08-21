@@ -615,6 +615,46 @@ fn an_unknown_format_is_refused_before_any_network_io() {
 /// does replace the source with a zip of itself, so there the byte-for-byte
 /// assertion is the one that fails; the empty request log adds that the file
 /// was not even uploaded on the way to being destroyed.
+/// The guard added for the data loss on the local side has to hold here too,
+/// and for a stronger reason: the remote branch downloads the whole archive and
+/// only then writes it, so a refusal that came too late would have burned an
+/// upload, a compression and a download before destroying the file. The empty
+/// request log is what proves the refusal happens before any of that.
+#[test]
+fn an_existing_output_is_refused_before_any_network_io() {
+    let server = start_server();
+    for destination in [UNREACHABLE, server.url.as_str()] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let source = dir.path().join("notes.txt");
+        std::fs::write(&source, b"hello").unwrap();
+        let output = dir.path().join("out.zip");
+        std::fs::write(&output, b"an older archive nobody asked to replace").unwrap();
+
+        let error = compress_remotely(destination, &source, &output, "zip", 3)
+            .expect_err("the output already exists");
+
+        assert_eq!(
+            error,
+            format!(
+                "The output already exists: {}. Delete it first, or choose another name.",
+                output.display()
+            ),
+            "{destination}"
+        );
+        assert_eq!(
+            std::fs::read(&output).unwrap(),
+            b"an older archive nobody asked to replace",
+            "{destination}: the file that was already there must be untouched"
+        );
+    }
+
+    let requests = server.requests();
+    assert!(
+        requests.is_empty(),
+        "a request went out for an output that could never be written: {requests:?}"
+    );
+}
+
 #[test]
 fn an_output_equal_to_the_source_is_refused_before_any_network_io() {
     let server = start_server();
