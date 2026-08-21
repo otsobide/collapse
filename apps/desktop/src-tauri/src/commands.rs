@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use collapse_core::{compress, compress_dir, extract, Algorithm};
 
-use crate::paths::same_file;
+use crate::paths::{inside, same_file};
 
 /// Whether a path points at a directory (used by the UI to pick the icon and
 /// the default archive name).
@@ -29,6 +29,12 @@ pub fn is_directory(path: String) -> bool {
 /// is written to the same `output` the local path would use. This command is
 /// deliberately synchronous, so Tauri runs it on its blocking pool and the
 /// window stays responsive while the server works.
+///
+/// `overwrite` is the caller saying the user already agreed to replace what is
+/// at `output`, which is what the native save dialog asks on every platform.
+/// It is the `--force` of the CLI, and like it, it cannot buy past the two
+/// guards below: agreeing to replace a file is not agreeing to destroy the
+/// source, nor to destroy a file that is part of what is being archived.
 #[tauri::command]
 pub fn compress_path(
     path: String,
@@ -36,6 +42,7 @@ pub fn compress_path(
     format: String,
     level: u32,
     server: Option<String>,
+    overwrite: bool,
 ) -> Result<String, String> {
     let source = PathBuf::from(&path);
     if !source.exists() {
@@ -56,17 +63,29 @@ pub fn compress_path(
         return Err("The output is the same file as the source.".to_string());
     }
 
-    // Never replace a file that is already there. Refusing is what closes the
-    // data loss this command used to allow: the backends list the tree before
-    // creating the archive, so an output landing on an existing member of that
-    // tree was truncated to hold the archive's own header bytes, destroying the
-    // original in the archive as much as on disk. Deleting is left to whoever
-    // owns the file, because this command cannot tell an archive nobody wants
-    // from the only copy of something.
     if output_path.exists() {
-        return Err(format!(
-            "The output already exists: {output}. Delete it first, or choose another name."
-        ));
+        // Not even `overwrite` gets past this one. The backends list the tree
+        // before creating the archive, so an output landing on a file that is
+        // part of that tree is truncated and then archived in its truncated
+        // state: the original is lost from the archive as much as from disk,
+        // and the archive is corrupt too. Nobody agrees to that by answering a
+        // "replace this file?" prompt, so consent cannot be the thing that
+        // unlocks it.
+        if inside(&source, &output_path) {
+            return Err(format!(
+                "The output is inside the folder being compressed: {output}. \
+                 It would be destroyed instead of archived. Choose a location outside it."
+            ));
+        }
+        if !overwrite {
+            return Err(format!(
+                "The output already exists: {output}. Delete it first, or choose another name."
+            ));
+        }
+        // Deliberately NOT unlinked here. The write happens only once the
+        // archive is fully in hand (the remote path downloads it all before
+        // touching disk), so a failed run leaves the previous archive exactly
+        // as it was. Removing it up front would trade that away for nothing.
     }
 
     match server.as_deref().filter(|s| !s.is_empty()) {

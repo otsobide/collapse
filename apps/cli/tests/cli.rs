@@ -258,6 +258,60 @@ fn compress_refuses_existing_output_without_force() {
 }
 
 #[test]
+fn compress_refuses_an_output_inside_the_folder_being_compressed_even_with_force() {
+    // The archive is aimed at a file that is part of the tree it would archive.
+    // The backends list the tree before creating the output, so that file would
+    // be truncated and then archived in its truncated state: lost from the
+    // archive as much as from disk, and the archive corrupt with it. --force
+    // cannot buy past it, the same way it cannot buy past OutputIsSource, and
+    // for the same reason: the flag means "replace this file", not "destroy
+    // part of what I asked you to keep".
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    let victim = root.join("sub").join("a.txt");
+    std::fs::write(&victim, b"irreplaceable member").unwrap();
+    std::fs::write(root.join("b.txt"), b"other member").unwrap();
+
+    for force in [false, true] {
+        let mut args = vec!["collapse", "compress", root.to_str().unwrap(), "-o", victim.to_str().unwrap()];
+        if force {
+            args.push("--force");
+        }
+        assert!(matches!(run_err(&args), CliError::OutputInsideSource(_)), "force={force}");
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"irreplaceable member",
+            "force={force}: the member must survive byte for byte"
+        );
+    }
+
+    assert_eq!(std::fs::read(root.join("b.txt")).unwrap(), b"other member");
+}
+
+#[test]
+fn compress_allows_an_output_inside_the_source_tree_under_a_free_name() {
+    // Deliberately NOT refused. walk_tree snapshots the entries before the
+    // archive is created, so an archive written under a name nothing occupies
+    // can neither destroy anything nor contain itself. The guard is about
+    // replacing a file, not about geography.
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"first").unwrap();
+    let inside = root.join("photos.zip");
+
+    run_ok(&["collapse", "compress", root.to_str().unwrap(), "-o", inside.to_str().unwrap()]);
+
+    let out = dir.path().join("out");
+    assert_eq!(
+        collapse_core::extract(&inside, &out).unwrap(),
+        vec!["photos/a.txt"],
+        "the archive lists the tree as it was before the archive existed"
+    );
+}
+
+#[test]
 fn compress_refuses_to_overwrite_its_own_source() {
     let dir = tempfile::TempDir::new().unwrap();
     let src = dir.path().join("important.txt");

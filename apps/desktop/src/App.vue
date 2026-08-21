@@ -143,6 +143,12 @@ async function compress() {
       format: format.value,
       level: level.value,
       server: serverUrl.value,
+      // The save dialog asks before handing back a path that is already
+      // taken, on every platform, so reaching here means the user has
+      // already agreed to replace it. The backend still refuses the cases
+      // that prompt does not cover, such as a file inside the folder being
+      // compressed.
+      overwrite: true,
     })
     result.value = { output }
   } catch (e) {

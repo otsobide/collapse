@@ -178,14 +178,22 @@ fn compress_remotely(
         format.to_string(),
         level,
         Some(server.to_string()),
+        false,
     )
 }
 
 /// The same call with no server, for the comparisons that pin "remote and
 /// local produce the same archive".
 fn compress_locally(source: &Path, output: &Path, format: &str, level: u32) -> String {
-    compress_path(text(source), text(output), format.to_string(), level, None)
-        .expect("the local compression succeeds")
+    compress_path(
+        text(source),
+        text(output),
+        format.to_string(),
+        level,
+        None,
+        false,
+    )
+    .expect("the local compression succeeds")
 }
 
 /// Extract through the command under test and return every file with its
