@@ -402,11 +402,17 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 on pull requests, entirely on Linux runners. Every job is named
 `test (<app>)` or `build (<app>)`, so a check's name says what it does and
 which app it belongs to; the job ids match those names (`test-cli`,
-`build-cli`). Per app, tests gate the build: `test (core)` (`make core/test`)
+`build-cli`). The one exception is **`fmt`**, which is not per app: it runs
+`make fmt/check` over both Rust workspaces and **runs first, with every other
+job waiting on it**. Formatting needs no build, so it answers in seconds, and a
+tree that has to be pushed again anyway is not worth a runner compiling Tauri
+for four minutes. It is there because merging two individually well formatted
+branches can still produce an unformatted tree, and only a check on the merged
+result sees that. Per app, tests gate the build: `test (core)` (`make core/test`)
 gates `test (remote)`, `test (cli)`, `test (server-backend)` and
 `test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
-`test (server-frontend)` is independent of the Rust engine and runs on its
-own. Each app's build job runs only after its own tests pass: `build (core)`,
+`test (server-frontend)` is independent of the Rust engine and waits only on
+`fmt`. Each app's build job runs only after its own tests pass: `build (core)`,
 `build (remote)`, `build (cli)`, `build (server-backend)`,
 `build (server-frontend)` and `build (desktop)`, the last compiling the whole
 Tauri app (frontend + the `src-tauri` crate, which no other CI job compiles)

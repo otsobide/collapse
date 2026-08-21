@@ -9,12 +9,39 @@ on:
   pull_request:
 
 jobs:
+  # The one job that is not per-app, and so the one exception to the naming
+  # convention below. It runs first and everything else waits on it: rustfmt
+  # needs no build, so it answers in seconds, and a tree that has to be pushed
+  # again anyway is not worth a runner compiling Tauri for four minutes.
+  #
+  # It exists because the tree drifted out of rustfmt once already, and then a
+  # second time within the hour: two PRs that were each formatted correctly were
+  # merged one after the other, and git combined them textually, which is all it
+  # can do. Only a check that runs on the merged result catches that.
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      # Covers both workspaces: apps/desktop/src-tauri is its own, so a plain
+      # --all at the root does not reach it.
+      - name: Check formatting
+        run: make fmt/check
+
   # Job display names follow one convention: `test (<app>)` and `build (<app>)`,
   # so a check's name says what it does and which app it belongs to.
   #
   # Gate: the shared engine must pass before anything downstream runs.
   test-core:
     name: test (core)
+    needs: fmt
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -120,6 +147,9 @@ jobs:
   # mocks that in tests, so it needs no Rust at all.
   test-server-frontend:
     name: test (server-frontend)
+    # No Rust of its own, but it waits on fmt like everything else: if the tree
+    # needs another push, nothing should have started.
+    needs: fmt
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

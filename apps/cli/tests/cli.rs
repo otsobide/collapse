@@ -373,11 +373,20 @@ fn compress_refuses_an_output_inside_the_folder_being_compressed_even_with_force
     std::fs::write(root.join("b.txt"), b"other member").unwrap();
 
     for force in [false, true] {
-        let mut args = vec!["collapse", "compress", root.to_str().unwrap(), "-o", victim.to_str().unwrap()];
+        let mut args = vec![
+            "collapse",
+            "compress",
+            root.to_str().unwrap(),
+            "-o",
+            victim.to_str().unwrap(),
+        ];
         if force {
             args.push("--force");
         }
-        assert!(matches!(run_err(&args), CliError::OutputInsideSource(_)), "force={force}");
+        assert!(
+            matches!(run_err(&args), CliError::OutputInsideSource(_)),
+            "force={force}"
+        );
         assert_eq!(
             std::fs::read(&victim).unwrap(),
             b"irreplaceable member",
@@ -400,7 +409,13 @@ fn compress_allows_an_output_inside_the_source_tree_under_a_free_name() {
     std::fs::write(root.join("a.txt"), b"first").unwrap();
     let inside = root.join("photos.zip");
 
-    run_ok(&["collapse", "compress", root.to_str().unwrap(), "-o", inside.to_str().unwrap()]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        root.to_str().unwrap(),
+        "-o",
+        inside.to_str().unwrap(),
+    ]);
 
     let out = dir.path().join("out");
     assert_eq!(
