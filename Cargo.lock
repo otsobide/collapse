@@ -309,7 +309,7 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
 name = "collapse-cli"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "clap",
@@ -323,7 +323,7 @@ dependencies = [
 
 [[package]]
 name = "collapse-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "same-file",
  "serde",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "collapse-remote"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "collapse-core",
@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "collapse-server-backend"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "axum",
  "clap",

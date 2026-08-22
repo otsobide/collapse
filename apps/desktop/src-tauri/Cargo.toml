@@ -1,6 +1,6 @@
 [package]
 name = "collapse-desktop"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 description = "Collapse — a small, fast file compressor"
 authors = ["cervantic"]
