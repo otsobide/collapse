@@ -474,7 +474,9 @@ jobs:
 
   # Compiles the whole desktop app (frontend + the src-tauri Rust crate,
   # which no other CI job compiles) without bundling installers. Needs the
-  # Tauri system libraries on Linux.
+  # Tauri system libraries on Linux. This is the Linux leg, and unlike the two
+  # below it runs everywhere, so a feature branch still learns whether the app
+  # compiles at all.
   build-desktop:
     name: build (desktop)
     needs: [test-desktop, test-desktop-rust, test-cross]
@@ -529,4 +531,72 @@ jobs:
             ${{ runner.os }}-cargo-desktop-
 
       - name: Compile the desktop app
+        run: make desktop/compile
+
+  # The same compile on the other two platforms it ships to, and only on the
+  # branches that ship: any push to dev or main, and any pull request from dev,
+  # from main or from a release/* branch.
+  #
+  # The gate is inherited rather than repeated. test-cross already carries that
+  # branch expression, so requiring it to have SUCCEEDED (not "succeeded or was
+  # skipped", which is what the Linux leg above accepts) is exactly what limits
+  # these two to those branches: everywhere else test-cross is skipped and this
+  # job goes with it.
+  #
+  # Compile, not bundle. Producing the .dmg, .msi and NSIS installers is
+  # release.yml's job and costs far more; what is worth knowing on every push to
+  # a shipping branch is that the app still builds on each platform at all,
+  # which nothing checked before.
+  build-desktop-cross:
+    name: build (desktop, ${{ matrix.label }})
+    needs: [test-desktop, test-desktop-rust, test-cross]
+    if: >-
+      always() &&
+      needs.test-desktop.result == 'success' &&
+      needs.test-desktop-rust.result == 'success' &&
+      needs.test-cross.result == 'success'
+    strategy:
+      # One platform failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Neither runner needs anything installed for Tauri: Xcode command line
+      # tools on macOS, and the MSVC toolchain, the Windows SDK that
+      # tauri-winres needs for rc.exe, and WebView2 on Windows are all on the
+      # images. Only Linux needs the webkit2gtk packages the leg above installs.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Cache cargo (desktop workspace)
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-desktop-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-desktop-
+
+      # bash for the same reason the other Windows steps say so: the make
+      # targets are POSIX recipes. Harmless on macOS.
+      - name: Compile the desktop app
+        shell: bash
         run: make desktop/compile

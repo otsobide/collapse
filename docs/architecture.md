@@ -446,6 +446,16 @@ compiled the desktop crate for Windows, which is exactly why the gap went
 unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
 a developer's own machine ever ran the desktop suite there.
 
+The desktop app is **compiled on all three platforms** on the branches that
+ship: `build (desktop)` on Linux everywhere, plus `build (desktop, macos)` and
+`build (desktop, windows)` under the same gate as the cross-platform tests. They
+compile rather than bundle, since producing the `.dmg`, `.msi` and NSIS
+installers is `release.yml`'s job; what is worth knowing on every push to `dev`
+is that the app still builds on each platform at all, which nothing checked
+before. Their gate is inherited rather than repeated: requiring `test-cross` to
+have *succeeded*, where the Linux leg accepts *succeeded or skipped*, is what
+confines them to those branches.
+
 **Every Rust build waits on the cross-platform pair as well as on its own
 tests**, so nothing is built while its behaviour on the platforms it ships to
 is unproven. `build (desktop)` waits on all three of the suites that cover it,
