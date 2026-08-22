@@ -7,6 +7,9 @@ on:
   push:
     branches: [main, dev]
   pull_request:
+  # Lets anyone run the full matrix on demand. GitHub only offers this once the
+  # workflow is on the default branch, so it is here for later rather than now.
+  workflow_dispatch:
 
 jobs:
   # The one job that is not per-app, and so the one exception to the naming
@@ -228,28 +231,53 @@ jobs:
       - name: Run the Rust suite
         run: make desktop/test-rust
 
-  # The same src-tauri suite on Windows. A separate job rather than a matrix leg
-  # on the one above: the two need different setup (apt webkit2gtk on Linux,
-  # nothing here), build (desktop) gates on the Linux suite alone and a matrix
-  # would make it wait for both, and a matrix would rename test (desktop, rust),
-  # which silently unbinds any ruleset check pointing at that name.
+  # The whole Rust suite on the two platforms Linux cannot speak for. Linux
+  # runs it on every push and every pull request; these two are reserved for
+  # the branches that ship, because a macOS or Windows runner costs several
+  # times a Linux one in billed minutes and feature work does not need them.
+  #
+  # They run when the code is on, or heading to, a shipping branch:
+  #   - any push to dev or main (the `on:` block already limits pushes to those)
+  #   - a pull request FROM dev (the release PR into main), from main (a
+  #     back-merge) or from a release/* branch
+  # A pull request from feature/* or hotfix/* therefore stays Linux only, and
+  # picks these up when it lands on dev. When such a branch does touch
+  # platform-specific code, label the pull request `full-matrix` to ask for
+  # them anyway rather than renaming the branch.
   #
   # Windows is where the file identity guard matters most: NTFS hardlinks are
-  # the case it exists for, and the comparison used to be #[cfg(unix)], so the
-  # guard did not exist there at all. No CI job had ever compiled this crate for
-  # Windows, which is why nobody saw it.
-  test-desktop-rust-windows:
-    name: test (desktop, rust, windows)
+  # the case it exists for, and the comparison was #[cfg(unix)], so the guard
+  # did not exist there at all. macOS is where the .dmg ships, and until now
+  # nothing but a developer's own machine ever ran this suite there.
+  test-cross:
+    name: test (rust, ${{ matrix.label }})
     needs: test-core
-    runs-on: windows-latest
-    timeout-minutes: 30
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.head_ref == 'dev' ||
+      github.head_ref == 'main' ||
+      startsWith(github.head_ref, 'release/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-matrix')
+    strategy:
+      # One platform failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      # windows-latest already carries the MSVC toolchain and the Windows SDK
-      # that tauri-winres needs for rc.exe, and WebView2 as well, so the stable
-      # host triple is all that is missing. These tests never open a window.
+      # Both runner images already carry what Tauri needs: Xcode command line
+      # tools on macOS, and the MSVC toolchain, the Windows SDK that
+      # tauri-winres needs for rc.exe, and WebView2 on Windows. These tests
+      # never open a window.
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -260,23 +288,30 @@ jobs:
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
 
-      # runner.os is "Windows" here and "Linux" there, so this cannot collide
-      # with the Linux desktop cache despite the identical suffix.
-      - name: Cache cargo (desktop workspace)
+      # runner.os distinguishes these from each other and from the Linux jobs,
+      # so the three cannot collide despite the shared suffix.
+      - name: Cache cargo
         uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            target
             apps/desktop/src-tauri/target
-          key: ${{ runner.os }}-cargo-desktop-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-desktop-
+            ${{ runner.os }}-cargo-cross-
 
       # bash, not pwsh, for the same reason release.yml's Windows job says so:
       # the make targets assume a POSIX shell, and Git Bash on PATH is what
-      # makes GNU make pick sh.exe for its recipes instead of cmd.exe.
-      - name: Run the Rust suite
+      # makes GNU make pick sh.exe for its recipes instead of cmd.exe. Harmless
+      # on macOS, where bash is the default anyway.
+      - name: Run the workspace suite
+        shell: bash
+        run: make test/rust
+
+      # Separate step so a failure says which half broke without reading a log.
+      - name: Run the desktop suite
         shell: bash
         run: make desktop/test-rust
 

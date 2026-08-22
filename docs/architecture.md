@@ -430,14 +430,21 @@ result sees that. Per app, tests gate the build: `test (core)` (`make core/test`
 gates `test (remote)`, `test (cli)`, `test (server-backend)` and
 `test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
 `test (server-frontend)` is independent of the Rust engine and waits only on
-`fmt`. The desktop's Rust suite runs twice, on `ubuntu-latest` as
-`test (desktop, rust)` and on `windows-latest` as `test (desktop, rust, windows)`.
-Two jobs rather than a matrix leg: they need different setup (webkit2gtk on
-Linux, nothing on Windows), `build (desktop)` gates on the Linux one alone, and
-a matrix would rename the existing job, which silently unbinds any ruleset check
-pointing at that name. Windows is where the file identity guard matters most,
-and no CI job had ever compiled this crate for Windows before, which is exactly
-why the gap there went unseen.
+`fmt`. **Linux runs everything, on every push and every pull request.** macOS and
+Windows run the whole Rust suite too, as `test (rust, macos)` and
+`test (rust, windows)`, but only for the branches that ship: any push to `dev`
+or `main`, and any pull request from `dev`, from `main`, or from a `release/*`
+branch. A `feature/*` or `hotfix/*` pull request stays Linux only and picks
+them up when it lands on `dev`, because those runners cost several times a
+Linux one per minute. When such a branch does touch platform-specific code,
+labelling the pull request `full-matrix` asks for them anyway.
+
+The two exist because Linux cannot speak for either. Windows is where the file
+identity guard in `paths.rs` matters most, and its comparison used to be
+`#[cfg(unix)]`, so the guard did not exist there at all; no CI job had ever
+compiled the desktop crate for Windows, which is exactly why the gap went
+unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
+a developer's own machine ever ran the desktop suite there.
 
 Each app's build job runs only after its own tests pass: `build (core)`,
 `build (remote)`, `build (cli)`, `build (server-backend)`,
