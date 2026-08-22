@@ -446,6 +446,13 @@ compiled the desktop crate for Windows, which is exactly why the gap went
 unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
 a developer's own machine ever ran the desktop suite there.
 
+`build (desktop)` waits on all three of the suites that cover it, the two
+Linux jobs and the cross-platform pair, so the app cannot be built while its
+behaviour on the platforms it ships to is unproven. It is spelled out with an
+explicit `if` rather than the usual `always() && !failure` idiom, because a job
+skipped for being gated off and a job skipped because something upstream failed
+both report `skipped`, and that idiom cannot tell them apart.
+
 Each app's build job runs only after its own tests pass: `build (core)`,
 `build (remote)`, `build (cli)`, `build (server-backend)`,
 `build (server-frontend)` and `build (desktop)`, the last compiling the whole

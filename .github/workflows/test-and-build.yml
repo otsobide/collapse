@@ -449,7 +449,24 @@ jobs:
   # Tauri system libraries on Linux.
   build-desktop:
     name: build (desktop)
-    needs: [test-desktop, test-desktop-rust]
+    needs: [test-desktop, test-desktop-rust, test-cross]
+    # The desktop's coverage is split across three jobs, so waiting on only the
+    # two Linux ones would let the app build while its behaviour on the two
+    # platforms it ships to was still unproven. That is the exact shape of the
+    # bug this branch fixes, so it should not be possible here either.
+    #
+    # Spelled out rather than the usual `always() && !failure` idiom, which is
+    # wrong twice over. A skipped dependency skips this job, so test-cross being
+    # gated off on a feature branch would take the desktop build with it; and a
+    # job skipped because something upstream FAILED also reports `skipped`, so
+    # the idiom would happily build the desktop after test (core) had failed.
+    # This says what it means: both Linux suites must have passed, and the cross
+    # platform pair must have passed or not been asked for.
+    if: >-
+      always() &&
+      needs.test-desktop.result == 'success' &&
+      needs.test-desktop-rust.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
