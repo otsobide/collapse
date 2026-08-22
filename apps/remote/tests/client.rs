@@ -6,6 +6,7 @@
 //! server rejection, and the client-side refusal of an unusable source.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use collapse_core::Algorithm;
 use collapse_remote::{check_health, compress_path, RemoteError};
@@ -53,7 +54,13 @@ const FINISHED_JOB: &str = r#"{"job_id":"stub","name":"notes.txt","archive_name"
 /// Speak HTTP by hand, so a response can promise one length and deliver
 /// another. Nothing built on hyper will do that for you, and that is exactly
 /// the case worth testing.
-fn raw_server(respond: impl Fn(&str, &mut std::net::TcpStream) + Send + Sync + 'static) -> String {
+///
+/// The responder is handed the request target and the request body, so a test
+/// can also assert on what the client uploaded, not only on what it does with
+/// the answer.
+fn raw_server(
+    respond: impl Fn(&str, &[u8], &mut std::net::TcpStream) + Send + Sync + 'static,
+) -> String {
     use std::io::{BufRead, Read};
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -82,8 +89,8 @@ fn raw_server(respond: impl Fn(&str, &mut std::net::TcpStream) + Send + Sync + '
                     length = value.trim().parse().unwrap_or(0);
                 }
             }
+            let mut body = vec![0u8; length];
             if length > 0 {
-                let mut body = vec![0u8; length];
                 let _ = reader.read_exact(&mut body);
             }
 
@@ -92,7 +99,7 @@ fn raw_server(respond: impl Fn(&str, &mut std::net::TcpStream) + Send + Sync + '
                 .nth(1)
                 .unwrap_or("/")
                 .to_string();
-            respond(&path, &mut stream);
+            respond(&path, &body, &mut stream);
         }
     });
 
@@ -110,6 +117,11 @@ fn respond_with(out: &mut std::net::TcpStream, promised: usize, body: &[u8], con
     let _ = out.write_all(head.as_bytes());
     let _ = out.write_all(body);
     let _ = out.flush();
+    // Half-close explicitly instead of letting the drop do it: an orderly FIN
+    // is what tells the client "the body ends here", and dropping a socket is
+    // the one place where that can come out as a reset instead, which the
+    // client would report as a different error.
+    let _ = out.shutdown(std::net::Shutdown::Write);
 }
 
 // ------------------------------------------------------------ health probe --
@@ -183,7 +195,7 @@ fn a_rejection_carries_the_servers_reason() {
 #[test]
 fn a_download_that_stops_early_is_an_error_not_a_short_archive() {
     let promised = 200_000;
-    let server = raw_server(move |path, out| {
+    let server = raw_server(move |path, _body, out| {
         if path.ends_with("/download") {
             respond_with(out, promised, &vec![b'A'; promised / 2], "application/zip");
         } else {
@@ -219,7 +231,7 @@ fn a_download_that_stops_early_is_an_error_not_a_short_archive() {
 fn the_same_stub_telling_the_truth_delivers_the_archive() {
     let archive = vec![b'A'; 200_000];
     let served = archive.clone();
-    let server = raw_server(move |path, out| {
+    let server = raw_server(move |path, _body, out| {
         if path.ends_with("/download") {
             respond_with(out, served.len(), &served, "application/zip");
         } else {
@@ -246,7 +258,7 @@ fn the_same_stub_telling_the_truth_delivers_the_archive() {
 /// worse, as an empty job.
 #[test]
 fn a_status_response_cut_short_does_not_look_like_a_finished_job() {
-    let server = raw_server(|path, out| {
+    let server = raw_server(|path, _body, out| {
         if path.starts_with("/jobs/") {
             respond_with(
                 out,
@@ -276,17 +288,102 @@ fn a_status_response_cut_short_does_not_look_like_a_finished_job() {
     );
 }
 
+// ------------------------------------------------- the directory envelope --
+
+/// What a directory looks like on the wire.
+///
+/// A tar's entry names are forward-slash separated by the format itself, on
+/// every platform. A client that let a native separator through would upload
+/// `photos\a.txt`, which is one flat file name to every other tool and to the
+/// server's single-root check, so the failure would be a silently mangled
+/// archive rather than an error. Nothing else in this crate's suite sends a
+/// directory, so without this the shape of the envelope would only ever be
+/// observed indirectly, on Unix, through the CLI's suite.
+#[test]
+fn a_directory_is_uploaded_as_a_tar_with_forward_slash_entry_names() {
+    /// Requests the stub kept: the target (path and query) and the body.
+    type Captured = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+    let uploads: Captured = Arc::default();
+    let captured = Arc::clone(&uploads);
+
+    let server = raw_server(move |path, body, out| {
+        if path.starts_with("/compress") {
+            captured
+                .lock()
+                .unwrap()
+                .push((path.to_string(), body.to_vec()));
+        }
+        if path.ends_with("/download") {
+            respond_with(out, 3, b"zip", "application/zip");
+        } else {
+            respond_with(
+                out,
+                FINISHED_JOB.len(),
+                FINISHED_JOB.as_bytes(),
+                "application/json",
+            );
+        }
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("a.txt"), b"first").unwrap();
+    std::fs::write(root.join("sub/b.txt"), b"second").unwrap();
+
+    compress_path(&server, &root, Algorithm::Zip, 3).expect("the stub completes the job");
+
+    let (target, envelope) = uploads
+        .lock()
+        .unwrap()
+        .pop()
+        .expect("the directory reached the server");
+    assert!(target.contains("envelope=tar"), "got {target}");
+    assert!(target.contains("name=photos"), "got {target}");
+
+    // Read the names out of the tar as bytes rather than as paths: the archive
+    // is the contract, and a stray separator has to stay visible whatever
+    // platform reads it back.
+    let mut archive = tar::Archive::new(std::io::Cursor::new(envelope));
+    let names: Vec<String> = archive
+        .entries()
+        .expect("the envelope is a tar")
+        .map(|entry| String::from_utf8_lossy(&entry.expect("a readable entry").path_bytes()).into())
+        .collect();
+
+    // The two directory entries carry no trailing slash: they are typed as
+    // directories in the header instead, which is what the server reads.
+    assert_eq!(
+        names,
+        ["photos", "photos/a.txt", "photos/sub", "photos/sub/b.txt"],
+        "the envelope must be forward-slash separated on every platform"
+    );
+}
+
 // ------------------------------------------------------------ bad sources --
 
 #[test]
 fn a_path_with_no_name_cannot_be_uploaded() {
-    // The root has no file name, so there is nothing to call the archive.
-    let error = compress_path(UNREACHABLE, Path::new("/"), Algorithm::Zip, 3)
-        .expect_err("the root has no file name");
-    assert!(
-        matches!(error, RemoteError::Packing { .. }),
-        "got {error:?}"
-    );
+    // A root has no file name, so there is nothing to call the archive. `/`
+    // is a root on Windows too (it parses as a bare root component, with no
+    // name), and a drive root is the shape a Windows caller actually reaches:
+    // a naive split on separators would hand the server `C:` as the arcname.
+    // `cfg!` rather than `#[cfg]` so both arms keep compiling everywhere.
+    let roots: &[&str] = if cfg!(windows) {
+        &["/", "C:\\"]
+    } else {
+        &["/"]
+    };
+
+    for root in roots {
+        let error = compress_path(UNREACHABLE, Path::new(root), Algorithm::Zip, 3)
+            .expect_err("a root has no file name");
+        assert!(
+            matches!(error, RemoteError::Packing { .. }),
+            "{root}: got {error:?}"
+        );
+    }
 }
 
 #[test]

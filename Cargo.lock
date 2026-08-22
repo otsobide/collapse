@@ -343,6 +343,7 @@ dependencies = [
  "collapse-core",
  "collapse-server-backend",
  "serde_json",
+ "tar",
  "tempfile",
  "thiserror",
  "tokio",

@@ -11,6 +11,18 @@ fn source_file(dir: &std::path::Path) -> std::path::PathBuf {
     p
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The entry names inside the archive are forward-slash separated everywhere;
+/// `extract_7z` rebuilds each one as a `PathBuf` before stringifying it, so
+/// the listing (and only the listing) comes back with `\` on Windows.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 #[test]
 fn creates_valid_7z() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -73,7 +85,7 @@ fn extract_7z_returns_file_list() {
 
     let out = dir.path().join("extracted");
     let files = extract_7z(&archive, &out).unwrap();
-    assert_eq!(files, vec!["sample.txt"]);
+    assert_eq!(listing(files), vec!["sample.txt"]);
 }
 
 #[test]
@@ -98,7 +110,7 @@ fn extract_7z_preserves_arcname() {
 
     let out = dir.path().join("extracted");
     let files = extract_7z(&archive, &out).unwrap();
-    assert_eq!(files, vec!["renamed.dat"]);
+    assert_eq!(listing(files), vec!["renamed.dat"]);
     assert!(out.join("renamed.dat").exists());
 }
 
@@ -141,9 +153,8 @@ fn extract_7z_lists_nested_files_recursively() {
     }
 
     let out = dir.path().join("extracted");
-    let mut files = extract_7z(&archive, &out).unwrap();
-    files.sort();
-    assert_eq!(files, vec!["a/b/deep.txt", "a/mid.txt", "top.txt"]);
+    let files = extract_7z(&archive, &out).unwrap();
+    assert_eq!(listing(files), vec!["a/b/deep.txt", "a/mid.txt", "top.txt"]);
     assert!(out.join("a/b/deep.txt").exists());
 }
 
@@ -205,9 +216,11 @@ fn compress_7z_dir_round_trips_tree() {
     compress_7z_dir(&root, &archive, 3).unwrap();
 
     let out = dir.path().join("out");
-    let mut files = extract_7z(&archive, &out).unwrap();
-    files.sort();
-    assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
+    let files = extract_7z(&archive, &out).unwrap();
+    assert_eq!(
+        listing(files),
+        vec!["photos/sub/inner.txt", "photos/top.txt"]
+    );
     assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
     assert_eq!(
         std::fs::read(out.join("photos/sub/inner.txt")).unwrap(),

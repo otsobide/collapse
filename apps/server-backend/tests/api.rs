@@ -59,8 +59,12 @@ async fn error_detail(response: Response) -> String {
 
 /// Poll the status endpoint until the job leaves the in-progress states,
 /// returning its final JSON.
+///
+/// The budget is deliberately generous (about thirty seconds): compressing
+/// these payloads takes milliseconds anywhere, but a loaded CI runner can stall
+/// a worker for a while, and a flaky timeout reads as a product failure.
 async fn wait_for_job(router: &Router, job_id: &str) -> serde_json::Value {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let response = request(router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
         assert_eq!(response.status(), StatusCode::OK);
         let job = body_json(response).await;
@@ -97,6 +101,23 @@ async fn compress_and_download(router: &Router, query: &str, body: &[u8]) -> Res
     response
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The engine builds the returned paths with the platform separator, so on
+/// Windows the same archive comes back as `photos\a.txt`. The archive itself
+/// is identical either way, which is why this normalizes rather than asserting
+/// less. Sorting on top of it makes the order independent of whatever the
+/// extractor happened to walk first.
+fn listing(files: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = files
+        .into_iter()
+        .map(|(path, content)| (path.replace('\\', "/"), content))
+        .collect();
+    out.sort();
+    out
+}
+
 /// Write the archive bytes to disk and extract them with the core engine,
 /// returning the extracted (relative path, content) pairs.
 fn extract_archive(bytes: &[u8], extension: &str) -> Vec<(String, Vec<u8>)> {
@@ -106,13 +127,15 @@ fn extract_archive(bytes: &[u8], extension: &str) -> Vec<(String, Vec<u8>)> {
 
     let out = dir.path().join("out");
     let files = collapse_core::extract(&archive, &out).unwrap();
-    files
-        .into_iter()
-        .map(|rel| {
-            let content = std::fs::read(out.join(&rel)).unwrap();
-            (rel, content)
-        })
-        .collect()
+    listing(
+        files
+            .into_iter()
+            .map(|rel| {
+                let content = std::fs::read(out.join(&rel)).unwrap();
+                (rel, content)
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -275,8 +298,9 @@ async fn a_tar_envelope_is_unwrapped_and_compressed_as_a_tree() {
         "attachment; filename=\"photos.zip\""
     );
 
-    let mut extracted = extract_archive(&body_bytes(response).await, "zip");
-    extracted.sort();
+    // `extract_archive` normalizes and sorts, so these read the same on a
+    // platform whose separator is not `/`.
+    let extracted = extract_archive(&body_bytes(response).await, "zip");
     assert_eq!(
         extracted,
         vec![
@@ -500,8 +524,11 @@ async fn compress_rejects_body_over_the_limit() {
 
 #[tokio::test]
 async fn content_disposition_strips_header_breaking_characters() {
-    // %22 is a double quote in the file name: legal on disk, but it must not
-    // escape the quoted Content-Disposition value.
+    // %22 is a double quote in the file name: legal on a POSIX disk, but it
+    // must not escape the quoted Content-Disposition value. The name only ever
+    // becomes an arcname and a header here, never a path, which is what keeps
+    // this runnable on Windows, where a quote is not a legal file name: do not
+    // extend it to extract the archive.
     let (router, _storage) = app();
     let response = compress_and_download(&router, "name=we%22ird.txt", b"x").await;
 

@@ -5,6 +5,7 @@
 //! the parent directory.
 
 use std::io::Write;
+use std::path::Path;
 
 use collapse_core::compression::{
     compress_7z_dir, compress_tar_dir, compress_zip_dir, extract_7z, extract_tar, extract_zip,
@@ -14,6 +15,18 @@ use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 use tar::{Builder, EntryType, Header};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
+
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The entry names inside the archive are forward-slash separated everywhere;
+/// the extractors rebuild each one as a `PathBuf` before stringifying it, so
+/// the listing (and only the listing) comes back with `\` on Windows.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
 
 // -- archive builders with a chosen (malicious) entry name --
 
@@ -143,6 +156,181 @@ fn tar_rejects_parent_dir_traversal() {
     assert_contained(extract_tar(&archive, &out), &dir.path().join("escape.txt"));
 }
 
+// -- entry names that only Windows reads as an escape --
+//
+// Everything above spells traversal the Unix way. These four are the spellings
+// a Windows machine resolves and a Unix machine does not, added rather than
+// substituted so both platforms keep the coverage they had. What is asserted
+// is deliberately not the same sentence on both:
+//
+// * Windows: `\` is a path separator and a drive or share is a path root, so
+//   each name genuinely points out of the output directory and the backend
+//   must refuse it (or, for tar, strip it back inside; see below).
+// * Unix: none of these strings contains a separator, so each is one ordinary
+//   (if ugly) file name that belongs *inside* the output directory. Refusing
+//   them there would be a bug of its own, and asserting the contained result
+//   is what stops these cases from silently testing nothing off Windows.
+//
+// The one sentence that holds everywhere is containment, which every case
+// checks last: whatever the platform made of the name, the parent of the
+// output directory gained nothing.
+
+/// Traversal spelled with backslashes: `..` plus a name once Windows splits
+/// them, one file name on Unix.
+const BACKSLASH_TRAVERSAL_NAMES: [&str; 2] = [r"..\escape.txt", r"sub\..\..\escape.txt"];
+
+/// Roots Unix has no notion of: a drive-relative name (which Windows resolves
+/// against the current directory *of that drive*, so it is not even anchored
+/// at the drive root) and a UNC share.
+const WINDOWS_ROOTED_NAMES: [&str; 2] = [r"C:escape.txt", r"\\server\share\escape.txt"];
+
+/// Both groups at once, for the backends whose guard refuses every one of
+/// them (only tar splits them; see `tar_contains_windows_shaped_...`).
+fn windows_shaped_names() -> impl Iterator<Item = &'static str> {
+    BACKSLASH_TRAVERSAL_NAMES
+        .into_iter()
+        .chain(WINDOWS_ROOTED_NAMES)
+}
+
+/// Assert the attempt wrote nothing beside the output directory: after it, the
+/// parent holds the archive and `out`, and nothing else. Every extractor
+/// creates `out` before reading the first entry, so it is expected even when
+/// the entry was refused.
+fn assert_only_the_output_dir(parent: &Path, archive: &Path, out: &Path, what: &str) {
+    let mut found: Vec<String> = std::fs::read_dir(parent)
+        .expect("read the parent of the output dir")
+        .map(|entry| {
+            entry
+                .expect("read a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    found.sort();
+    let mut expected = vec![
+        archive.file_name().unwrap().to_string_lossy().into_owned(),
+        out.file_name().unwrap().to_string_lossy().into_owned(),
+    ];
+    expected.sort();
+    assert_eq!(
+        found, expected,
+        "{what}: something was written beside the output directory"
+    );
+}
+
+/// The Unix reading of a Windows-shaped name: one entry, extracted under that
+/// exact name, inside the output directory.
+fn assert_extracted_as_one_contained_file(
+    result: Result<Vec<String>, impl std::fmt::Debug>,
+    out: &Path,
+    name: &str,
+) {
+    let files = result.expect("a name with no separator on this platform must extract");
+    assert_eq!(
+        files,
+        vec![name.to_string()],
+        "{name}: expected exactly this entry, reported as written"
+    );
+    assert!(
+        out.join(name).is_file(),
+        "{name}: the entry did not land inside the output directory"
+    );
+}
+
+#[test]
+fn zip_rejects_windows_shaped_traversal_and_rooted_names() {
+    for name in windows_shaped_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = dir.path().join("evil.zip");
+        malicious_zip(&archive, name);
+
+        let out = dir.path().join("out");
+        let result = extract_zip(&archive, &out);
+        if cfg!(windows) {
+            assert!(
+                result.is_err(),
+                "{name}: Windows resolves this out of the output dir, got {result:?}"
+            );
+        } else {
+            assert_extracted_as_one_contained_file(result, &out, name);
+        }
+        assert_only_the_output_dir(dir.path(), &archive, &out, name);
+    }
+}
+
+#[test]
+fn sevenz_rejects_windows_shaped_traversal_and_rooted_names() {
+    for name in windows_shaped_names() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = dir.path().join("evil.7z");
+        malicious_7z(&archive, name);
+
+        let out = dir.path().join("out");
+        let result = extract_7z(&archive, &out);
+        if cfg!(windows) {
+            assert!(
+                result.is_err(),
+                "{name}: Windows resolves this out of the output dir, got {result:?}"
+            );
+        } else {
+            assert_extracted_as_one_contained_file(result, &out, name);
+        }
+        assert_only_the_output_dir(dir.path(), &archive, &out, name);
+    }
+}
+
+#[test]
+fn tar_contains_windows_shaped_traversal_and_rooted_names() {
+    // tar's guard is the tar crate's `unpack_in` rather than
+    // `sanitize_entry_path`, and it treats the two groups differently: `..` is
+    // refused, while a prefix or a root is *stripped* and the entry lands
+    // inside the output dir. That is the same behaviour
+    // `extract_tar_reports_absolute_entry_names_as_written` already pins for
+    // `/abs.txt`, so the rooted group is asserted as contained, not refused.
+    for name in BACKSLASH_TRAVERSAL_NAMES {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = dir.path().join("evil.tar");
+        malicious_tar(&archive, name);
+
+        let out = dir.path().join("out");
+        let result = extract_tar(&archive, &out);
+        if cfg!(windows) {
+            assert!(
+                result.is_err(),
+                "{name}: Windows reads this as `..`, so it must be refused, got {result:?}"
+            );
+        } else {
+            assert_extracted_as_one_contained_file(result, &out, name);
+        }
+        assert_only_the_output_dir(dir.path(), &archive, &out, name);
+    }
+
+    for name in WINDOWS_ROOTED_NAMES {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = dir.path().join("evil.tar");
+        malicious_tar(&archive, name);
+
+        let out = dir.path().join("out");
+        let result = extract_tar(&archive, &out);
+        if cfg!(windows) {
+            let files = result.expect("a rooted name is stripped, not refused");
+            assert_eq!(
+                listing(files),
+                vec!["escape.txt"],
+                "{name}: the drive or share must be stripped off"
+            );
+            assert!(
+                out.join("escape.txt").is_file(),
+                "{name}: the stripped entry did not land inside the output directory"
+            );
+        } else {
+            assert_extracted_as_one_contained_file(result, &out, name);
+        }
+        assert_only_the_output_dir(dir.path(), &archive, &out, name);
+    }
+}
+
 // -- via the public extract() dispatcher, for every format --
 
 #[test]
@@ -180,7 +368,7 @@ fn benign_nested_names_still_extract() {
 
         let out = dir.path().join(format!("out_{}", algo.extension()));
         let files = extract(&archive, &out).unwrap();
-        assert_eq!(files, vec!["nested/dir/input.txt"], "{algo}");
+        assert_eq!(listing(files), vec!["nested/dir/input.txt"], "{algo}");
         assert_eq!(
             std::fs::read(out.join("nested/dir/input.txt")).unwrap(),
             b"safe"
@@ -324,7 +512,7 @@ fn tar_symlink_entry_is_not_materialized() {
     }
     let out = dir.path().join("out");
     let files = extract_tar(&archive, &out).unwrap();
-    assert_eq!(files, vec!["ok.txt"]);
+    assert_eq!(listing(files), vec!["ok.txt"]);
     assert!(
         out.join("evil").symlink_metadata().is_err(),
         "a tar symlink entry was materialized on disk"
@@ -397,7 +585,11 @@ fn compress_dir_skips_symlinks_for_every_format() {
         let archive = dir.path().join(format!("a.{ext}"));
         let out = dir.path().join(format!("out_{ext}"));
         let files = extract(&archive, &out).unwrap();
-        assert_eq!(files, vec!["photos/ok.txt"], "{ext}: unexpected entries");
+        assert_eq!(
+            listing(files),
+            vec!["photos/ok.txt"],
+            "{ext}: unexpected entries"
+        );
         assert!(
             out.join("photos/leak.txt").symlink_metadata().is_err(),
             "{ext}: the symlink leaked into the archive"

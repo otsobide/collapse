@@ -24,6 +24,23 @@ fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
     }
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// Archive entry names are always forward-slashed (core builds them that way
+/// when it walks the tree), but the listing `extract` hands back is rebuilt
+/// from `Path` components, so it arrives as `photos\a.txt` on Windows.
+/// Without this every nested expectation below would be a Unix-only
+/// assertion. The normalized name still reads the file, because `Path::join`
+/// accepts a forward slash on Windows too.
+///
+/// Same shape as `listing` in `apps/desktop/src-tauri/tests/commands.rs`.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 // ------------------------------------------------------------------ parsing --
 
 #[test]
@@ -102,7 +119,7 @@ fn compress_file_round_trips_for_every_format() {
 
         let out = dir.path().join("out");
         let files = collapse_core::extract(&archive, &out).unwrap();
-        assert_eq!(files, vec!["notes.txt"], "{fmt}");
+        assert_eq!(listing(files), vec!["notes.txt"], "{fmt}");
         assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"hello cli");
     }
 }
@@ -133,7 +150,7 @@ fn compress_and_extract_aliases_round_trip() {
         out.to_str().unwrap(),
     ]);
     match outcome {
-        Outcome::Extracted { files, .. } => assert_eq!(files, vec!["data.txt"]),
+        Outcome::Extracted { files, .. } => assert_eq!(listing(files), vec!["data.txt"]),
         _ => panic!("expected extracted"),
     }
     assert_eq!(std::fs::read(out.join("data.txt")).unwrap(), b"aliased");
@@ -157,12 +174,24 @@ fn compress_directory_archives_the_tree() {
     ]);
 
     let out = dir.path().join("out");
-    let mut files = collapse_core::extract(&archive, &out).unwrap();
-    files.sort();
+    let files = listing(collapse_core::extract(&archive, &out).unwrap());
     assert_eq!(files, vec!["photos/a.txt", "photos/sub/b.txt"]);
 }
 
 // ------------------------------------------------------------- default output --
+
+// The default output is derived from the *canonicalized* source
+// (`run_compress` canonicalizes first so `.`/`..` resolve), so the path these
+// two tests get back is whatever `canonicalize` produced: `/private/var/...`
+// on macOS, and a verbatim `\\?\C:\Users\...` on Windows. Only the file name
+// is asserted, never the full text, because the full text is platform shaped.
+//
+// KNOWN DEFECT, not fixed here (production code is out of scope for this
+// pass): that same value is what `main.rs` prints, so a Windows user is told
+// `Created \\?\C:\Users\me\notes.txt.7z` instead of the path they typed. It is
+// cosmetic (the archive lands in the right place) but it is Windows only, and
+// it is why an expectation on the whole path would be wrong to add. Tests that
+// pass `-o` are unaffected: that path is returned exactly as given.
 
 #[test]
 fn default_output_for_file_is_beside_source() {
@@ -193,7 +222,7 @@ fn default_output_for_directory_is_dirname_archive_beside_it() {
     assert!(output.exists());
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&output, &out).unwrap(),
+        listing(collapse_core::extract(&output, &out).unwrap()),
         vec!["photos/a.txt"]
     );
 }
@@ -217,7 +246,7 @@ fn format_is_inferred_from_output_extension() {
 
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&archive, &out).unwrap(),
+        listing(collapse_core::extract(&archive, &out).unwrap()),
         vec!["notes.txt"]
     );
     assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"body");
@@ -279,7 +308,7 @@ fn extract_lists_and_writes_files() {
     match outcome {
         Outcome::Extracted { output_dir, files } => {
             assert_eq!(output_dir, out);
-            assert_eq!(files, vec!["data.bin"]);
+            assert_eq!(listing(files), vec!["data.bin"]);
         }
         _ => panic!("expected extracted"),
     }
@@ -351,7 +380,7 @@ fn compress_refuses_existing_output_without_force() {
     ]);
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&archive, &out).unwrap(),
+        listing(collapse_core::extract(&archive, &out).unwrap()),
         vec!["notes.txt"]
     );
 }
@@ -419,7 +448,7 @@ fn compress_allows_an_output_inside_the_source_tree_under_a_free_name() {
 
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&inside, &out).unwrap(),
+        listing(collapse_core::extract(&inside, &out).unwrap()),
         vec!["photos/a.txt"],
         "the archive lists the tree as it was before the archive existed"
     );
@@ -455,6 +484,10 @@ fn compress_refuses_to_overwrite_its_own_source() {
 /// they ever collapsed onto one path, the guards below would be satisfied by
 /// plain path equality and would stop exercising file identity, which is the
 /// only thing they exist to check.
+///
+/// Only the *inequality* of the two canonical paths is asserted, never their
+/// text, because `canonicalize` hands back a verbatim `\\?\C:\...` path on
+/// Windows and any assertion on the spelling would be a Unix-only one.
 fn hard_link_apart(target: &std::path::Path, link: &std::path::Path) {
     std::fs::hard_link(target, link).expect("the fixture needs a real hardlink");
     assert_ne!(
@@ -607,7 +640,7 @@ fn compress_with_force_still_overwrites_an_unrelated_existing_file() {
 
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&archive, &out).unwrap(),
+        listing(collapse_core::extract(&archive, &out).unwrap()),
         vec!["photos/a.txt"],
         "the stale file must have been replaced by a real archive"
     );

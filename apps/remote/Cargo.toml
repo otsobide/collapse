@@ -24,3 +24,5 @@ collapse-core = { path = "../core" }
 tokio = { version = "1", features = ["rt", "net"] }
 axum = "0.8"
 tempfile = "3"
+# Reads back the tar envelope the client uploads for a directory.
+tar = "0.4"
