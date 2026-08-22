@@ -446,15 +446,21 @@ compiled the desktop crate for Windows, which is exactly why the gap went
 unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
 a developer's own machine ever ran the desktop suite there.
 
-The desktop app is **compiled on all three platforms** on the branches that
-ship: `build (desktop)` on Linux everywhere, plus `build (desktop, macos)` and
-`build (desktop, windows)` under the same gate as the cross-platform tests. They
-compile rather than bundle, since producing the `.dmg`, `.msi` and NSIS
-installers is `release.yml`'s job; what is worth knowing on every push to `dev`
-is that the app still builds on each platform at all, which nothing checked
-before. Their gate is inherited rather than repeated: requiring `test-cross` to
-have *succeeded*, where the Linux leg accepts *succeeded or skipped*, is what
-confines them to those branches.
+The desktop app is compiled on Linux everywhere as `build (desktop)`, and on
+the other two platforms as `build (desktop, macos)` and `build (desktop,
+windows)` **on `release/*` branches only**.
+
+Not on `dev`, deliberately. The cross-platform test jobs already compile this
+crate on both platforms, since `make desktop/test-rust` runs `cargo test` inside
+`src-tauri`, which goes through `generate_context!()`, runs `build.rs` and links
+executables. All the extra build adds is the release profile (`lto`,
+`codegen-units = 1`, `panic = "abort"`), which is a real difference but a narrow
+one and the slowest kind of build there is. On a release branch that trade is
+worth it, because the alternative is finding out after the tag is pushed.
+
+Worth knowing what it still misses: it compiles rather than bundles, and every
+release failure this repo has actually had lived in the bundling that
+`--no-bundle` skips.
 
 **Every Rust build waits on the cross-platform pair as well as on its own
 tests**, so nothing is built while its behaviour on the platforms it ships to

@@ -533,20 +533,24 @@ jobs:
       - name: Compile the desktop app
         run: make desktop/compile
 
-  # The same compile on the other two platforms it ships to, and only on the
-  # branches that ship: any push to dev or main, and any pull request from dev,
-  # from main or from a release/* branch.
+  # The same compile on the other two platforms it ships to, on release
+  # branches only.
   #
-  # The gate is inherited rather than repeated. test-cross already carries that
-  # branch expression, so requiring it to have SUCCEEDED (not "succeeded or was
-  # skipped", which is what the Linux leg above accepts) is exactly what limits
-  # these two to those branches: everywhere else test-cross is skipped and this
-  # job goes with it.
+  # Not on dev, deliberately. The test jobs above already compile this crate on
+  # both platforms: `make desktop/test-rust` runs `cargo test` inside src-tauri,
+  # which goes through generate_context!(), runs build.rs (so rc.exe, the icon
+  # and the manifest on Windows) and links executables. All this adds is the
+  # release profile, which for this crate means lto, codegen-units = 1 and
+  # panic = "abort": a real difference, but a narrow one, and the slowest kind
+  # of build there is. Paying ten to fifteen minutes per platform on every push
+  # to dev for that is not a good trade.
   #
-  # Compile, not bundle. Producing the .dmg, .msi and NSIS installers is
-  # release.yml's job and costs far more; what is worth knowing on every push to
-  # a shipping branch is that the app still builds on each platform at all,
-  # which nothing checked before.
+  # On a release branch it is, because the alternative is finding out after the
+  # tag is pushed. Note what it still does not cover: it compiles rather than
+  # bundles, and every release failure this repo has actually had (FUSE for the
+  # AppImage, the Windows job needing bash, gh release create not being
+  # idempotent) lived in the bundling that --no-bundle skips. A dry run of
+  # release.yml on the release branch would cover that too.
   build-desktop-cross:
     name: build (desktop, ${{ matrix.label }})
     needs: [test-desktop, test-desktop-rust, test-cross]
@@ -554,7 +558,10 @@ jobs:
       always() &&
       needs.test-desktop.result == 'success' &&
       needs.test-desktop-rust.result == 'success' &&
-      needs.test-cross.result == 'success'
+      needs.test-cross.result == 'success' &&
+      (startsWith(github.head_ref, 'release/') ||
+       github.event_name == 'workflow_dispatch' ||
+       contains(github.event.pull_request.labels.*.name, 'full-matrix'))
     strategy:
       # One platform failing must not hide the other's result.
       fail-fast: false
