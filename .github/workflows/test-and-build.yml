@@ -533,8 +533,14 @@ jobs:
       - name: Compile the desktop app
         run: make desktop/compile
 
-  # The same compile on the other two platforms it ships to, on release
-  # branches only.
+  # The same compile on the other two platforms it ships to, on the release
+  # path only: a release/* branch, and the dev to main pull request itself.
+  #
+  # That second one is not optional. The pull request into main IS the release
+  # gate, the last thing that runs before a tag exists, so a desktop build
+  # skipping there would mean the app was never compiled for macOS or Windows
+  # on the commit about to ship. Its head branch is dev, not release/*, so it
+  # needs naming separately.
   #
   # Not on dev, deliberately. The test jobs above already compile this crate on
   # both platforms: `make desktop/test-rust` runs `cargo test` inside src-tauri,
@@ -560,6 +566,7 @@ jobs:
       needs.test-desktop-rust.result == 'success' &&
       needs.test-cross.result == 'success' &&
       (startsWith(github.head_ref, 'release/') ||
+       github.base_ref == 'main' ||
        github.event_name == 'workflow_dispatch' ||
        contains(github.event.pull_request.labels.*.name, 'full-matrix'))
     strategy:
