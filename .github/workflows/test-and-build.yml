@@ -6,7 +6,11 @@ name: test-and-build
 on:
   push:
     branches: [main, dev]
+  # `labeled` is not in the default set, and without it the `full-matrix` label
+  # below would be a documented escape hatch that never fires: adding a label
+  # would change nothing until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   # Lets anyone run the full matrix on demand. GitHub only offers this once the
   # workflow is on the default branch, so it is here for later rather than now.
   workflow_dispatch:
