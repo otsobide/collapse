@@ -8,6 +8,21 @@
 //! macro, and the integration tests in `tests/` drive these functions
 //! directly (a command is an ordinary function, and this crate carries no
 //! inline `mod tests`, like the rest of the workspace).
+//!
+//! **Anything that can take longer than an instant carries
+//! `#[tauri::command(async)]`.** A bare `#[tauri::command]` on a synchronous
+//! function compiles to what tauri-macros calls the `sync` path, which runs
+//! the body inline on the thread handling the IPC message: the window stops
+//! repainting for the duration, and the system eventually offers to force
+//! quit. The attribute argument moves it to `sync_threadpool`, which hands the
+//! call to `respond_async_serialized` and so to `async_runtime::spawn`.
+//!
+//! Worth knowing what that is and is not: it is the async runtime, a
+//! multi-thread tokio with one worker per core, not the blocking pool, so the
+//! body occupies a worker for its whole duration. That is fine here because
+//! the UI runs one operation at a time and disables itself while it does, but
+//! a caller that wanted several at once should move the work to
+//! `spawn_blocking` rather than add more of these.
 
 use std::path::PathBuf;
 
@@ -17,6 +32,10 @@ use crate::paths::{inside, same_file};
 
 /// Whether a path points at a directory (used by the UI to pick the icon and
 /// the default archive name).
+///
+/// The one command with no `async`: it is a single `stat`, and the UI calls it
+/// while the user is still choosing, so an IPC round trip through the runtime
+/// would cost more than the call.
 #[tauri::command]
 pub fn is_directory(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
@@ -26,16 +45,16 @@ pub fn is_directory(path: String) -> bool {
 ///
 /// With `server` set, the work happens on a remote Collapse instance instead:
 /// the bytes go out (a folder as a tar envelope), the archive comes back and
-/// is written to the same `output` the local path would use. This command is
-/// deliberately synchronous, so Tauri runs it on its blocking pool and the
-/// window stays responsive while the server works.
+/// is written to the same `output` the local path would use. That exchange has
+/// no read timeout, so it can outlast any patience: all the more reason for
+/// the `async` on the attribute below (see the module header).
 ///
 /// `overwrite` is the caller saying the user already agreed to replace what is
 /// at `output`, which is what the native save dialog asks on every platform.
 /// It is the `--force` of the CLI, and like it, it cannot buy past the two
 /// guards below: agreeing to replace a file is not agreeing to destroy the
 /// source, nor to destroy a file that is part of what is being archived.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn compress_path(
     path: String,
     output: String,
@@ -113,13 +132,13 @@ pub fn compress_path(
 
 /// Check that a remote Collapse server is reachable, so a typo surfaces in
 /// the settings panel rather than at the end of an upload.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn check_server(url: String) -> Result<(), String> {
     collapse_remote::check_health(&url).map_err(|e| e.to_string())
 }
 
 /// Extract an archive into `output_dir`, returning the extracted file paths.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn extract_archive(archive: String, output_dir: String) -> Result<Vec<String>, String> {
     let archive_path = PathBuf::from(&archive);
     if !archive_path.exists() {
