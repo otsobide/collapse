@@ -328,7 +328,14 @@ jobs:
   # -------------------------------------------------------------------------
   build-core:
     name: build (core)
-    needs: test-core
+    needs: [test-core, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-core.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -353,7 +360,14 @@ jobs:
 
   build-remote:
     name: build (remote)
-    needs: test-remote
+    needs: [test-remote, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-remote.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -378,7 +392,14 @@ jobs:
 
   build-cli:
     name: build (cli)
-    needs: test-cli
+    needs: [test-cli, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-cli.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -403,7 +424,14 @@ jobs:
 
   build-server-backend:
     name: build (server-backend)
-    needs: test-server-backend
+    needs: [test-server-backend, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-server-backend.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

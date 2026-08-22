@@ -446,9 +446,12 @@ compiled the desktop crate for Windows, which is exactly why the gap went
 unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
 a developer's own machine ever ran the desktop suite there.
 
-`build (desktop)` waits on all three of the suites that cover it, the two
-Linux jobs and the cross-platform pair, so the app cannot be built while its
-behaviour on the platforms it ships to is unproven. It is spelled out with an
+**Every Rust build waits on the cross-platform pair as well as on its own
+tests**, so nothing is built while its behaviour on the platforms it ships to
+is unproven. `build (desktop)` waits on all three of the suites that cover it,
+the two Linux jobs and the pair. `build (server-frontend)` is the exception and
+has no such wait, because it has no Rust and that pair proves nothing about
+it. It is spelled out with an
 explicit `if` rather than the usual `always() && !failure` idiom, because a job
 skipped for being gated off and a job skipped because something upstream failed
 both report `skipped`, and that idiom cannot tell them apart.
