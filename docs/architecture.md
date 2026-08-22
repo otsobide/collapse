@@ -448,7 +448,11 @@ a developer's own machine ever ran the desktop suite there.
 
 The desktop app is compiled on Linux everywhere as `build (desktop)`, and on
 the other two platforms as `build (desktop, macos)` and `build (desktop,
-windows)` **on `release/*` branches only**.
+windows)` **on the release path only**: a `release/*` branch, and the `dev` to
+`main` pull request itself. That second one matters, since that pull request is
+the release gate and its head branch is `dev` rather than `release/*`, so
+skipping there would mean the app was never compiled for macOS or Windows on
+the commit about to ship.
 
 Not on `dev`, deliberately. The cross-platform test jobs already compile this
 crate on both platforms, since `make desktop/test-rust` runs `cargo test` inside
