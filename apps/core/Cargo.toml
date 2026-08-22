@@ -10,6 +10,12 @@ tar = "0.4"
 zip = "2"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+# File identity for the guards in paths.rs. Windows has no stable std API for
+# it (volume_serial_number and file_index are nightly only), and this is the
+# implementation ripgrep and walkdir rely on rather than an unsafe block of our
+# own in a data-loss guard. No dependency on Unix; on Windows it pulls
+# winapi-util, whose windows-sys is already in the lock.
+same-file = "1"
 
 # Integration tests (tests/) craft archives directly with these crates.
 [dev-dependencies]

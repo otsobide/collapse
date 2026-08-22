@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use collapse_core::paths::{inside, same_file};
 use collapse_core::{compress, compress_dir, extract, Algorithm};
 use thiserror::Error;
 
@@ -178,8 +179,11 @@ fn run_compress(
     };
 
     if output.exists() {
-        let resolved = output.canonicalize().ok();
-        if resolved.as_deref() == Some(source.as_path()) {
+        // Both guards ask the filesystem whether these are the same file, not
+        // whether they are spelled the same: a hardlink is a second name for
+        // one file, so it never resolves to the same path. Comparing paths
+        // here is what let --force overwrite its own source.
+        if same_file(&source, &output) {
             return Err(CliError::OutputIsSource(output));
         }
         // Inside the tree being archived, and --force cannot buy past it. The
@@ -188,7 +192,7 @@ fn run_compress(
         // from the archive as much as from disk, and the archive corrupt with
         // it. Same reasoning as OutputIsSource above, which is also ahead of
         // the force check.
-        if source.is_dir() && resolved.is_some_and(|r| r.starts_with(&source)) {
+        if source.is_dir() && inside(&source, &output) {
             return Err(CliError::OutputInsideSource(output));
         }
         if !force {

@@ -199,9 +199,19 @@ fn compress_locally(source: &Path, output: &Path, format: &str, level: u32) -> S
 /// Extract through the command under test and return every file with its
 /// bytes, sorted: comparing content is what proves a round trip, where
 /// comparing archives byte for byte would only pin the compressor's mood.
+///
+/// Entry names come back with the platform's own separator (core builds them
+/// from `Path::components()`), so they are forward-slashed here before they
+/// are sorted or compared, exactly as `tests/commands.rs`'s `listing` does.
+/// Without it every nested expectation below would be a Unix-only assertion.
+/// The normalized name still reads the file, because `Path::join` accepts a
+/// forward slash on Windows too.
 fn extracted(archive: &Path, into: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut files =
-        extract_archive(text(archive), text(into)).expect("the archive extracts cleanly");
+    let mut files: Vec<String> = extract_archive(text(archive), text(into))
+        .expect("the archive extracts cleanly")
+        .into_iter()
+        .map(|name| name.replace('\\', "/"))
+        .collect();
     files.sort();
     files
         .into_iter()

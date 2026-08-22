@@ -228,6 +228,58 @@ jobs:
       - name: Run the Rust suite
         run: make desktop/test-rust
 
+  # The same src-tauri suite on Windows. A separate job rather than a matrix leg
+  # on the one above: the two need different setup (apt webkit2gtk on Linux,
+  # nothing here), build (desktop) gates on the Linux suite alone and a matrix
+  # would make it wait for both, and a matrix would rename test (desktop, rust),
+  # which silently unbinds any ruleset check pointing at that name.
+  #
+  # Windows is where the file identity guard matters most: NTFS hardlinks are
+  # the case it exists for, and the comparison used to be #[cfg(unix)], so the
+  # guard did not exist there at all. No CI job had ever compiled this crate for
+  # Windows, which is why nobody saw it.
+  test-desktop-rust-windows:
+    name: test (desktop, rust, windows)
+    needs: test-core
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # windows-latest already carries the MSVC toolchain and the Windows SDK
+      # that tauri-winres needs for rc.exe, and WebView2 as well, so the stable
+      # host triple is all that is missing. These tests never open a window.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # runner.os is "Windows" here and "Linux" there, so this cannot collide
+      # with the Linux desktop cache despite the identical suffix.
+      - name: Cache cargo (desktop workspace)
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-desktop-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-desktop-
+
+      # bash, not pwsh, for the same reason release.yml's Windows job says so:
+      # the make targets assume a POSIX shell, and Git Bash on PATH is what
+      # makes GNU make pick sh.exe for its recipes instead of cmd.exe.
+      - name: Run the Rust suite
+        shell: bash
+        run: make desktop/test-rust
+
   # -------------------------------------------------------------------------
   # Builds: each app builds only after its own tests pass.
   # -------------------------------------------------------------------------
