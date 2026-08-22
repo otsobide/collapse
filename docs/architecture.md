@@ -57,8 +57,9 @@ is always local. (Each crate's tests live inside it — see [Testing](#testing).
 A single-responsibility library: compress a file or a directory into an archive,
 and extract an archive back out. Two formats compress (7z via `sevenz-rust2`,
 ZIP via `zip`); tar (via `tar`) is an uncompressed container. `src/lib.rs`
-re-exports the public surface: `compress`, `compress_dir`, `extract`,
-`Algorithm`, `CompressionError`.
+re-exports the compression surface: `compress`, `compress_dir`, `extract`,
+`Algorithm`, `CompressionError`; `paths` is a second public module, described
+below.
 
 ### Modules (`src/compression/…`)
 
@@ -70,6 +71,23 @@ re-exports the public surface: `compress`, `compress_dir`, `extract`,
 | `compression/sevenz.rs` | 7z backend: `compress_7z`, `compress_7z_dir`, `extract_7z`. |
 | `compression/zip.rs` | ZIP backend: `compress_zip`, `compress_zip_dir`, `extract_zip`. |
 | `compression/tar.rs` | tar backend: `compress_tar`, `compress_tar_dir`, `extract_tar`. |
+
+### `src/paths.rs` — the guards both front ends share
+
+Not part of compressing anything, but it lives here because both front ends
+need it and keeping a copy in each is what let them drift: the desktop compared
+filesystem identity on Unix only, and the CLI compared resolved paths and
+nothing else, so `--force` destroyed its own source through a hardlink on every
+platform.
+
+The rule it encodes is that **comparing paths is not comparing files**. A
+hardlink is not a pointer to a file, it *is* a name of that file, so two
+hardlinks resolve to two different paths on every operating system.
+
+| Function | What it answers |
+|----------|-----------------|
+| `same_file(a, b)` | Are these one file? Resolved-path equality first, then filesystem identity (device and inode on Unix, volume serial and file index on Windows, via `same-file`), then on Unix the same comparison through `stat`, which still answers for a write-only file that cannot be opened but can still be truncated. A path that does not exist is never "the same file", which is what makes a first compression possible. |
+| `inside(dir, candidate)` | Would archiving `dir` read `candidate`? True when it sits inside by path, or is another name for something that does. The second half walks the tree comparing identity, skips symlinked children (the backends never read through them) and stops at the first match. It only runs for a candidate that already exists, so the walk is paid only when overwriting. |
 
 ### The `Algorithm` enum is the single extension point
 
@@ -412,7 +430,49 @@ result sees that. Per app, tests gate the build: `test (core)` (`make core/test`
 gates `test (remote)`, `test (cli)`, `test (server-backend)` and
 `test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
 `test (server-frontend)` is independent of the Rust engine and waits only on
-`fmt`. Each app's build job runs only after its own tests pass: `build (core)`,
+`fmt`. **Linux runs everything, on every push and every pull request.** macOS and
+Windows run the whole Rust suite too, as `test (rust, macos)` and
+`test (rust, windows)`, but only for the branches that ship: any push to `dev`
+or `main`, and any pull request from `dev`, from `main`, or from a `release/*`
+branch. A `feature/*` or `hotfix/*` pull request stays Linux only and picks
+them up when it lands on `dev`, because those runners cost several times a
+Linux one per minute. When such a branch does touch platform-specific code,
+labelling the pull request `full-matrix` asks for them anyway.
+
+The two exist because Linux cannot speak for either. Windows is where the file
+identity guard in `paths.rs` matters most, and its comparison used to be
+`#[cfg(unix)]`, so the guard did not exist there at all; no CI job had ever
+compiled the desktop crate for Windows, which is exactly why the gap went
+unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
+a developer's own machine ever ran the desktop suite there.
+
+The desktop app is compiled on Linux everywhere as `build (desktop)`, and on
+the other two platforms as `build (desktop, macos)` and `build (desktop,
+windows)` **on `release/*` branches only**.
+
+Not on `dev`, deliberately. The cross-platform test jobs already compile this
+crate on both platforms, since `make desktop/test-rust` runs `cargo test` inside
+`src-tauri`, which goes through `generate_context!()`, runs `build.rs` and links
+executables. All the extra build adds is the release profile (`lto`,
+`codegen-units = 1`, `panic = "abort"`), which is a real difference but a narrow
+one and the slowest kind of build there is. On a release branch that trade is
+worth it, because the alternative is finding out after the tag is pushed.
+
+Worth knowing what it still misses: it compiles rather than bundles, and every
+release failure this repo has actually had lived in the bundling that
+`--no-bundle` skips.
+
+**Every Rust build waits on the cross-platform pair as well as on its own
+tests**, so nothing is built while its behaviour on the platforms it ships to
+is unproven. `build (desktop)` waits on all three of the suites that cover it,
+the two Linux jobs and the pair. `build (server-frontend)` is the exception and
+has no such wait, because it has no Rust and that pair proves nothing about
+it. It is spelled out with an
+explicit `if` rather than the usual `always() && !failure` idiom, because a job
+skipped for being gated off and a job skipped because something upstream failed
+both report `skipped`, and that idiom cannot tell them apart.
+
+Each app's build job runs only after its own tests pass: `build (core)`,
 `build (remote)`, `build (cli)`, `build (server-backend)`,
 `build (server-frontend)` and `build (desktop)`, the last compiling the whole
 Tauri app (frontend + the `src-tauri` crate, which no other CI job compiles)

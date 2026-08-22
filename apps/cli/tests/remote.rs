@@ -23,6 +23,21 @@ fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
     }
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The entries inside the archive are forward-slashed on every platform (both
+/// the tar envelope the client sends and the archive the server returns are
+/// built by core's tree walk), but `extract` rebuilds the listing from `Path`
+/// components, so it arrives as `photos\a.txt` on Windows. The normalized name
+/// still reads the file, because `Path::join` accepts a forward slash there
+/// too. Same shape as `listing` in `tests/cli.rs`.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 /// Serve the real API app on an OS-assigned port, returning its base URL and
 /// its staging directory (to observe server-side cleanup). The server thread
 /// (which keeps the staging TempDir alive) lives for the rest of the test
@@ -104,7 +119,7 @@ fn remote_compress_round_trips_for_every_format() {
 
         let out = dir.path().join("out");
         let files = collapse_core::extract(&archive, &out).unwrap();
-        assert_eq!(files, vec!["notes.txt"], "{fmt}");
+        assert_eq!(listing(files), vec!["notes.txt"], "{fmt}");
         assert_eq!(
             std::fs::read(out.join("notes.txt")).unwrap(),
             b"compressed far away",
@@ -133,7 +148,7 @@ fn remote_compress_defaults_output_beside_source() {
 
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&output, &out).unwrap(),
+        listing(collapse_core::extract(&output, &out).unwrap()),
         vec!["notes.txt"]
     );
 }
@@ -200,8 +215,7 @@ fn remote_compress_a_directory_matches_the_local_result() {
 
     let extract_all = |archive: &std::path::Path, into: &str| {
         let out = dir.path().join(into);
-        let mut files = collapse_core::extract(archive, &out).unwrap();
-        files.sort();
+        let files = listing(collapse_core::extract(archive, &out).unwrap());
         let contents: Vec<Vec<u8>> = files
             .iter()
             .map(|f| std::fs::read(out.join(f)).unwrap())
@@ -249,7 +263,7 @@ fn remote_compress_a_directory_to_tar_round_trips() {
 
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&archive, &out).unwrap(),
+        listing(collapse_core::extract(&archive, &out).unwrap()),
         vec!["docs/a.txt"]
     );
     assert_eq!(
@@ -324,7 +338,7 @@ fn remote_compress_force_overwrites_existing_output() {
 
     let out = dir.path().join("out");
     assert_eq!(
-        collapse_core::extract(&archive, &out).unwrap(),
+        listing(collapse_core::extract(&archive, &out).unwrap()),
         vec!["notes.txt"]
     );
     assert_eq!(

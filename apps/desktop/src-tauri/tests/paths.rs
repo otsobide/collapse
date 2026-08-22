@@ -289,19 +289,23 @@ fn a_chain_of_symlinks_to_a_file_is_the_same_file() {
     assert_same(&file, &second, "a symlink chain must resolve to its target");
 }
 
-#[cfg(unix)]
 #[test]
 fn a_hardlink_to_a_file_is_the_same_file() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
     let link = dir.path().join("also-notes.txt");
+    // Not `cfg(unix)`: `hard_link` needs no privilege on Windows either, and
+    // Windows is the platform where this used to answer wrongly, so gating it
+    // would hide the fix exactly where it was missing. `hard_link` also panics
+    // rather than falling back to a copy, so the fixture cannot degrade into
+    // two unrelated files.
     std::fs::hard_link(&file, &link).unwrap();
 
-    // This is the whole reason the predicate compares inode and device rather
-    // than stopping at the resolved path: a hardlink canonicalizes to its own
-    // distinct path, so a pure string comparison would call these two files
-    // different and let the archive truncate the user's data.
+    // This is the whole reason the predicate compares filesystem identity
+    // rather than stopping at the resolved path: a hardlink canonicalizes to
+    // its own distinct path, so a pure string comparison would call these two
+    // files different and let the archive truncate the user's data.
     assert_ne!(
         file.canonicalize().unwrap(),
         link.canonicalize().unwrap(),
@@ -314,7 +318,6 @@ fn a_hardlink_to_a_file_is_the_same_file() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_hardlink_in_another_directory_is_the_same_file() {
     let dir = TempDir::new().unwrap();
@@ -325,8 +328,14 @@ fn a_hardlink_in_another_directory_is_the_same_file() {
     let link = elsewhere.join("archive.zip");
     std::fs::hard_link(&file, &link).unwrap();
 
-    // Same inode, different directory, different name and different extension:
-    // nothing about the two spellings hints they are one file.
+    // Same file, different directory, different name and different extension:
+    // nothing about the two spellings hints they are one file. This is the
+    // shape a save dialog produces, which is why it is not `cfg(unix)`.
+    assert_ne!(
+        file.canonicalize().unwrap(),
+        link.canonicalize().unwrap(),
+        "the fixture is pointless unless the two hardlinks canonicalize apart"
+    );
     assert_same(
         &file,
         &link,
@@ -334,30 +343,74 @@ fn a_hardlink_in_another_directory_is_the_same_file() {
     );
 }
 
-#[cfg(windows)]
 #[test]
-fn a_hardlink_is_not_seen_as_the_same_file_on_windows() {
+fn a_hardlink_is_the_same_file_on_windows_too() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
     let link = dir.path().join("also-notes.zip");
     std::fs::hard_link(&file, &link).unwrap();
 
-    // KNOWN DEFECT, pinned rather than endorsed. The inode/device fallback in
-    // `same_file` is `#[cfg(unix)]`, so on Windows only the resolved paths are
-    // compared, and `canonicalize` there resolves through the name the handle
-    // was opened with rather than to one canonical name per file: two hardlinks
-    // to one file resolve apart and the predicate answers "different".
-    // `compress_path` then writes the archive straight over the user's source
-    // (see the module header for what each backend does to it), which is
-    // precisely the data loss the guard exists to prevent. Releases ship an .msi
-    // and an NSIS installer, so the gap is shipped. Neither half of that could
-    // be checked from the machine this was written on: no CI job compiles this
-    // test either, because the Rust suite runs on Linux only, so the assertion
-    // below is what a first Windows run would report.
+    // This is the reproduction that was destroying data, kept as its own test
+    // because it is the one the defect was reported as: `notes.txt` and an
+    // `alias.zip` a save dialog would happily hand back, one file under two
+    // names. It replaces a `#[cfg(windows)]` test that asserted the opposite
+    // and called it a known defect: the identity comparison used to be
+    // `#[cfg(unix)]`, so Windows compared resolved paths only, `canonicalize`
+    // there answers with the name the handle was opened with rather than one
+    // canonical name per file, and the two names resolved apart. The guard
+    // then let `compress_path` write the archive straight over the user's
+    // source (see the module header for what each backend does to it) on the
+    // platform the .msi and the NSIS installer ship to.
+    //
+    // Deliberately not gated: the assertion is the same claim on every
+    // platform, and a `cfg` here is precisely how the Windows half went
+    // unnoticed.
+    assert_ne!(
+        file.canonicalize().unwrap(),
+        link.canonicalize().unwrap(),
+        "the fixture is pointless unless the two names canonicalize apart"
+    );
+    assert_same(
+        &file,
+        &link,
+        "an archive name hardlinked to the source is that source",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hardlink_that_cannot_be_opened_for_reading_is_still_the_same_file() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("notes.txt");
+    write(&file, b"hello");
+    let link = dir.path().join("also-notes.zip");
+    std::fs::hard_link(&file, &link).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o222)).unwrap();
+
+    // A write-only file is the shape that slips through an identity check
+    // built on open handles: `same_file::is_same_file` opens both paths for
+    // reading, which mode 0o222 refuses, so the predicate needs its `stat`
+    // layer to answer at all. Unreadable is not unwritable, and the assertion
+    // below says so out loud: this file can still be truncated, so a guard
+    // that shrugged here would lose it. (Running the suite as root would let
+    // the open succeed and the earlier layer answer instead, which costs this
+    // test its teeth but not its result; no runner here does.)
     assert!(
-        !same_file(&file, &link),
-        "Windows hardlinks are now recognised: the defect is fixed, delete this pin"
+        std::fs::File::options().write(true).open(&link).is_ok(),
+        "the fixture must still be writable, otherwise there is nothing to lose"
+    );
+    assert_ne!(
+        file.canonicalize().unwrap(),
+        link.canonicalize().unwrap(),
+        "the fixture is pointless unless the two hardlinks canonicalize apart"
+    );
+    assert_same(
+        &file,
+        &link,
+        "a file that cannot be read can still be truncated, so it must be recognised",
     );
 }
 
@@ -514,18 +567,22 @@ fn one_missing_path_does_not_match_itself() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_path_under_a_missing_directory_is_not_the_same_file() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("notes.txt");
     write(&file, b"hello");
 
-    // Lexically `gone/../notes.txt` is `notes.txt`, but resolution needs every
-    // component to exist, so the predicate says "different". That is not a hole
-    // in the guard: the OS refuses to open such a path for the same reason, so
-    // the write fails instead of truncating the source. The error kind is
-    // asserted, not merely "some error": a permission or name-too-long failure
-    // would not support that claim.
+    // Lexically `gone/../notes.txt` is `notes.txt`, but a Unix kernel resolves
+    // a path component by component and needs every one of them to exist, so
+    // the predicate says "different". That is not a hole in the guard: the OS
+    // refuses to open such a path for the same reason, so the write fails
+    // instead of truncating the source, and the assertion below is what says
+    // the two refusals have the same cause. The error kind is asserted, not
+    // merely "some error": a permission or name-too-long failure would not
+    // support that claim. Windows folds the `..` before the filesystem ever
+    // sees it and therefore answers the other way round: see the twin below.
     let through_missing = dir.path().join("gone").join("..").join("notes.txt");
     assert_not_same(
         &file,
@@ -538,6 +595,38 @@ fn a_path_under_a_missing_directory_is_not_the_same_file() {
             .kind(),
         std::io::ErrorKind::NotFound,
         "the OS must refuse it for the same reason the predicate does"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_path_under_a_missing_directory_is_the_same_file_on_windows() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("notes.txt");
+    write(&file, b"hello");
+
+    // The twin of the test above, and the opposite answer, because the
+    // platforms genuinely differ. Win32 normalizes a non-verbatim path
+    // lexically before the object manager sees it, so `gone\..\notes.txt`
+    // becomes `notes.txt` and the missing `gone` is never looked up: both
+    // spellings canonicalize to the same file and the predicate must say so.
+    // It has to, too, because here the OS really would open (and truncate)
+    // the source through that spelling, which is exactly what the second
+    // assertion proves. A `same_file` that answered "different" on this path,
+    // as the Unix branch does, would be a hole in the guard on Windows only.
+    let through_missing = dir.path().join("gone").join("..").join("notes.txt");
+    assert_same(
+        &file,
+        &through_missing,
+        "Windows folds `..` lexically, so this spelling names the source",
+    );
+    // Truncating, not merely creating: the file that comes back empty is the
+    // fixture, which is what makes the hazard concrete rather than notional.
+    std::fs::File::create(&through_missing)
+        .expect("Win32 resolves this spelling, so the OS will not refuse it");
+    assert!(
+        std::fs::read(&file).unwrap().is_empty(),
+        "the write went somewhere else: the premise of this test is wrong"
     );
 }
 

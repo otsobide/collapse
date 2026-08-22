@@ -9,6 +9,12 @@ Where humans commit code:
 - **`main`** — released versions only. Every merge into `main` marks a version and gets a tag (`vX.Y.Z`). Changes arrive only through pull requests (see [Branch protections](#branch-protections)).
 - **`dev`** — the integration branch where real day-to-day work happens. All work lands here first, always through a pull request from a gitflow branch; direct pushes are blocked.
 - **`feature/<name>`** — branched off `dev` for each unit of work, merged back into `dev` via pull request when done. Since direct pushes to `dev` are blocked, even small changes travel on a short-lived feature branch.
+- **`release/<version>`** — the version bump and any last touches before a
+  release, branched off `dev` and merged back into `dev` by pull request, after
+  which `dev` goes to `main` as usual. Mechanically a feature branch; the name
+  is what makes CI run the macOS and Windows suites on it, which is the point of
+  using it for a release rather than `feature/release-<version>`.
+
 - **`hotfix/<name>`** — an urgent fix for a released version. Mechanically a feature branch (off `dev`, merged into `dev` by PR); the name signals urgency, and a release (`dev` → `main`, new patch version + tag) follows immediately. PRs into `main` accept only `dev`, so there is no direct fix-to-main path; keep `dev` releasable.
 
 ## Deploy branches (auto-generated — never commit by hand)
@@ -36,7 +42,8 @@ bind everyone, including the repo owner:
   branch is not `dev`: releasing from `dev` is the only way into `main`.
 - **`protect-dev`**: the same for `dev`, plus the required **gitflow branch
   name** status check ([`gitflow.yml`](../.github/workflows/gitflow.yml)),
-  which fails any PR whose head branch is not `feature/*`, `hotfix/*`, or
+  which fails any PR whose head branch is not `feature/*`, `hotfix/*`,
+  `release/*`, or
   `main` (a back-merge). GitHub cannot natively restrict a PR's source branch,
   so the check is what makes the gitflow naming binding.
 - **`protect-pages`**: the `pages/**` build branches cannot be deleted.

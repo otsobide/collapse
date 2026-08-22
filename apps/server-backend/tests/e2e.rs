@@ -72,8 +72,12 @@ impl Server {
         format!("{}{path}", self.base)
     }
 
+    /// The budget is generous on purpose: the binary answers within
+    /// milliseconds of announcing its port, but a cold start on a loaded CI
+    /// runner (a freshly linked executable, an on-access virus scanner) can add
+    /// seconds, and a timeout here reads as a broken server.
     fn await_health(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if get(&self.url("/health")).0 == 200 {
                 return;
@@ -174,6 +178,19 @@ fn download(url: &str) -> (u16, Vec<u8>) {
         Err(ureq::Error::Status(code, _)) => (code, Vec::new()),
         Err(e) => panic!("the download never completed: {e}"),
     }
+}
+
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The engine builds the returned paths with the platform separator, so on
+/// Windows the same archive comes back as `photos\nested\two.txt`. The archive
+/// itself is identical either way, which is why this normalizes rather than
+/// asserting less.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
 }
 
 fn job_id(body: &str) -> String {
@@ -314,8 +331,7 @@ fn a_directory_round_trips_as_a_tar_envelope() {
     let archive_path = out.path().join("photos.7z");
     std::fs::write(&archive_path, &archive).unwrap();
 
-    let mut extracted = collapse_core::extract(&archive_path, out.path()).unwrap();
-    extracted.sort();
+    let extracted = listing(collapse_core::extract(&archive_path, out.path()).unwrap());
     assert_eq!(
         extracted,
         vec![
@@ -415,12 +431,14 @@ fn an_upload_over_the_cap_is_refused() {
     // which is what this test and collapse-remote use) can have its connection
     // reset mid-upload instead. The refusal is the server's behaviour, so that
     // is what is asserted here, from the server's own log.
-    let _ = std::panic::catch_unwind(|| {
-        post(
-            &server.url("/compress?name=big.bin"),
-            &vec![0u8; 8 * 1024 * 1024],
-        )
-    });
+    //
+    // ureq is called directly rather than through `post`, which panics on a
+    // transport error: the reset is one of the two normal outcomes, so it is
+    // discarded rather than caught. Which of the two happens is also a
+    // platform's business (a Windows socket reset discards the response the
+    // server did send), and neither says anything about the server.
+    let _ =
+        ureq::post(&server.url("/compress?name=big.bin")).send_bytes(&vec![0u8; 8 * 1024 * 1024]);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && !server.logged("status=413") {
@@ -591,6 +609,19 @@ fn the_reaping_window_is_configurable_and_reported() {
 }
 
 // --------------------------------------------------------------- stopping --
+//
+// Everything below is `#[cfg(unix)]`, and it is the one place in this crate
+// where that costs Windows real coverage. Graceful shutdown is driven by
+// SIGTERM (`docker stop`, systemd), a signal Windows does not have: the only
+// stop a test can ask for there is `TerminateProcess`, which is `SIGKILL` and
+// gives the server nothing to be graceful about. So on Windows these four go
+// untested: that an in-flight download finishes instead of being truncated,
+// that a draining server refuses new connections, that the default temporary
+// staging area is removed on a clean exit, and that
+// `--shutdown-grace-seconds` bounds how long a client that stops reading can
+// hold the process open. `src/main.rs` already compiles the SIGTERM half out
+// on Windows and waits only on Ctrl+C, so what is unproven there is that a
+// console Ctrl+C drains the same way.
 
 #[cfg(unix)]
 impl Server {

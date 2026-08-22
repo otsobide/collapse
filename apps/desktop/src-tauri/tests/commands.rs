@@ -819,12 +819,14 @@ fn a_symlink_at_the_output_path_pointing_at_the_source_is_refused() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_hardlink_to_the_source_is_refused_even_though_the_paths_differ() {
-    use std::os::unix::fs::MetadataExt;
-
-    // Two names for one inode: the canonical paths are genuinely different, so
-    // only the inode/device comparison catches this one.
+    // Two names for one file: the canonical paths are genuinely different, so
+    // only the filesystem-identity comparison catches this one. Not
+    // `cfg(unix)`: `hard_link` needs no privilege on Windows either, and this
+    // is the exact command-level reproduction that used to destroy the source
+    // there (the identity comparison was Unix-only, so the guard saw two
+    // different paths and let the archive through). Only the link-count
+    // assertion at the end is Unix-only, for want of a stable API.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     let content = b"irreplaceable".to_vec();
@@ -848,13 +850,27 @@ fn a_hardlink_to_the_source_is_refused_even_though_the_paths_differ() {
         content,
         "the source was modified"
     );
-    // A backend that unlinked the output path and created a fresh archive there
-    // would leave the source readable but drop the link count to 1.
+    // Reading the other name is the portable half of the link-count check
+    // below: one file under two names, so an archive written through either
+    // shows up in both.
     assert_eq!(
-        fs::metadata(&source).unwrap().nlink(),
-        2,
-        "the hardlink was replaced instead of being refused"
+        fs::read(&hardlink).unwrap(),
+        content,
+        "the output name holds an archive, so the source was written over"
     );
+    // A backend that unlinked the output path and created a fresh archive there
+    // would leave the source readable but drop the link count to 1. Unix only:
+    // Windows keeps the same count, but `std` exposes it behind the unstable
+    // `windows_by_handle` feature, so a stable Windows build cannot read it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&source).unwrap().nlink(),
+            2,
+            "the hardlink was replaced instead of being refused"
+        );
+    }
 }
 
 #[test]
@@ -958,7 +974,6 @@ fn an_existing_output_is_replaced_when_the_caller_says_the_user_agreed() {
 }
 
 #[test]
-#[cfg(unix)]
 fn replacing_an_output_writes_through_a_hardlink_to_it() {
     // KNOWN LIMITATION, pinned rather than endorsed. The archive is not written
     // to a temporary file and renamed into place, so replacing an output that
@@ -968,6 +983,10 @@ fn replacing_an_output_writes_through_a_hardlink_to_it() {
     // which is what lets a failed run leave the previous archive untouched (see
     // the truncated-download tests in tests/remote.rs). Writing to a temporary
     // file and renaming would buy both, and is the real fix if this ever bites.
+    //
+    // Not `cfg(unix)`: nothing here is Unix-only, and NTFS hardlinks share
+    // their data the same way, so the limitation is shipped on every platform
+    // and is pinned on every platform.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
@@ -1046,6 +1065,125 @@ fn an_output_deeper_inside_the_source_tree_is_refused_too() {
         "{err}"
     );
     assert_eq!(fs::read(&victim).unwrap(), b"buried but still doomed");
+}
+
+#[test]
+fn an_output_hardlinked_to_a_member_of_the_source_tree_is_refused_even_with_consent() {
+    // The same data loss as the test above, reached the way a path comparison
+    // cannot see: the output sits in a sibling folder, so nothing about where
+    // it is looks wrong, but it is another name for a file inside the tree.
+    // Truncating it truncates the member, which the backend then archives in
+    // its truncated state, so the bytes are gone from the archive as much as
+    // from disk. This is the second of the two reproductions that motivated
+    // the fix (`collapse compress photos -o out/archive.zip --force`, where
+    // `out/archive.zip` was a hardlink of `photos/a.txt`, destroyed `a.txt`).
+    //
+    // `overwrite` cannot unlock it, for the reason the containment guard gives
+    // in general: agreeing to replace `out/archive.zip` is not agreeing to
+    // lose a photo and get a corrupt archive in exchange.
+    //
+    // One format is enough here (the sibling test above covers all three):
+    // every guard runs before an `Algorithm` is ever handed to core, so the
+    // format cannot change the answer, only how the data would have been lost.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    fs::create_dir_all(&root).unwrap();
+    let member = root.join("a.txt");
+    fs::write(&member, b"irreplaceable member").unwrap();
+    fs::write(root.join("b.txt"), b"other member").unwrap();
+    let elsewhere = dir.path().join("out");
+    fs::create_dir(&elsewhere).unwrap();
+    let alias = elsewhere.join("archive.zip");
+    // `hard_link` panics rather than falling back to a copy, so a fixture that
+    // reached this line really is one file under two names. It needs no
+    // privilege on Windows, which is why this test is not `cfg(unix)`.
+    fs::hard_link(&member, &alias).unwrap();
+
+    // The two halves that keep the fixture honest: the output is genuinely
+    // outside the folder (so the path-prefix check cannot be what refuses it)
+    // and the two names genuinely resolve apart (so the plain same-file check
+    // cannot be either). Without both, this test would quietly stop exercising
+    // the tree walk it exists for.
+    assert!(
+        !alias
+            .canonicalize()
+            .unwrap()
+            .starts_with(root.canonicalize().unwrap()),
+        "the output must sit outside the folder being compressed"
+    );
+    assert_ne!(
+        member.canonicalize().unwrap(),
+        alias.canonicalize().unwrap(),
+        "the fixture is pointless unless the two names canonicalize apart"
+    );
+
+    let expected = format!(
+        "The output is inside the folder being compressed: {}. \
+         It would be destroyed instead of archived. Choose a location outside it.",
+        alias.display()
+    );
+
+    for consented in [false, true] {
+        let err = compress_local_with(&root, &alias, "zip", 3, consented).unwrap_err();
+        assert_eq!(err, expected, "overwrite={consented}");
+        assert_eq!(
+            fs::read(&member).unwrap(),
+            b"irreplaceable member",
+            "overwrite={consented}: the member must survive byte for byte"
+        );
+        // Read back through the output name too: it is the same file, so an
+        // archive written there is the member being destroyed, and this is
+        // what fails first if the guard is ever reduced to a path comparison.
+        assert_eq!(
+            fs::read(&alias).unwrap(),
+            b"irreplaceable member",
+            "overwrite={consented}: an archive was written through the other name"
+        );
+    }
+
+    // Nothing was half written before the refusal.
+    assert_eq!(fs::read(root.join("b.txt")).unwrap(), b"other member");
+}
+
+#[test]
+fn an_output_outside_the_source_tree_is_replaced_when_the_caller_says_the_user_agreed() {
+    // The counterweight to the test above, and what stops the guard being
+    // "refuse whenever the output already exists". Writing an archive of a
+    // folder over an unrelated older file is the ordinary case of re-running a
+    // backup, and it has to keep working.
+    //
+    // The stale file is given the exact bytes of a member on purpose: a tree
+    // walk that compared content or size instead of file identity would call
+    // it part of the folder and refuse this, and nothing else in the suite
+    // would notice.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("a.txt"), b"irreplaceable member").unwrap();
+    let elsewhere = dir.path().join("out");
+    fs::create_dir(&elsewhere).unwrap();
+    let output = elsewhere.join("archive.zip");
+    fs::write(&output, b"irreplaceable member").unwrap();
+
+    compress_local_overwriting(&root, &output, "zip", 3)
+        .expect("an unrelated file outside the folder may be replaced");
+
+    // Opened rather than merely "changed": the point is that the real archive
+    // of the real tree is what landed there.
+    let out_dir = dir.path().join("extracted");
+    assert_eq!(
+        listing(extract_to(&output, &out_dir).unwrap()),
+        vec!["photos/a.txt".to_string()]
+    );
+    assert_eq!(
+        fs::read(out_dir.join("photos").join("a.txt")).unwrap(),
+        b"irreplaceable member"
+    );
+    assert_eq!(
+        fs::read(root.join("a.txt")).unwrap(),
+        b"irreplaceable member",
+        "the source tree must come through untouched"
+    );
 }
 
 #[test]

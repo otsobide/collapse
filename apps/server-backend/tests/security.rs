@@ -47,7 +47,10 @@ async fn settle(router: &Router, name: &str, tar: &[u8]) -> serde_json::Value {
         .unwrap()
         .to_string();
 
-    for _ in 0..500 {
+    // About thirty seconds: these payloads settle in milliseconds anywhere,
+    // but a loaded CI runner can stall a worker, and a timeout here would read
+    // as a security failure rather than a slow machine.
+    for _ in 0..3000 {
         let request = Request::builder()
             .uri(format!("/jobs/{job_id}"))
             .body(Body::empty())
@@ -81,6 +84,10 @@ fn tar_with_smuggled_name(entry_name: &str) -> Vec<u8> {
 
 /// Everything in the staging area, relative to it, so a test can assert on
 /// exactly what the server wrote.
+///
+/// The entries carry the platform's separator, so they are only ever searched
+/// for a substring or joined back onto the base here; do not compare one
+/// against a literal path without normalizing it first.
 fn staged(storage: &tempfile::TempDir) -> Vec<String> {
     fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<String>) {
         let Ok(entries) = std::fs::read_dir(dir) else {
@@ -128,6 +135,11 @@ async fn a_traversing_entry_never_escapes_the_staging_area() {
     );
 }
 
+/// The entry name is the attacker's choice, not the server's platform, so it
+/// stays a POSIX absolute path on every host. It is still meaningful on
+/// Windows: `/tmp/escaped.txt` there is rooted on the current drive, so a naive
+/// extractor that passed the name straight to the filesystem would create
+/// `C:\tmp\escaped.txt`, which is exactly what this asserts did not happen.
 #[tokio::test]
 async fn an_absolute_entry_never_escapes_the_staging_area() {
     let (router, _storage) = app();

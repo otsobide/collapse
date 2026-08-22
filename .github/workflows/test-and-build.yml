@@ -6,7 +6,14 @@ name: test-and-build
 on:
   push:
     branches: [main, dev]
+  # `labeled` is not in the default set, and without it the `full-matrix` label
+  # below would be a documented escape hatch that never fires: adding a label
+  # would change nothing until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  # Lets anyone run the full matrix on demand. GitHub only offers this once the
+  # workflow is on the default branch, so it is here for later rather than now.
+  workflow_dispatch:
 
 jobs:
   # The one job that is not per-app, and so the one exception to the naming
@@ -35,9 +42,12 @@ jobs:
       - name: Check formatting
         run: make fmt/check
 
-  # Job display names follow one convention: `test (<app>)` and `build (<app>)`,
-  # so a check's name says what it does and which app it belongs to.
-  #
+  # -------------------------------------------------------------------------
+  # Tests: one job per app, plus the cross-platform pair at the end of the
+  # block. Job display names follow one convention, `test (<app>)` and
+  # `build (<app>)`, so a check's name says what it does and which app it
+  # belongs to.
+  # -------------------------------------------------------------------------
   # Gate: the shared engine must pass before anything downstream runs.
   test-core:
     name: test (core)
@@ -228,12 +238,104 @@ jobs:
       - name: Run the Rust suite
         run: make desktop/test-rust
 
+  # Last of the test jobs, and the only one that does not always run: the whole
+  # Rust suite on the two platforms Linux cannot speak for. Linux
+  # runs it on every push and every pull request; these two are reserved for
+  # the branches that ship, because a macOS or Windows runner costs several
+  # times a Linux one in billed minutes and feature work does not need them.
+  #
+  # They run when the code is on, or heading to, a shipping branch:
+  #   - any push to dev or main (the `on:` block already limits pushes to those)
+  #   - a pull request FROM dev (the release PR into main), from main (a
+  #     back-merge) or from a release/* branch
+  # A pull request from feature/* or hotfix/* therefore stays Linux only, and
+  # picks these up when it lands on dev. When such a branch does touch
+  # platform-specific code, label the pull request `full-matrix` to ask for
+  # them anyway rather than renaming the branch.
+  #
+  # Windows is where the file identity guard matters most: NTFS hardlinks are
+  # the case it exists for, and the comparison was #[cfg(unix)], so the guard
+  # did not exist there at all. macOS is where the .dmg ships, and until now
+  # nothing but a developer's own machine ever ran this suite there.
+  test-cross:
+    name: test (rust, ${{ matrix.label }})
+    needs: test-core
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
+      github.head_ref == 'dev' ||
+      github.head_ref == 'main' ||
+      startsWith(github.head_ref, 'release/') ||
+      contains(github.event.pull_request.labels.*.name, 'full-matrix')
+    strategy:
+      # One platform failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Both runner images already carry what Tauri needs: Xcode command line
+      # tools on macOS, and the MSVC toolchain, the Windows SDK that
+      # tauri-winres needs for rc.exe, and WebView2 on Windows. These tests
+      # never open a window.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      # runner.os distinguishes these from each other and from the Linux jobs,
+      # so the three cannot collide despite the shared suffix.
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            apps/desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-cross-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cross-
+
+      # bash, not pwsh, for the same reason release.yml's Windows job says so:
+      # the make targets assume a POSIX shell, and Git Bash on PATH is what
+      # makes GNU make pick sh.exe for its recipes instead of cmd.exe. Harmless
+      # on macOS, where bash is the default anyway.
+      - name: Run the workspace suite
+        shell: bash
+        run: make test/rust
+
+      # Separate step so a failure says which half broke without reading a log.
+      - name: Run the desktop suite
+        shell: bash
+        run: make desktop/test-rust
+
   # -------------------------------------------------------------------------
   # Builds: each app builds only after its own tests pass.
   # -------------------------------------------------------------------------
   build-core:
     name: build (core)
-    needs: test-core
+    needs: [test-core, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-core.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -258,7 +360,14 @@ jobs:
 
   build-remote:
     name: build (remote)
-    needs: test-remote
+    needs: [test-remote, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-remote.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -283,7 +392,14 @@ jobs:
 
   build-cli:
     name: build (cli)
-    needs: test-cli
+    needs: [test-cli, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-cli.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -308,7 +424,14 @@ jobs:
 
   build-server-backend:
     name: build (server-backend)
-    needs: test-server-backend
+    needs: [test-server-backend, test-cross]
+    # Same shape as build (desktop): nothing is built while the platforms it
+    # ships to are unproven. See the comment there for why this is spelled out
+    # instead of the usual always() plus failure check.
+    if: >-
+      always() &&
+      needs.test-server-backend.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -351,10 +474,29 @@ jobs:
 
   # Compiles the whole desktop app (frontend + the src-tauri Rust crate,
   # which no other CI job compiles) without bundling installers. Needs the
-  # Tauri system libraries on Linux.
+  # Tauri system libraries on Linux. This is the Linux leg, and unlike the two
+  # below it runs everywhere, so a feature branch still learns whether the app
+  # compiles at all.
   build-desktop:
     name: build (desktop)
-    needs: [test-desktop, test-desktop-rust]
+    needs: [test-desktop, test-desktop-rust, test-cross]
+    # The desktop's coverage is split across three jobs, so waiting on only the
+    # two Linux ones would let the app build while its behaviour on the two
+    # platforms it ships to was still unproven. That is the exact shape of the
+    # bug this branch fixes, so it should not be possible here either.
+    #
+    # Spelled out rather than the usual `always() && !failure` idiom, which is
+    # wrong twice over. A skipped dependency skips this job, so test-cross being
+    # gated off on a feature branch would take the desktop build with it; and a
+    # job skipped because something upstream FAILED also reports `skipped`, so
+    # the idiom would happily build the desktop after test (core) had failed.
+    # This says what it means: both Linux suites must have passed, and the cross
+    # platform pair must have passed or not been asked for.
+    if: >-
+      always() &&
+      needs.test-desktop.result == 'success' &&
+      needs.test-desktop-rust.result == 'success' &&
+      (needs.test-cross.result == 'success' || needs.test-cross.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -389,4 +531,79 @@ jobs:
             ${{ runner.os }}-cargo-desktop-
 
       - name: Compile the desktop app
+        run: make desktop/compile
+
+  # The same compile on the other two platforms it ships to, on release
+  # branches only.
+  #
+  # Not on dev, deliberately. The test jobs above already compile this crate on
+  # both platforms: `make desktop/test-rust` runs `cargo test` inside src-tauri,
+  # which goes through generate_context!(), runs build.rs (so rc.exe, the icon
+  # and the manifest on Windows) and links executables. All this adds is the
+  # release profile, which for this crate means lto, codegen-units = 1 and
+  # panic = "abort": a real difference, but a narrow one, and the slowest kind
+  # of build there is. Paying ten to fifteen minutes per platform on every push
+  # to dev for that is not a good trade.
+  #
+  # On a release branch it is, because the alternative is finding out after the
+  # tag is pushed. Note what it still does not cover: it compiles rather than
+  # bundles, and every release failure this repo has actually had (FUSE for the
+  # AppImage, the Windows job needing bash, gh release create not being
+  # idempotent) lived in the bundling that --no-bundle skips. A dry run of
+  # release.yml on the release branch would cover that too.
+  build-desktop-cross:
+    name: build (desktop, ${{ matrix.label }})
+    needs: [test-desktop, test-desktop-rust, test-cross]
+    if: >-
+      always() &&
+      needs.test-desktop.result == 'success' &&
+      needs.test-desktop-rust.result == 'success' &&
+      needs.test-cross.result == 'success' &&
+      (startsWith(github.head_ref, 'release/') ||
+       github.event_name == 'workflow_dispatch' ||
+       contains(github.event.pull_request.labels.*.name, 'full-matrix'))
+    strategy:
+      # One platform failing must not hide the other's result.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            label: macos
+          - os: windows-latest
+            label: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Neither runner needs anything installed for Tauri: Xcode command line
+      # tools on macOS, and the MSVC toolchain, the Windows SDK that
+      # tauri-winres needs for rc.exe, and WebView2 on Windows are all on the
+      # images. Only Linux needs the webkit2gtk packages the leg above installs.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Cache cargo (desktop workspace)
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/desktop/src-tauri/target
+          key: ${{ runner.os }}-cargo-desktop-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-desktop-
+
+      # bash for the same reason the other Windows steps say so: the make
+      # targets are POSIX recipes. Harmless on macOS.
+      - name: Compile the desktop app
+        shell: bash
         run: make desktop/compile
