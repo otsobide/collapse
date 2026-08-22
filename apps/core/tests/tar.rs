@@ -20,6 +20,19 @@ fn data_header(size: u64) -> Header {
     header
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The entry names inside the archive are forward-slash separated everywhere;
+/// `extract_tar` rebuilds each one as a `PathBuf` (keeping the components
+/// `unpack_in` actually wrote) before stringifying it, so the listing (and
+/// only the listing) comes back with `\` on Windows.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 #[test]
 fn creates_valid_tar() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -79,7 +92,7 @@ fn extract_tar_returns_file_list() {
 
     let out = dir.path().join("extracted");
     let files = extract_tar(&archive, &out).unwrap();
-    assert_eq!(files, vec!["sample.txt"]);
+    assert_eq!(listing(files), vec!["sample.txt"]);
 }
 
 #[test]
@@ -104,7 +117,7 @@ fn extract_tar_preserves_arcname() {
 
     let out = dir.path().join("extracted");
     let files = extract_tar(&archive, &out).unwrap();
-    assert_eq!(files, vec!["renamed.dat"]);
+    assert_eq!(listing(files), vec!["renamed.dat"]);
     assert!(out.join("renamed.dat").exists());
 }
 
@@ -147,9 +160,8 @@ fn extract_tar_lists_nested_files_recursively() {
     }
 
     let out = dir.path().join("extracted");
-    let mut files = extract_tar(&archive, &out).unwrap();
-    files.sort();
-    assert_eq!(files, vec!["a/b/deep.txt", "a/mid.txt", "top.txt"]);
+    let files = extract_tar(&archive, &out).unwrap();
+    assert_eq!(listing(files), vec!["a/b/deep.txt", "a/mid.txt", "top.txt"]);
     assert!(out.join("a/b/deep.txt").exists());
 }
 
@@ -194,7 +206,7 @@ fn extract_tar_directory_entries_are_skipped_in_file_list() {
     let out = dir.path().join("extracted");
     let files = extract_tar(&archive, &out).unwrap();
     // Directory entries must NOT appear in the returned list.
-    assert_eq!(files, vec!["subdir/inner.txt"]);
+    assert_eq!(listing(files), vec!["subdir/inner.txt"]);
     assert!(out.join("subdir/inner.txt").exists());
 }
 
@@ -230,7 +242,7 @@ fn extract_tar_reports_absolute_entry_names_as_written() {
     // match the path actually written, relative to the output dir.
     let out = dir.path().join("extracted");
     let files = extract_tar(&archive, &out).unwrap();
-    assert_eq!(files, vec!["abs.txt"]);
+    assert_eq!(listing(files), vec!["abs.txt"]);
     assert!(out.join("abs.txt").exists());
 }
 
@@ -255,11 +267,16 @@ fn compress_tar_dir_round_trips_tree() {
 
     // Entries are prefixed with the directory's own name.
     let out = dir.path().join("out");
-    let mut files = extract_tar(&archive, &out).unwrap();
-    files.sort();
-    assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
+    let files = extract_tar(&archive, &out).unwrap();
+    assert_eq!(
+        listing(files),
+        vec!["photos/sub/inner.txt", "photos/top.txt"]
+    );
     assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
-    assert_eq!(std::fs::read(out.join("photos/sub/inner.txt")).unwrap(), b"inner");
+    assert_eq!(
+        std::fs::read(out.join("photos/sub/inner.txt")).unwrap(),
+        b"inner"
+    );
 }
 
 #[test]
@@ -274,7 +291,10 @@ fn compress_tar_dir_preserves_empty_subdir() {
 
     let out = dir.path().join("out");
     extract_tar(&archive, &out).unwrap();
-    assert!(out.join("photos/empty").is_dir(), "empty subdir was not preserved");
+    assert!(
+        out.join("photos/empty").is_dir(),
+        "empty subdir was not preserved"
+    );
 }
 
 #[test]
@@ -285,7 +305,10 @@ fn compress_tar_dir_rejects_non_directory() {
 
     let result = compress_tar_dir(&file, &archive);
     assert!(result.is_err());
-    assert!(!archive.exists(), "no archive should be created for a non-directory");
+    assert!(
+        !archive.exists(),
+        "no archive should be created for a non-directory"
+    );
 }
 
 #[test]

@@ -5,6 +5,21 @@ use std::path::Path;
 
 use collapse_core::{compress, compress_dir, extract, Algorithm, CompressionError};
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The archives are identical everywhere (every backend writes forward-slash
+/// entry names), but `extract` rebuilds each entry as a `PathBuf` and
+/// stringifies it, so the same archive answers `data/a.txt` on Unix and
+/// `data\a.txt` on Windows. Only the returned listing differs, never what
+/// lands on disk, so the separator is normalized here rather than in the
+/// product.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 #[test]
 fn algorithm_display() {
     assert_eq!(Algorithm::SevenZ.to_string(), "7z");
@@ -104,8 +119,11 @@ fn extract_dispatches_zip() {
 
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
-    assert_eq!(files, vec!["input.txt"]);
-    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch zip");
+    assert_eq!(listing(files), vec!["input.txt"]);
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"dispatch zip"
+    );
 }
 
 #[test]
@@ -119,8 +137,11 @@ fn extract_dispatches_7z() {
 
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
-    assert_eq!(files, vec!["input.txt"]);
-    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch 7z");
+    assert_eq!(listing(files), vec!["input.txt"]);
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"dispatch 7z"
+    );
 }
 
 #[test]
@@ -134,8 +155,11 @@ fn extract_dispatches_tar() {
 
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
-    assert_eq!(files, vec!["input.txt"]);
-    assert_eq!(std::fs::read(out.join("input.txt")).unwrap(), b"dispatch tar");
+    assert_eq!(listing(files), vec!["input.txt"]);
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"dispatch tar"
+    );
 }
 
 #[test]
@@ -227,7 +251,7 @@ fn compress_dir_dispatches_tar() {
 
     let out = dir.path().join("out");
     let files = extract(&archive, &out).unwrap();
-    assert_eq!(files, vec!["data/a.txt"]);
+    assert_eq!(listing(files), vec!["data/a.txt"]);
     assert_eq!(std::fs::read(out.join("data/a.txt")).unwrap(), b"alpha");
 }
 
@@ -243,7 +267,7 @@ fn compress_dir_dispatches_zip() {
 
     let out = dir.path().join("out");
     let files = extract(&archive, &out).unwrap();
-    assert_eq!(files, vec!["data/a.txt"]);
+    assert_eq!(listing(files), vec!["data/a.txt"]);
     assert_eq!(std::fs::read(out.join("data/a.txt")).unwrap(), b"alpha");
 }
 
@@ -259,7 +283,7 @@ fn compress_dir_dispatches_7z() {
 
     let out = dir.path().join("out");
     let files = extract(&archive, &out).unwrap();
-    assert_eq!(files, vec!["data/a.txt"]);
+    assert_eq!(listing(files), vec!["data/a.txt"]);
     assert_eq!(std::fs::read(out.join("data/a.txt")).unwrap(), b"alpha");
 }
 

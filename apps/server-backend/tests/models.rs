@@ -1,7 +1,7 @@
 //! Unit tests for the job model, including the JSON shape clients parse.
 
-use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_core::Algorithm;
+use collapse_server_backend::models::{Envelope, Job, JobStatus};
 
 fn job(name: &str, algorithm: Algorithm) -> Job {
     Job::new(
@@ -17,17 +17,32 @@ fn job(name: &str, algorithm: Algorithm) -> Job {
 
 #[test]
 fn archive_name_appends_the_algorithm_extension() {
-    assert_eq!(job("notes.txt", Algorithm::Zip).archive_name, "notes.txt.zip");
-    assert_eq!(job("notes.txt", Algorithm::SevenZ).archive_name, "notes.txt.7z");
-    assert_eq!(job("notes.txt", Algorithm::Tar).archive_name, "notes.txt.tar");
+    assert_eq!(
+        job("notes.txt", Algorithm::Zip).archive_name,
+        "notes.txt.zip"
+    );
+    assert_eq!(
+        job("notes.txt", Algorithm::SevenZ).archive_name,
+        "notes.txt.7z"
+    );
+    assert_eq!(
+        job("notes.txt", Algorithm::Tar).archive_name,
+        "notes.txt.tar"
+    );
 }
 
 #[test]
 fn archive_name_keeps_the_original_extension() {
     // The source extension is kept, not replaced: notes.txt.zip, so
     // extracting restores the original name.
-    assert_eq!(job("photo.jpeg", Algorithm::Zip).archive_name, "photo.jpeg.zip");
-    assert_eq!(job("no-extension", Algorithm::Zip).archive_name, "no-extension.zip");
+    assert_eq!(
+        job("photo.jpeg", Algorithm::Zip).archive_name,
+        "photo.jpeg.zip"
+    );
+    assert_eq!(
+        job("no-extension", Algorithm::Zip).archive_name,
+        "no-extension.zip"
+    );
 }
 
 #[test]

@@ -68,8 +68,9 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
     let envelope = job.envelope;
 
     let result = tokio::task::spawn_blocking(move || match envelope {
-        Envelope::None => compress(&input, &output, &name, algorithm, level)
-            .map_err(|e| e.to_string()),
+        Envelope::None => {
+            compress(&input, &output, &name, algorithm, level).map_err(|e| e.to_string())
+        }
         Envelope::Tar => unwrap_and_compress(&input, &tree, &name, &output, algorithm, level),
     })
     .await;

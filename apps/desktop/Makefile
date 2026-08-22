@@ -1,15 +1,24 @@
 .DEFAULT_GOAL := build
-.PHONY: install test dev build bundle bundle-linux bundle-windows compile clean
+.PHONY: install test test-rust dev build bundle bundle-linux bundle-windows compile clean
 
 # Install JS deps only when the lockfile changed.
 node_modules: package-lock.json
 	npm ci
 	@touch node_modules
 
+# tauri::generate_context!() embeds this bundle at compile time, so the Rust
+# crate does not compile without it. `npm run tauri build` produces it through
+# beforeBuildCommand; a plain `cargo test` has no such hook, hence this target.
+dist: node_modules
+	npm run build
+
 install: node_modules ## Install JS dependencies
 
 test: node_modules ## Run the Vitest suite (Tauri IPC mocked)
 	npm run test
+
+test-rust: dist ## Run the src-tauri Rust integration tests
+	cd src-tauri && cargo test
 
 dev: node_modules ## Run the Tauri app in dev mode (hot reload)
 	npm run tauri dev

@@ -76,6 +76,7 @@ describe('App', () => {
       format: '7z',
       level: 3,
       server: null, // local by default
+      overwrite: true, // the save dialog already asked before returning the path
     })
     expect(w.text()).toContain('Compressed')
     expect(w.text()).toContain('/Users/me/report.pdf.7z')
@@ -139,6 +140,7 @@ describe('App', () => {
       format: 'zip',
       level: 3,
       server: 'http://box.local:8000',
+      overwrite: true,
     })
   })
 

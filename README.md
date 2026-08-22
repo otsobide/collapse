@@ -58,8 +58,10 @@ collapse e notes.txt.zip
 Formats: `zip` (default, or inferred from `-o`'s extension), `7z`, `tar`. Level
 `1`–`5` (default `3`, ignored by tar). The archive defaults to `<source>.<ext>`
 next to the source; override with `-o`. It **won't overwrite** an existing
-archive (or its own source) unless you pass `--force`. Run `collapse --help` for
-the full surface.
+archive unless you pass `--force`, and `--force` still refuses to write onto its
+own source or onto a file inside the folder being compressed, because either
+would destroy the data instead of archiving it. Run `collapse --help` for the
+full surface.
 
 Prebuilt macOS binaries (Apple Silicon and Intel tarballs, with sha256
 checksums) are attached to every
@@ -186,8 +188,13 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (286 Rust tests + 76 Vitest cases)
+make test              # run every suite (417 Rust tests + 76 Vitest cases)
+make test/rust         # only the Rust tests that need no Node toolchain (327)
 ```
+
+`make test` includes the desktop app's own Rust suite, which compiles Tauri, so
+it needs the [Tauri system dependencies](https://v2.tauri.app/start/prerequisites/)
+for your OS. `make test/rust` is the subset that does not.
 
 See the [CLI](#cli) and [Desktop](#desktop) sections above for installing and
 running the apps.
@@ -209,8 +216,9 @@ docs/          architecture.md, threat_model.md, server.md, registry.md,
 ```
 
 Each app carries its own tests, in that ecosystem's conventional place: the Rust
-crates keep Cargo integration tests in `apps/<crate>/tests/`; the desktop app
-keeps its Vitest suite in `apps/desktop/tests/`.
+crates keep Cargo integration tests in `apps/<crate>/tests/`; the desktop app has
+both, a Vitest suite in `apps/desktop/tests/` for the Vue half and Cargo
+integration tests in `apps/desktop/src-tauri/tests/` for the Rust half.
 
 ## Documentation
 
@@ -232,7 +240,8 @@ make test            # run every test suite (all seven apps)
 make core/test       # a single app's tests (also remote/test, cli/test,
                      # server-backend/test, server-frontend/test, desktop/test)
 make desktop/dev     # run an app target (here: the Tauri app in dev mode)
-make fmt  make lint  # format / clippy the Rust workspace
+make fmt  make lint  # format / clippy both Rust workspaces
+make fmt/check       # fail instead of reformatting (the tree is rustfmt clean)
 ```
 
 Work happens on `dev`, merged into `main` per release (see

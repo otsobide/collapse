@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use collapse_core::paths::{inside, same_file};
 use collapse_core::{compress, compress_dir, extract, Algorithm};
 use thiserror::Error;
 
@@ -80,8 +81,13 @@ impl From<Format> for Algorithm {
 /// What a command did, so the caller can report it.
 #[derive(Debug)]
 pub enum Outcome {
-    Compressed { output: PathBuf },
-    Extracted { output_dir: PathBuf, files: Vec<String> },
+    Compressed {
+        output: PathBuf,
+    },
+    Extracted {
+        output_dir: PathBuf,
+        files: Vec<String>,
+    },
 }
 
 impl Outcome {
@@ -92,7 +98,11 @@ impl Outcome {
                 println!("Created {}", output.display());
             }
             Outcome::Extracted { output_dir, files } => {
-                println!("Extracted {} file(s) into {}", files.len(), output_dir.display());
+                println!(
+                    "Extracted {} file(s) into {}",
+                    files.len(),
+                    output_dir.display()
+                );
                 for file in files {
                     println!("  {file}");
                 }
@@ -114,6 +124,9 @@ pub enum CliError {
 
     #[error("refusing to write the archive onto its own source: {}", .0.display())]
     OutputIsSource(PathBuf),
+
+    #[error("refusing to write the archive inside the folder being compressed: {} (it would be destroyed instead of archived)", .0.display())]
+    OutputInsideSource(PathBuf),
 
     #[error("invalid path: {}", .0.display())]
     InvalidPath(PathBuf),
@@ -166,12 +179,29 @@ fn run_compress(
     };
 
     if output.exists() {
-        if output.canonicalize().map(|o| o == source).unwrap_or(false) {
+        // Both guards ask the filesystem whether these are the same file, not
+        // whether they are spelled the same: a hardlink is a second name for
+        // one file, so it never resolves to the same path. Comparing paths
+        // here is what let --force overwrite its own source.
+        if same_file(&source, &output) {
             return Err(CliError::OutputIsSource(output));
+        }
+        // Inside the tree being archived, and --force cannot buy past it. The
+        // backends list the tree before creating the archive, so this file
+        // would be truncated and then archived in its truncated state: lost
+        // from the archive as much as from disk, and the archive corrupt with
+        // it. Same reasoning as OutputIsSource above, which is also ahead of
+        // the force check.
+        if source.is_dir() && inside(&source, &output) {
+            return Err(CliError::OutputInsideSource(output));
         }
         if !force {
             return Err(CliError::OutputExists(output));
         }
+        // Deliberately NOT unlinked here. The write happens only once the
+        // archive is fully in hand (the remote path downloads it all before
+        // touching disk), so a failed run leaves the previous archive exactly
+        // as it was. Removing it up front would trade that away for nothing.
     }
 
     if !source.is_dir() && !source.is_file() {

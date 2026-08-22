@@ -18,7 +18,8 @@ apps/
   server-backend/  collapse-server-backend — HTTP compression server, lib + bin (src/ + tests/)
   server-frontend/ collapse-server-frontend — Vue web app for that server (src/ + tests/ = Vitest)
   server-aio/      the two above packaged into one container (a Dockerfile, no code)
-  desktop/     collapse-desktop — Tauri v2 desktop app (Vue + Rust, tests/ = Vitest)
+  desktop/     collapse-desktop, the Tauri v2 desktop app (Vue + Rust;
+               tests/ = Vitest, src-tauri/tests/ = Cargo integration tests)
   landing/     collapse-landing — Nuxt 3 static product site (no tests; deployed by deploy-landing.yml)
 docs/          architecture.md, threat_model.md, server.md, desktop.md, deployment.md, git_flow.md
 ```
@@ -56,8 +57,9 @@ is always local. (Each crate's tests live inside it — see [Testing](#testing).
 A single-responsibility library: compress a file or a directory into an archive,
 and extract an archive back out. Two formats compress (7z via `sevenz-rust2`,
 ZIP via `zip`); tar (via `tar`) is an uncompressed container. `src/lib.rs`
-re-exports the public surface: `compress`, `compress_dir`, `extract`,
-`Algorithm`, `CompressionError`.
+re-exports the compression surface: `compress`, `compress_dir`, `extract`,
+`Algorithm`, `CompressionError`; `paths` is a second public module, described
+below.
 
 ### Modules (`src/compression/…`)
 
@@ -69,6 +71,23 @@ re-exports the public surface: `compress`, `compress_dir`, `extract`,
 | `compression/sevenz.rs` | 7z backend: `compress_7z`, `compress_7z_dir`, `extract_7z`. |
 | `compression/zip.rs` | ZIP backend: `compress_zip`, `compress_zip_dir`, `extract_zip`. |
 | `compression/tar.rs` | tar backend: `compress_tar`, `compress_tar_dir`, `extract_tar`. |
+
+### `src/paths.rs` — the guards both front ends share
+
+Not part of compressing anything, but it lives here because both front ends
+need it and keeping a copy in each is what let them drift: the desktop compared
+filesystem identity on Unix only, and the CLI compared resolved paths and
+nothing else, so `--force` destroyed its own source through a hardlink on every
+platform.
+
+The rule it encodes is that **comparing paths is not comparing files**. A
+hardlink is not a pointer to a file, it *is* a name of that file, so two
+hardlinks resolve to two different paths on every operating system.
+
+| Function | What it answers |
+|----------|-----------------|
+| `same_file(a, b)` | Are these one file? Resolved-path equality first, then filesystem identity (device and inode on Unix, volume serial and file index on Windows, via `same-file`), then on Unix the same comparison through `stat`, which still answers for a write-only file that cannot be opened but can still be truncated. A path that does not exist is never "the same file", which is what makes a first compression possible. |
+| `inside(dir, candidate)` | Would archiving `dir` read `candidate`? True when it sits inside by path, or is another name for something that does. The second half walks the tree comparing identity, skips symlinked children (the backends never read through them) and stops at the first match. It only runs for a candidate that already exists, so the walk is paid only when overwriting. |
 
 ### The `Algorithm` enum is the single extension point
 
@@ -134,8 +153,12 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
    source.
 4. **Safety guards** (before writing anything):
    - refuse if the output would overwrite its **own source** (this would truncate
-     the source before it is read — data loss);
-   - refuse an existing output unless `--force`;
+     the source before it is read, which is data loss);
+   - refuse an existing output that sits **inside the folder being compressed**,
+     even with `--force`: the tree is listed before the archive is created, so
+     that file would be truncated and then archived in its truncated state,
+     losing it from the archive as much as from disk;
+   - refuse any other existing output unless `--force`;
    - reject a source that is neither a regular file nor a directory (e.g. a FIFO).
 5. Dispatch to `compress_dir` (directory) or `compress` (file). With
    `--server <URL>`, the source is instead compressed by a remote
@@ -331,8 +354,10 @@ archives, in the cervantic visual style (warm cream + terracotta, monospace), an
 targets macOS, Windows and Linux from one codebase.
 
 The backend exposes four Tauri commands: `is_directory` (UI icon/name hint),
-`compress_path` (dispatches file vs. folder, refuses to overwrite its own
-source, and hands the work to a remote server when one is chosen),
+`compress_path` (dispatches file vs. folder, refuses to overwrite its own source
+or a file inside the folder being compressed, replaces an existing output only
+when `overwrite` says the user agreed to it in the save dialog, and hands the
+work to a remote server when one is chosen),
 `extract_archive`, and `check_server` (a health probe for the settings panel).
 Remote work goes through [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server)
 from Rust rather than the webview, so the app's CSP stays `default-src 'self'`. Every path is chosen through the native
@@ -376,6 +401,14 @@ Each app carries its own tests, in that ecosystem's conventional place:
   `sources` cover the pure helpers, including what the app remembers between
   launches, and `App` mounts the component to check the IPC payloads and the
   destination picker.
+- `apps/desktop/src-tauri/tests/`, the Rust half, which used to have no tests
+  at all: `paths` hammers the `same_file` guard from both argument orders
+  (spellings, symlinks, hardlinks, paths that do not exist yet), `commands`
+  drives the command surface against real files and asserts the effect on disk
+  rather than only the `Result`, `remote` runs the whole remote flow against a
+  real server backend served in-process, and `ipc` reads `App.vue`, `lib.rs`
+  and the Vitest stub to prove the three stay in lockstep, since nothing type
+  checks that crossing.
 
 The Rust integration tests compile as separate crates, so they only see each
 crate's **public** surface — anything a test needs must be reachable from
@@ -387,11 +420,63 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 on pull requests, entirely on Linux runners. Every job is named
 `test (<app>)` or `build (<app>)`, so a check's name says what it does and
 which app it belongs to; the job ids match those names (`test-cli`,
-`build-cli`). Per app, tests gate the build: `test (core)` (`make core/test`)
+`build-cli`). The one exception is **`fmt`**, which is not per app: it runs
+`make fmt/check` over both Rust workspaces and **runs first, with every other
+job waiting on it**. Formatting needs no build, so it answers in seconds, and a
+tree that has to be pushed again anyway is not worth a runner compiling Tauri
+for four minutes. It is there because merging two individually well formatted
+branches can still produce an unformatted tree, and only a check on the merged
+result sees that. Per app, tests gate the build: `test (core)` (`make core/test`)
 gates `test (remote)`, `test (cli)`, `test (server-backend)` and
 `test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
-`test (server-frontend)` is independent of the Rust engine and runs on its
-own. Each app's build job runs only after its own tests pass: `build (core)`,
+`test (server-frontend)` is independent of the Rust engine and waits only on
+`fmt`. **Linux runs everything, on every push and every pull request.** macOS and
+Windows run the whole Rust suite too, as `test (rust, macos)` and
+`test (rust, windows)`, but only for the branches that ship: any push to `dev`
+or `main`, and any pull request from `dev`, from `main`, or from a `release/*`
+branch. A `feature/*` or `hotfix/*` pull request stays Linux only and picks
+them up when it lands on `dev`, because those runners cost several times a
+Linux one per minute. When such a branch does touch platform-specific code,
+labelling the pull request `full-matrix` asks for them anyway.
+
+The two exist because Linux cannot speak for either. Windows is where the file
+identity guard in `paths.rs` matters most, and its comparison used to be
+`#[cfg(unix)]`, so the guard did not exist there at all; no CI job had ever
+compiled the desktop crate for Windows, which is exactly why the gap went
+unseen. macOS is where the `.dmg` ships, and until this job existed nothing but
+a developer's own machine ever ran the desktop suite there.
+
+The desktop app is compiled on Linux everywhere as `build (desktop)`, and on
+the other two platforms as `build (desktop, macos)` and `build (desktop,
+windows)` **on the release path only**: a `release/*` branch, and the `dev` to
+`main` pull request itself. That second one matters, since that pull request is
+the release gate and its head branch is `dev` rather than `release/*`, so
+skipping there would mean the app was never compiled for macOS or Windows on
+the commit about to ship.
+
+Not on `dev`, deliberately. The cross-platform test jobs already compile this
+crate on both platforms, since `make desktop/test-rust` runs `cargo test` inside
+`src-tauri`, which goes through `generate_context!()`, runs `build.rs` and links
+executables. All the extra build adds is the release profile (`lto`,
+`codegen-units = 1`, `panic = "abort"`), which is a real difference but a narrow
+one and the slowest kind of build there is. On a release branch that trade is
+worth it, because the alternative is finding out after the tag is pushed.
+
+Worth knowing what it still misses: it compiles rather than bundles, and every
+release failure this repo has actually had lived in the bundling that
+`--no-bundle` skips.
+
+**Every Rust build waits on the cross-platform pair as well as on its own
+tests**, so nothing is built while its behaviour on the platforms it ships to
+is unproven. `build (desktop)` waits on all three of the suites that cover it,
+the two Linux jobs and the pair. `build (server-frontend)` is the exception and
+has no such wait, because it has no Rust and that pair proves nothing about
+it. It is spelled out with an
+explicit `if` rather than the usual `always() && !failure` idiom, because a job
+skipped for being gated off and a job skipped because something upstream failed
+both report `skipped`, and that idiom cannot tell them apart.
+
+Each app's build job runs only after its own tests pass: `build (core)`,
 `build (remote)`, `build (cli)`, `build (server-backend)`,
 `build (server-frontend)` and `build (desktop)`, the last compiling the whole
 Tauri app (frontend + the `src-tauri` crate, which no other CI job compiles)

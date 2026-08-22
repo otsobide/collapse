@@ -14,6 +14,18 @@ fn source_file(dir: &std::path::Path) -> std::path::PathBuf {
     p
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The entry names inside the archive are forward-slash separated everywhere;
+/// `extract_zip` rebuilds each one as a `PathBuf` before stringifying it, so
+/// the listing (and only the listing) comes back with `\` on Windows.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 #[test]
 fn creates_valid_zip() {
     let dir = tempfile::TempDir::new().unwrap();
@@ -81,7 +93,7 @@ fn extract_zip_returns_file_list() {
 
     let out = dir.path().join("extracted");
     let files = extract_zip(&archive, &out).unwrap();
-    assert_eq!(files, vec!["sample.txt"]);
+    assert_eq!(listing(files), vec!["sample.txt"]);
 }
 
 #[test]
@@ -106,7 +118,7 @@ fn extract_zip_preserves_arcname() {
 
     let out = dir.path().join("extracted");
     let files = extract_zip(&archive, &out).unwrap();
-    assert_eq!(files, vec!["renamed.dat"]);
+    assert_eq!(listing(files), vec!["renamed.dat"]);
     assert!(out.join("renamed.dat").exists());
 }
 
@@ -149,7 +161,7 @@ fn extract_zip_directory_entries_are_skipped_in_file_list() {
     let out = dir.path().join("extracted");
     let files = extract_zip(&archive, &out).unwrap();
     // Directory entries must NOT appear in the returned list.
-    assert_eq!(files, vec!["subdir/inner.txt"]);
+    assert_eq!(listing(files), vec!["subdir/inner.txt"]);
     assert!(out.join("subdir/inner.txt").exists());
 }
 
@@ -188,11 +200,16 @@ fn compress_zip_dir_round_trips_tree() {
     compress_zip_dir(&root, &archive, 3).unwrap();
 
     let out = dir.path().join("out");
-    let mut files = extract_zip(&archive, &out).unwrap();
-    files.sort();
-    assert_eq!(files, vec!["photos/sub/inner.txt", "photos/top.txt"]);
+    let files = extract_zip(&archive, &out).unwrap();
+    assert_eq!(
+        listing(files),
+        vec!["photos/sub/inner.txt", "photos/top.txt"]
+    );
     assert_eq!(std::fs::read(out.join("photos/top.txt")).unwrap(), b"top");
-    assert_eq!(std::fs::read(out.join("photos/sub/inner.txt")).unwrap(), b"inner");
+    assert_eq!(
+        std::fs::read(out.join("photos/sub/inner.txt")).unwrap(),
+        b"inner"
+    );
 }
 
 #[test]
@@ -207,7 +224,10 @@ fn compress_zip_dir_preserves_empty_subdir() {
 
     let out = dir.path().join("out");
     extract_zip(&archive, &out).unwrap();
-    assert!(out.join("photos/empty").is_dir(), "empty subdir was not preserved");
+    assert!(
+        out.join("photos/empty").is_dir(),
+        "empty subdir was not preserved"
+    );
 }
 
 #[test]

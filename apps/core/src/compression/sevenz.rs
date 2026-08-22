@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use sevenz_rust2::lzma::LZMA2Options;
-use sevenz_rust2::{SevenZArchiveEntry, SevenZMethodConfiguration, SevenZMethod, SevenZWriter};
+use sevenz_rust2::{SevenZArchiveEntry, SevenZMethod, SevenZMethodConfiguration, SevenZWriter};
 
 use super::CompressionError;
 
@@ -23,8 +23,9 @@ pub fn compress_7z(
         SevenZWriter::create(output).map_err(|e| CompressionError::Failed(e.to_string()))?;
 
     let lzma2_opts = LZMA2Options::with_preset(preset);
-    writer.set_content_methods(vec![SevenZMethodConfiguration::new(SevenZMethod::LZMA2)
-        .with_options(lzma2_opts.into())]);
+    writer.set_content_methods(vec![
+        SevenZMethodConfiguration::new(SevenZMethod::LZMA2).with_options(lzma2_opts.into())
+    ]);
 
     let mut entry = SevenZArchiveEntry::default();
     entry.name = arcname.to_string();
@@ -56,8 +57,9 @@ pub fn compress_7z_dir(
     let mut writer =
         SevenZWriter::create(output).map_err(|e| CompressionError::Failed(e.to_string()))?;
     let lzma2_opts = LZMA2Options::with_preset(preset);
-    writer.set_content_methods(vec![SevenZMethodConfiguration::new(SevenZMethod::LZMA2)
-        .with_options(lzma2_opts.into())]);
+    writer.set_content_methods(vec![
+        SevenZMethodConfiguration::new(SevenZMethod::LZMA2).with_options(lzma2_opts.into())
+    ]);
 
     for entry in entries {
         // from_path sets is_directory/has_stream from the on-disk node.
@@ -94,9 +96,7 @@ pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Comp
     sevenz_rust2::decompress_with_extract_fn(file, &canonical_output, |entry, reader, _dest| {
         let name = entry.name().to_string();
         let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
-            sevenz_rust2::Error::other(format!(
-                "Path traversal detected in archive entry: {name}"
-            ))
+            sevenz_rust2::Error::other(format!("Path traversal detected in archive entry: {name}"))
         })?;
         let dest = canonical_output.join(&rel);
 
@@ -107,7 +107,9 @@ pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Comp
                 fs::create_dir_all(parent).map_err(sevenz_rust2::Error::io)?;
             }
             let mut buf = Vec::new();
-            reader.read_to_end(&mut buf).map_err(sevenz_rust2::Error::io)?;
+            reader
+                .read_to_end(&mut buf)
+                .map_err(sevenz_rust2::Error::io)?;
             fs::write(&dest, &buf).map_err(sevenz_rust2::Error::io)?;
             extracted.push(rel.to_string_lossy().to_string());
         }

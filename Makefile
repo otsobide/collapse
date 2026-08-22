@@ -16,21 +16,36 @@ $(foreach app,$(APPS),$(eval $(call APP_DELEGATE,$(app))))
 # Global targets
 # ---------------------------------------------------------------------------
 .PHONY: test
-test: core/test remote/test cli/test server-backend/test server-frontend/test desktop/test ## Run every test suite
+test: core/test remote/test cli/test server-backend/test server-frontend/test desktop/test desktop/test-rust ## Run every test suite
 
+# desktop/test-rust is deliberately absent: the src-tauri crate does not compile
+# without the frontend bundle, so its Rust suite needs the Node toolchain that
+# this target exists to avoid.
 .PHONY: test/rust
-test/rust: core/test remote/test cli/test server-backend/test ## Run only the Rust tests
+test/rust: core/test remote/test cli/test server-backend/test ## Run the Rust tests that need no Node toolchain
 
 .PHONY: build
 build: core/build remote/build cli/build server-backend/build ## Build the Rust crates (debug)
 
 .PHONY: fmt
+# Both targets have to be told about apps/desktop/src-tauri: it is its own
+# workspace (see its empty [workspace] table), so --workspace at the root does
+# not reach it. Leaving it out is what let its formatting drift unnoticed.
+DESKTOP_MANIFEST := apps/desktop/src-tauri/Cargo.toml
+
 fmt: ## Format all Rust code
 	cargo fmt --all
+	cargo fmt --all --manifest-path $(DESKTOP_MANIFEST)
+
+.PHONY: fmt/check
+fmt/check: ## Fail if any Rust code is not formatted
+	cargo fmt --all --check
+	cargo fmt --all --check --manifest-path $(DESKTOP_MANIFEST)
 
 .PHONY: lint
-lint: ## Run clippy across the Rust workspace
+lint: ## Run clippy across the Rust workspaces
 	cargo clippy --workspace --all-targets
+	cargo clippy --all-targets --manifest-path $(DESKTOP_MANIFEST)
 
 .PHONY: clean
 clean: ## Remove Rust build artifacts (per-app: `make desktop/clean`)

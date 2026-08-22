@@ -2,11 +2,11 @@
 //! restart or a crash left disagreeing, and the reaper that collects jobs
 //! nobody came back for.
 
+use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::{reap, reconcile, Reconciled, INTERRUPTED};
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE};
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
-use collapse_core::Algorithm;
 use tempfile::TempDir;
 
 /// A deadline every job is older than, and one no job is older than. Passing
@@ -217,6 +217,15 @@ fn one_pass_puts_every_kind_of_disagreement_right() {
 }
 
 // ------------------------------------------------------------- the reaper --
+//
+// Known defect, deliberately not fixed here and not covered below: `reap`
+// discards what `delete_job` returned, so a directory it could not remove is
+// still counted as reaped and its row is still forgotten. That is the exact
+// files-without-a-row case `reconcile` refuses to report as clean, and only
+// the next startup sweep collects it. It is invisible on Unix, where
+// `remove_dir_all` on a directory the server owns does not fail; on Windows a
+// file held open by another process (a virus scanner, an indexer) makes it
+// reachable, and a long-running server would log cleanups it did not do.
 
 #[test]
 fn a_finished_job_nobody_came_back_for_is_reaped() {
@@ -333,8 +342,12 @@ fn reconciling_twice_changes_nothing_the_second_time() {
 /// the report claims otherwise: the directory then leaks forever and every
 /// startup says it was cleaned.
 #[test]
-// Linux only: macOS refuses to create a file name that is not valid UTF-8,
-// so the case cannot even be staged there. CI runs on Linux, where it can.
+// Linux only: macOS refuses to create a file name that is not valid UTF-8, so
+// the case cannot even be staged there, and Windows names are UTF-16 rather
+// than bytes, so `OsStr::from_bytes` does not exist and the case does not
+// arise. What those two lose is the proof that `staged_jobs` -> `delete_job`
+// carries a name through as bytes rather than through a `String`; the Linux
+// leg of CI covers it for all three.
 #[cfg(target_os = "linux")]
 fn an_orphan_whose_name_is_not_text_is_really_deleted() {
     use std::os::unix::ffi::OsStrExt;

@@ -23,6 +23,21 @@ fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
     }
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The entries inside the archive are forward-slashed on every platform (both
+/// the tar envelope the client sends and the archive the server returns are
+/// built by core's tree walk), but `extract` rebuilds the listing from `Path`
+/// components, so it arrives as `photos\a.txt` on Windows. The normalized name
+/// still reads the file, because `Path::join` accepts a forward slash there
+/// too. Same shape as `listing` in `tests/cli.rs`.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 /// Serve the real API app on an OS-assigned port, returning its base URL and
 /// its staging directory (to observe server-side cleanup). The server thread
 /// (which keeps the staging TempDir alive) lives for the rest of the test
@@ -60,7 +75,14 @@ const UNREACHABLE: &str = "http://127.0.0.1:9";
 
 #[test]
 fn server_flag_parses() {
-    let cli = parse(&["collapse", "compress", "f.txt", "--server", "http://localhost:8000"]).unwrap();
+    let cli = parse(&[
+        "collapse",
+        "compress",
+        "f.txt",
+        "--server",
+        "http://localhost:8000",
+    ])
+    .unwrap();
     match cli.command {
         Command::Compress { server, .. } => {
             assert_eq!(server.as_deref(), Some("http://localhost:8000"));
@@ -81,17 +103,23 @@ fn remote_compress_round_trips_for_every_format() {
         let archive = dir.path().join(format!("out.{ext}"));
 
         let output = compressed_output(run_ok(&[
-            "collapse", "compress",
+            "collapse",
+            "compress",
             src.to_str().unwrap(),
-            "-f", fmt, "-l", "2",
-            "-o", archive.to_str().unwrap(),
-            "--server", &server,
+            "-f",
+            fmt,
+            "-l",
+            "2",
+            "-o",
+            archive.to_str().unwrap(),
+            "--server",
+            &server,
         ]));
         assert_eq!(output, archive);
 
         let out = dir.path().join("out");
         let files = collapse_core::extract(&archive, &out).unwrap();
-        assert_eq!(files, vec!["notes.txt"], "{fmt}");
+        assert_eq!(listing(files), vec!["notes.txt"], "{fmt}");
         assert_eq!(
             std::fs::read(out.join("notes.txt")).unwrap(),
             b"compressed far away",
@@ -110,12 +138,19 @@ fn remote_compress_defaults_output_beside_source() {
     std::fs::write(&src, b"remote default output").unwrap();
 
     let output = compressed_output(run_ok(&[
-        "collapse", "compress", src.to_str().unwrap(), "--server", &server,
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &server,
     ]));
     assert_eq!(output.file_name().unwrap(), "notes.txt.zip");
 
     let out = dir.path().join("out");
-    assert_eq!(collapse_core::extract(&output, &out).unwrap(), vec!["notes.txt"]);
+    assert_eq!(
+        listing(collapse_core::extract(&output, &out).unwrap()),
+        vec!["notes.txt"]
+    );
 }
 
 #[test]
@@ -125,7 +160,13 @@ fn remote_compress_cleans_up_the_job_server_side() {
     let src = dir.path().join("notes.txt");
     std::fs::write(&src, b"leave nothing behind").unwrap();
 
-    run_ok(&["collapse", "compress", src.to_str().unwrap(), "--server", &server]);
+    run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &server,
+    ]);
 
     // The CLI deletes the job after downloading, so nothing survives in the
     // server's job area. That area is its own directory, separate from the
@@ -154,23 +195,27 @@ fn remote_compress_a_directory_matches_the_local_result() {
 
     let remote_archive = dir.path().join("remote.zip");
     run_ok(&[
-        "collapse", "compress",
+        "collapse",
+        "compress",
         root.to_str().unwrap(),
-        "-o", remote_archive.to_str().unwrap(),
-        "--server", &server,
+        "-o",
+        remote_archive.to_str().unwrap(),
+        "--server",
+        &server,
     ]);
 
     let local_archive = dir.path().join("local.zip");
     run_ok(&[
-        "collapse", "compress",
+        "collapse",
+        "compress",
         root.to_str().unwrap(),
-        "-o", local_archive.to_str().unwrap(),
+        "-o",
+        local_archive.to_str().unwrap(),
     ]);
 
     let extract_all = |archive: &std::path::Path, into: &str| {
         let out = dir.path().join(into);
-        let mut files = collapse_core::extract(archive, &out).unwrap();
-        files.sort();
+        let files = listing(collapse_core::extract(archive, &out).unwrap());
         let contents: Vec<Vec<u8>> = files
             .iter()
             .map(|f| std::fs::read(out.join(f)).unwrap())
@@ -178,11 +223,18 @@ fn remote_compress_a_directory_matches_the_local_result() {
         (files, contents)
     };
 
-    assert_eq!(extract_all(&remote_archive, "r"), extract_all(&local_archive, "l"));
+    assert_eq!(
+        extract_all(&remote_archive, "r"),
+        extract_all(&local_archive, "l")
+    );
     let (files, _) = extract_all(&remote_archive, "r2");
     assert_eq!(
         files,
-        vec!["photos/a.txt", "photos/sub/b.txt", "photos/sub/deeper/c.txt"]
+        vec![
+            "photos/a.txt",
+            "photos/sub/b.txt",
+            "photos/sub/deeper/c.txt"
+        ]
     );
 }
 
@@ -198,16 +250,26 @@ fn remote_compress_a_directory_to_tar_round_trips() {
 
     let archive = dir.path().join("docs.tar");
     run_ok(&[
-        "collapse", "compress",
+        "collapse",
+        "compress",
         root.to_str().unwrap(),
-        "-f", "tar",
-        "-o", archive.to_str().unwrap(),
-        "--server", &server,
+        "-f",
+        "tar",
+        "-o",
+        archive.to_str().unwrap(),
+        "--server",
+        &server,
     ]);
 
     let out = dir.path().join("out");
-    assert_eq!(collapse_core::extract(&archive, &out).unwrap(), vec!["docs/a.txt"]);
-    assert_eq!(std::fs::read(out.join("docs/a.txt")).unwrap(), b"tar inside tar");
+    assert_eq!(
+        listing(collapse_core::extract(&archive, &out).unwrap()),
+        vec!["docs/a.txt"]
+    );
+    assert_eq!(
+        std::fs::read(out.join("docs/a.txt")).unwrap(),
+        b"tar inside tar"
+    );
 }
 
 #[test]
@@ -216,7 +278,13 @@ fn remote_compress_unreachable_server_errors() {
     let src = dir.path().join("notes.txt");
     std::fs::write(&src, b"x").unwrap();
 
-    let err = run_err(&["collapse", "compress", src.to_str().unwrap(), "--server", UNREACHABLE]);
+    let err = run_err(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        UNREACHABLE,
+    ]);
     assert!(matches!(err, CliError::Remote(_)), "got {err:?}");
     // No partial output file is left behind.
     assert!(!dir.path().join("notes.txt.zip").exists());
@@ -235,10 +303,13 @@ fn remote_compress_refuses_existing_output_without_force() {
     // The overwrite guard fires before any network I/O (unreachable server).
     assert!(matches!(
         run_err(&[
-            "collapse", "compress",
+            "collapse",
+            "compress",
             src.to_str().unwrap(),
-            "-o", archive.to_str().unwrap(),
-            "--server", UNREACHABLE,
+            "-o",
+            archive.to_str().unwrap(),
+            "--server",
+            UNREACHABLE,
         ]),
         CliError::OutputExists(_)
     ));
@@ -255,16 +326,25 @@ fn remote_compress_force_overwrites_existing_output() {
     std::fs::write(&archive, b"stale").unwrap();
 
     run_ok(&[
-        "collapse", "compress",
+        "collapse",
+        "compress",
         src.to_str().unwrap(),
-        "-o", archive.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
         "--force",
-        "--server", &server,
+        "--server",
+        &server,
     ]);
 
     let out = dir.path().join("out");
-    assert_eq!(collapse_core::extract(&archive, &out).unwrap(), vec!["notes.txt"]);
-    assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"fresh content");
+    assert_eq!(
+        listing(collapse_core::extract(&archive, &out).unwrap()),
+        vec!["notes.txt"]
+    );
+    assert_eq!(
+        std::fs::read(out.join("notes.txt")).unwrap(),
+        b"fresh content"
+    );
 }
 
 #[test]
@@ -276,11 +356,14 @@ fn remote_compress_refuses_to_overwrite_its_own_source() {
     // Same no-data-loss guarantee as local mode, even with --force.
     assert!(matches!(
         run_err(&[
-            "collapse", "compress",
+            "collapse",
+            "compress",
             src.to_str().unwrap(),
-            "-o", src.to_str().unwrap(),
+            "-o",
+            src.to_str().unwrap(),
             "--force",
-            "--server", UNREACHABLE,
+            "--server",
+            UNREACHABLE,
         ]),
         CliError::OutputIsSource(_)
     ));

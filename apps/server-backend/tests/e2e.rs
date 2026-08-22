@@ -13,11 +13,11 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::INTERRUPTED;
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::Registry;
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
-use collapse_core::Algorithm;
 use tempfile::TempDir;
 
 /// A running `collapse-server-backend` process.
@@ -72,8 +72,12 @@ impl Server {
         format!("{}{path}", self.base)
     }
 
+    /// The budget is generous on purpose: the binary answers within
+    /// milliseconds of announcing its port, but a cold start on a loaded CI
+    /// runner (a freshly linked executable, an on-access virus scanner) can add
+    /// seconds, and a timeout here reads as a broken server.
     fn await_health(&self) {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while Instant::now() < deadline {
             if get(&self.url("/health")).0 == 200 {
                 return;
@@ -176,6 +180,19 @@ fn download(url: &str) -> (u16, Vec<u8>) {
     }
 }
 
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The engine builds the returned paths with the platform separator, so on
+/// Windows the same archive comes back as `photos\nested\two.txt`. The archive
+/// itself is identical either way, which is why this normalizes rather than
+/// asserting less.
+fn listing(paths: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = paths.iter().map(|p| p.replace('\\', "/")).collect();
+    out.sort();
+    out
+}
+
 fn job_id(body: &str) -> String {
     serde_json::from_str::<serde_json::Value>(body).unwrap()["job_id"]
         .as_str()
@@ -261,7 +278,10 @@ fn a_file_round_trips_through_the_whole_flow() {
     std::fs::write(&archive_path, &archive).unwrap();
     let extracted = collapse_core::extract(&archive_path, out.path()).unwrap();
     assert_eq!(extracted, vec!["notes.txt"]);
-    assert_eq!(std::fs::read(out.path().join("notes.txt")).unwrap(), content);
+    assert_eq!(
+        std::fs::read(out.path().join("notes.txt")).unwrap(),
+        content
+    );
 
     let (status, body) = delete(&server.url(&format!("/jobs/{id}")));
     assert_eq!(status, 200);
@@ -311,8 +331,7 @@ fn a_directory_round_trips_as_a_tar_envelope() {
     let archive_path = out.path().join("photos.7z");
     std::fs::write(&archive_path, &archive).unwrap();
 
-    let mut extracted = collapse_core::extract(&archive_path, out.path()).unwrap();
-    extracted.sort();
+    let extracted = listing(collapse_core::extract(&archive_path, out.path()).unwrap());
     assert_eq!(
         extracted,
         vec![
@@ -333,8 +352,14 @@ fn bad_requests_are_rejected_before_anything_is_staged() {
         ("/compress?name=../escape.txt", "a path, not a bare name"),
         ("/compress?name=sub/dir.txt", "a separator in the name"),
         ("/compress?name=notes.txt&level=9", "a level out of range"),
-        ("/compress?name=notes.txt&algorithm=rar", "an unknown format"),
-        ("/compress?name=notes.txt&envelope=zip", "an unknown envelope"),
+        (
+            "/compress?name=notes.txt&algorithm=rar",
+            "an unknown format",
+        ),
+        (
+            "/compress?name=notes.txt&envelope=zip",
+            "an unknown envelope",
+        ),
     ];
     for (query, what) in cases {
         let (status, body) = post(&server.url(query), b"payload");
@@ -406,12 +431,14 @@ fn an_upload_over_the_cap_is_refused() {
     // which is what this test and collapse-remote use) can have its connection
     // reset mid-upload instead. The refusal is the server's behaviour, so that
     // is what is asserted here, from the server's own log.
-    let _ = std::panic::catch_unwind(|| {
-        post(
-            &server.url("/compress?name=big.bin"),
-            &vec![0u8; 8 * 1024 * 1024],
-        )
-    });
+    //
+    // ureq is called directly rather than through `post`, which panics on a
+    // transport error: the reset is one of the two normal outcomes, so it is
+    // discarded rather than caught. Which of the two happens is also a
+    // platform's business (a Windows socket reset discards the response the
+    // server did send), and neither says anything about the server.
+    let _ =
+        ureq::post(&server.url("/compress?name=big.bin")).send_bytes(&vec![0u8; 8 * 1024 * 1024]);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline && !server.logged("status=413") {
@@ -582,6 +609,19 @@ fn the_reaping_window_is_configurable_and_reported() {
 }
 
 // --------------------------------------------------------------- stopping --
+//
+// Everything below is `#[cfg(unix)]`, and it is the one place in this crate
+// where that costs Windows real coverage. Graceful shutdown is driven by
+// SIGTERM (`docker stop`, systemd), a signal Windows does not have: the only
+// stop a test can ask for there is `TerminateProcess`, which is `SIGKILL` and
+// gives the server nothing to be graceful about. So on Windows these four go
+// untested: that an in-flight download finishes instead of being truncated,
+// that a draining server refuses new connections, that the default temporary
+// staging area is removed on a clean exit, and that
+// `--shutdown-grace-seconds` bounds how long a client that stops reading can
+// hold the process open. `src/main.rs` already compiles the SIGTERM half out
+// on Windows and waits only on Ctrl+C, so what is unproven there is that a
+// console Ctrl+C drains the same way.
 
 #[cfg(unix)]
 impl Server {
@@ -685,7 +725,12 @@ fn a_stop_refuses_new_work_while_it_drains() {
         .expect("the download starts");
     let mut body = response.into_reader();
     let mut opening = vec![0u8; 8 * 1024];
-    body.read(&mut opening).unwrap();
+    // Take the count rather than dropping it: a short read is normal on a
+    // socket, and both of these tests need the download to be genuinely in
+    // flight before the server is stopped. Nothing arriving would make the
+    // rest of the test pass for the wrong reason.
+    let opened = body.read(&mut opening).expect("the body starts arriving");
+    assert!(opened > 0, "the download produced no bytes to hold open");
 
     server.terminate();
     std::thread::sleep(Duration::from_millis(300));
@@ -697,7 +742,8 @@ fn a_stop_refuses_new_work_while_it_drains() {
     );
 
     let mut rest = Vec::new();
-    body.read_to_end(&mut rest).expect("the download still finishes");
+    body.read_to_end(&mut rest)
+        .expect("the download still finishes");
     assert!(server.await_exit(Duration::from_secs(10)));
 }
 
@@ -754,7 +800,12 @@ fn a_client_that_stops_reading_cannot_hold_the_stop_open() {
         .expect("the download starts");
     let mut body = response.into_reader();
     let mut opening = vec![0u8; 8 * 1024];
-    body.read(&mut opening).unwrap();
+    // Take the count rather than dropping it: a short read is normal on a
+    // socket, and both of these tests need the download to be genuinely in
+    // flight before the server is stopped. Nothing arriving would make the
+    // rest of the test pass for the wrong reason.
+    let opened = body.read(&mut opening).expect("the body starts arriving");
+    assert!(opened > 0, "the download produced no bytes to hold open");
 
     // From here the archive is never read again, so the request stays open.
     server.terminate();

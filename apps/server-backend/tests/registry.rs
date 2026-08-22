@@ -5,9 +5,9 @@
 //! database), and the durability that replacing it bought, which needs a real
 //! file and a second `open` standing in for a restart.
 
+use collapse_core::Algorithm;
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE, SCHEMA_VERSION};
-use collapse_core::Algorithm;
 use tempfile::TempDir;
 
 fn job(id: &str) -> Job {
@@ -176,12 +176,7 @@ fn update_status_clears_a_previous_message() {
         .update_status("j1", JobStatus::Completed, None)
         .unwrap();
 
-    assert!(registry
-        .get("j1")
-        .unwrap()
-        .unwrap()
-        .error_message
-        .is_none());
+    assert!(registry.get("j1").unwrap().unwrap().error_message.is_none());
 }
 
 /// The worker updates a job that a concurrent DELETE may already have
@@ -402,7 +397,10 @@ fn a_row_this_build_cannot_read_says_who_wrote_it_and_why() {
         .expect_err("a format this build does not know is not readable");
 
     let message = error.to_string();
-    assert!(message.contains("0.9.0"), "names the build that wrote it: {message}");
+    assert!(
+        message.contains("0.9.0"),
+        "names the build that wrote it: {message}"
+    );
     assert!(message.contains("zstd"), "names the value: {message}");
     assert!(message.contains("algorithm"), "names the field: {message}");
     assert!(
@@ -457,7 +455,10 @@ fn an_unreadable_row_does_not_hide_the_jobs_beside_it() {
     // so an unreadable one cannot hide its neighbours from the reaper.
     let mut expired = registry.expired(now_unix() + 3600).unwrap();
     expired.sort();
-    assert_eq!(expired, vec!["healthy".to_string(), "unreadable".to_string()]);
+    assert_eq!(
+        expired,
+        vec!["healthy".to_string(), "unreadable".to_string()]
+    );
 }
 
 // ------------------------------------------------------------- migrations --

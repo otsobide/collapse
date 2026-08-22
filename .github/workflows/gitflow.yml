@@ -1,8 +1,8 @@
 name: Gitflow
 
 # Enforce where changes come from:
-#   - PRs into dev must come from a gitflow branch (feature/* or hotfix/*),
-#     or from main itself (a post-release back-merge).
+#   - PRs into dev must come from a gitflow branch (feature/*, hotfix/* or
+#     release/*), or from main itself (a post-release back-merge).
 #   - PRs into main are releases and must come from dev, only.
 # Both checks are required by the branch rulesets, so a PR from any other
 # source branch cannot be merged.
@@ -21,10 +21,10 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: |
           case "$HEAD_REF" in
-            feature/*|hotfix/*|main)
+            feature/*|hotfix/*|release/*|main)
               echo "ok: $HEAD_REF" ;;
             *)
-              echo "PRs into dev must come from a feature/* or hotfix/* branch (got: $HEAD_REF)"
+              echo "PRs into dev must come from a feature/*, hotfix/* or release/* branch (got: $HEAD_REF)"
               exit 1 ;;
           esac
 

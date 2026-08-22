@@ -18,7 +18,8 @@ use collapse_server_backend::{build_app, build_app_with, DEFAULT_MAX_UPLOAD_MB};
 /// Build the app over its own staging dir; keep the TempDir alive with it.
 fn app() -> (Router, tempfile::TempDir) {
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
+    let router =
+        build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     (router, storage)
 }
 
@@ -50,18 +51,27 @@ async fn body_json(response: Response) -> serde_json::Value {
 }
 
 async fn error_detail(response: Response) -> String {
-    body_json(response).await["detail"].as_str().unwrap().to_string()
+    body_json(response).await["detail"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 /// Poll the status endpoint until the job leaves the in-progress states,
 /// returning its final JSON.
+///
+/// The budget is deliberately generous (about thirty seconds): compressing
+/// these payloads takes milliseconds anywhere, but a loaded CI runner can stall
+/// a worker for a while, and a flaky timeout reads as a product failure.
 async fn wait_for_job(router: &Router, job_id: &str) -> serde_json::Value {
-    for _ in 0..500 {
+    for _ in 0..3000 {
         let response = request(router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
         assert_eq!(response.status(), StatusCode::OK);
         let job = body_json(response).await;
         match job["status"].as_str().unwrap() {
-            "queued" | "compressing" => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            "queued" | "compressing" => {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await
+            }
             _ => return job,
         }
     }
@@ -72,14 +82,40 @@ async fn wait_for_job(router: &Router, job_id: &str) -> serde_json::Value {
 async fn compress_and_download(router: &Router, query: &str, body: &[u8]) -> Response {
     let accepted = post_compress(router, query, body).await;
     assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let done = wait_for_job(router, &job_id).await;
     assert_eq!(done["status"], "completed", "job failed: {done}");
 
-    let response = request(router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    let response = request(
+        router,
+        Method::GET,
+        &format!("/jobs/{job_id}/download"),
+        b"",
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     response
+}
+
+/// Normalize and sort an extracted listing so the expectations read the same
+/// on a platform whose path separator is not `/`.
+///
+/// The engine builds the returned paths with the platform separator, so on
+/// Windows the same archive comes back as `photos\a.txt`. The archive itself
+/// is identical either way, which is why this normalizes rather than asserting
+/// less. Sorting on top of it makes the order independent of whatever the
+/// extractor happened to walk first.
+fn listing(files: Vec<(String, Vec<u8>)>) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<(String, Vec<u8>)> = files
+        .into_iter()
+        .map(|(path, content)| (path.replace('\\', "/"), content))
+        .collect();
+    out.sort();
+    out
 }
 
 /// Write the archive bytes to disk and extract them with the core engine,
@@ -91,13 +127,15 @@ fn extract_archive(bytes: &[u8], extension: &str) -> Vec<(String, Vec<u8>)> {
 
     let out = dir.path().join("out");
     let files = collapse_core::extract(&archive, &out).unwrap();
-    files
-        .into_iter()
-        .map(|rel| {
-            let content = std::fs::read(out.join(&rel)).unwrap();
-            (rel, content)
-        })
-        .collect()
+    listing(
+        files
+            .into_iter()
+            .map(|rel| {
+                let content = std::fs::read(out.join(&rel)).unwrap();
+                (rel, content)
+            })
+            .collect(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +205,10 @@ async fn compress_7z_round_trips() {
     );
 
     let extracted = extract_archive(&body_bytes(response).await, "7z");
-    assert_eq!(extracted, vec![("report.pdf".to_string(), content.to_vec())]);
+    assert_eq!(
+        extracted,
+        vec![("report.pdf".to_string(), content.to_vec())]
+    );
 }
 
 #[tokio::test]
@@ -177,7 +218,10 @@ async fn compress_tar_round_trips() {
     let response =
         compress_and_download(&router, "name=data.bin&algorithm=tar&level=5", content).await;
 
-    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/x-tar");
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/x-tar"
+    );
 
     let extracted = extract_archive(&body_bytes(response).await, "tar");
     assert_eq!(extracted, vec![("data.bin".to_string(), content.to_vec())]);
@@ -210,8 +254,7 @@ async fn compress_accepts_empty_body() {
 async fn compress_a_file_named_like_the_archive() {
     let (router, _storage) = app();
     let content = b"not clobbered by its own output";
-    let response =
-        compress_and_download(&router, "name=archive.zip&algorithm=zip", content).await;
+    let response = compress_and_download(&router, "name=archive.zip&algorithm=zip", content).await;
 
     let extracted = extract_archive(&body_bytes(response).await, "zip");
     assert_eq!(
@@ -255,8 +298,9 @@ async fn a_tar_envelope_is_unwrapped_and_compressed_as_a_tree() {
         "attachment; filename=\"photos.zip\""
     );
 
-    let mut extracted = extract_archive(&body_bytes(response).await, "zip");
-    extracted.sort();
+    // `extract_archive` normalizes and sorts, so these read the same on a
+    // platform whose separator is not `/`.
+    let extracted = extract_archive(&body_bytes(response).await, "zip");
     assert_eq!(
         extracted,
         vec![
@@ -295,15 +339,23 @@ async fn a_tar_envelope_that_is_not_a_tar_fails_the_job() {
     let (router, _storage) = app();
     let accepted = post_compress(&router, "name=photos&envelope=tar", b"not a tar at all").await;
     assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let done = wait_for_job(&router, &job_id).await;
     assert_eq!(done["status"], "failed");
     assert!(!done["error_message"].as_str().unwrap().is_empty());
 
     // A failed job refuses to serve an archive rather than serving a broken one.
-    let download =
-        request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    let download = request(
+        &router,
+        Method::GET,
+        &format!("/jobs/{job_id}/download"),
+        b"",
+    )
+    .await;
     assert_eq!(download.status(), StatusCode::CONFLICT);
 }
 
@@ -316,7 +368,10 @@ async fn a_tar_envelope_holding_another_directory_fails_the_job() {
     });
 
     let accepted = post_compress(&router, "name=somethingelse&envelope=tar", &tar).await;
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     let done = wait_for_job(&router, &job_id).await;
     assert_eq!(done["status"], "failed");
@@ -327,12 +382,20 @@ async fn a_tar_envelope_holding_another_directory_fails_the_job() {
 async fn download_can_be_repeated_until_deleted() {
     let (router, _storage) = app();
     let accepted = post_compress(&router, "name=a.txt", b"again and again").await;
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     wait_for_job(&router, &job_id).await;
 
     for _ in 0..2 {
-        let response =
-            request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+        let response = request(
+            &router,
+            Method::GET,
+            &format!("/jobs/{job_id}/download"),
+            b"",
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::OK);
     }
 }
@@ -345,7 +408,10 @@ async fn download_can_be_repeated_until_deleted() {
 async fn delete_removes_the_job_and_its_files() {
     let (router, storage) = app();
     let accepted = post_compress(&router, "name=a.txt", b"delete me after").await;
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     wait_for_job(&router, &job_id).await;
     assert!(storage.path().join(JOBS_DIR).join(&job_id).exists());
 
@@ -358,8 +424,13 @@ async fn delete_removes_the_job_and_its_files() {
     assert!(!storage.path().join(JOBS_DIR).join(&job_id).exists());
     let status = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
     assert_eq!(status.status(), StatusCode::NOT_FOUND);
-    let download =
-        request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    let download = request(
+        &router,
+        Method::GET,
+        &format!("/jobs/{job_id}/download"),
+        b"",
+    )
+    .await;
     assert_eq!(download.status(), StatusCode::NOT_FOUND);
 }
 
@@ -432,8 +503,7 @@ async fn compress_rejects_missing_name() {
 async fn compress_rejects_name_with_separators() {
     let (router, _storage) = app();
     for name in ["../evil.txt", "a/b.txt", "a%5Cb.txt", "..", "."] {
-        let response =
-            post_compress(&router, &format!("name={name}&algorithm=zip"), b"x").await;
+        let response = post_compress(&router, &format!("name={name}&algorithm=zip"), b"x").await;
         assert_eq!(
             response.status(),
             StatusCode::BAD_REQUEST,
@@ -454,8 +524,11 @@ async fn compress_rejects_body_over_the_limit() {
 
 #[tokio::test]
 async fn content_disposition_strips_header_breaking_characters() {
-    // %22 is a double quote in the file name: legal on disk, but it must not
-    // escape the quoted Content-Disposition value.
+    // %22 is a double quote in the file name: legal on a POSIX disk, but it
+    // must not escape the quoted Content-Disposition value. The name only ever
+    // becomes an arcname and a header here, never a path, which is what keeps
+    // this runnable on Windows, where a quote is not a legal file name: do not
+    // extend it to extract the archive.
     let (router, _storage) = app();
     let response = compress_and_download(&router, "name=we%22ird.txt", b"x").await;
 
@@ -521,12 +594,15 @@ async fn the_name_a_client_sends_reaches_the_archive_but_never_the_staging_paths
     // goes: any path this server builds. That split is what makes the layout
     // safe by construction instead of by the name validation holding.
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
-        .expect("the app builds");
+    let router =
+        build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
 
     let accepted = post_compress(&router, "name=my%20odd%20notes.txt", b"payload").await;
     assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
 
     // Every path under the staging directory, while the job is still there.
@@ -550,7 +626,13 @@ async fn the_name_a_client_sends_reaches_the_archive_but_never_the_staging_paths
         "the upload is staged under the server's own name: {staged:?}"
     );
 
-    let response = request(&router, Method::GET, &format!("/jobs/{job_id}/download"), b"").await;
+    let response = request(
+        &router,
+        Method::GET,
+        &format!("/jobs/{job_id}/download"),
+        b"",
+    )
+    .await;
     let files = extract_archive(&body_bytes(response).await, "zip");
     assert_eq!(
         files,
@@ -566,15 +648,18 @@ async fn a_tar_envelope_is_staged_under_the_same_fixed_name() {
     // name that came off the wire would have done the most damage. None of
     // them is named after anything the caller sent.
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
-        .expect("the app builds");
+    let router =
+        build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
     let (_dir, tar) = tar_envelope(|root| {
         std::fs::write(root.join("a.txt"), b"first").unwrap();
     });
 
     let accepted = post_compress(&router, "name=photos&algorithm=zip&envelope=tar", &tar).await;
     assert_eq!(accepted.status(), StatusCode::ACCEPTED);
-    let job_id = body_json(accepted).await["job_id"].as_str().unwrap().to_string();
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(wait_for_job(&router, &job_id).await["status"], "completed");
 
     let job_dir = storage.path().join(JOBS_DIR).join(&job_id);
@@ -602,8 +687,8 @@ async fn a_job_this_build_cannot_read_answers_500_with_an_explanation() {
     // to be SQLite's own words ("Invalid column type Text at index 3"), which
     // told nobody anything.
     let storage = tempfile::TempDir::new().unwrap();
-    let router = build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB)
-        .expect("the app builds");
+    let router =
+        build_app(storage.path().to_path_buf(), DEFAULT_MAX_UPLOAD_MB).expect("the app builds");
 
     // A row from a version that knows a format this one does not.
     let database = storage
@@ -626,7 +711,10 @@ async fn a_job_this_build_cannot_read_answers_500_with_an_explanation() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     let detail = error_detail(response).await;
-    assert!(detail.contains("0.9.0"), "names the build that wrote it: {detail}");
+    assert!(
+        detail.contains("0.9.0"),
+        "names the build that wrote it: {detail}"
+    );
     assert!(detail.contains("zstd"), "names the value: {detail}");
     assert!(detail.contains("algorithm"), "names the field: {detail}");
     assert!(

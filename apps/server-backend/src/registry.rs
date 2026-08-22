@@ -37,7 +37,10 @@ pub enum RegistryError {
     /// not. Refusing to open it is the point: a downgrade that carried on
     /// would read columns it does not understand and write rows the newer
     /// build would then have to make sense of.
-    FromTheFuture { found: i64, understood: i64 },
+    FromTheFuture {
+        found: i64,
+        understood: i64,
+    },
 
     /// A row this build cannot make sense of. The usual cause is the mirror
     /// image of the above: the *schema* did not change (adding an algorithm
@@ -254,8 +257,8 @@ impl Registry {
     /// the ones that were interrupted by it.
     pub fn unfinished(&self) -> Result<Vec<String>> {
         let connection = self.connection.lock().unwrap();
-        let mut statement =
-            connection.prepare("SELECT job_id FROM jobs WHERE status IN ('queued', 'compressing')")?;
+        let mut statement = connection
+            .prepare("SELECT job_id FROM jobs WHERE status IN ('queued', 'compressing')")?;
         let ids = statement
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
