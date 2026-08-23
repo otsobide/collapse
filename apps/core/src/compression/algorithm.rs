@@ -35,7 +35,7 @@ impl Algorithm {
 
     /// Try to detect the algorithm from a file extension.
     pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext {
+        match ext.to_ascii_lowercase().as_str() {
             "7z" => Some(Algorithm::SevenZ),
             "tar" => Some(Algorithm::Tar),
             "zip" => Some(Algorithm::Zip),

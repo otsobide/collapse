@@ -106,6 +106,18 @@ fn from_extension_unknown() {
     assert_eq!(Algorithm::from_extension(""), None);
 }
 
+#[test]
+fn from_extension_is_case_insensitive() {
+    for (extension, algorithm) in [
+        ("ZIP", Algorithm::Zip),
+        ("Zip", Algorithm::Zip),
+        ("7Z", Algorithm::SevenZ),
+        ("TAR", Algorithm::Tar),
+    ] {
+        assert_eq!(Algorithm::from_extension(extension), Some(algorithm));
+    }
+}
+
 // -- extract dispatcher tests --
 
 #[test]
@@ -123,6 +135,26 @@ fn extract_dispatches_zip() {
     assert_eq!(
         std::fs::read(out.join("input.txt")).unwrap(),
         b"dispatch zip"
+    );
+}
+
+#[test]
+fn extract_dispatches_an_uppercase_extension() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("input.txt");
+    std::fs::write(&src, b"uppercase zip").unwrap();
+
+    let lowercase = dir.path().join("quiet.zip");
+    compress(&src, &lowercase, "input.txt", Algorithm::Zip, 1).unwrap();
+    let uppercase = dir.path().join("LOUD.ZIP");
+    std::fs::copy(&lowercase, &uppercase).unwrap();
+
+    let out = dir.path().join("extracted");
+    let files = extract(&uppercase, &out).unwrap();
+    assert_eq!(listing(files), vec!["input.txt"]);
+    assert_eq!(
+        std::fs::read(out.join("input.txt")).unwrap(),
+        b"uppercase zip"
     );
 }
 

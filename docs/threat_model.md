@@ -224,9 +224,9 @@ and revisit before exposing extraction to fully untrusted, unbounded input.
   but it means archiving and re-extracting a tree with links loses them (a
   fidelity limitation, not a security hole).
 - **Format detection is by file extension only.** `extract` picks the backend
-  from the archive's extension, not from magic bytes. A mismatched extension
-  simply fails to parse; it is not a security issue, but it is not content
-  sniffing.
+  from the archive's extension with a case-insensitive match, not from magic
+  bytes. A mismatched extension simply fails to parse; it is not a security
+  issue, but it is not content sniffing.
 - **TOCTOU.** There is a small time-of-check/time-of-use window between reading
   a directory entry's type and opening it during compression. It is pre-existing
   and low-risk for a local tool.
