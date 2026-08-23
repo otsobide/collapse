@@ -106,6 +106,14 @@ fn from_extension_unknown() {
     assert_eq!(Algorithm::from_extension(""), None);
 }
 
+#[test]
+fn from_extension_is_case_insensitive() {
+    assert_eq!(Algorithm::from_extension("ZIP"), Some(Algorithm::Zip));
+    assert_eq!(Algorithm::from_extension("Zip"), Some(Algorithm::Zip));
+    assert_eq!(Algorithm::from_extension("7Z"), Some(Algorithm::SevenZ));
+    assert_eq!(Algorithm::from_extension("TAR"), Some(Algorithm::Tar));
+}
+
 // -- extract dispatcher tests --
 
 #[test]
@@ -202,6 +210,28 @@ fn extract_unknown_extension_errors() {
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(err.contains("Unknown archive extension"));
+}
+
+#[test]
+fn extract_accepts_uppercase_extension() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("photo.txt");
+    std::fs::write(&src, b"case fold extract").unwrap();
+
+    let lower = dir.path().join("photos.zip");
+    compress(&src, &lower, "photo.txt", Algorithm::Zip, 1).unwrap();
+
+    // Distinct base name so this works on case-sensitive and case-insensitive volumes.
+    let upper = dir.path().join("LOUD.ZIP");
+    std::fs::copy(&lower, &upper).unwrap();
+
+    let out = dir.path().join("extracted");
+    let files = extract(&upper, &out).unwrap();
+    assert_eq!(listing(files), vec!["photo.txt"]);
+    assert_eq!(
+        std::fs::read(out.join("photo.txt")).unwrap(),
+        b"case fold extract"
+    );
 }
 
 #[test]

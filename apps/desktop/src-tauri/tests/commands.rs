@@ -1245,11 +1245,10 @@ fn extracting_an_unknown_extension_is_refused() {
 }
 
 #[test]
-fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
-    // KNOWN LIMITATION, pinned rather than endorsed: collapse-core matches the
-    // extension against literal lowercase strings without lowercasing the
-    // input, so a perfectly good zip named `.ZIP` is unreadable. If the match
-    // is ever made case-insensitive, this test should be updated, not deleted.
+fn an_uppercase_extension_extracts_a_valid_archive() {
+    // Was a known limitation: extension match used literal lowercase strings.
+    // The match is now case-insensitive; this test records that the archive
+    // extracts rather than being deleted when the behaviour changed.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
@@ -1260,11 +1259,10 @@ fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
     let upper = dir.path().join("LOUD.ZIP");
     fs::copy(&lower, &upper).unwrap();
 
-    let err = extract_to(&upper, &dir.path().join("out")).unwrap_err();
-
-    assert_eq!(err, "Compression failed: Unknown archive extension: .ZIP");
-    // The same bytes under a lowercase name extract fine, which is what makes
-    // the failure above a naming quirk rather than a corrupt archive.
+    assert_eq!(
+        extract_to(&upper, &dir.path().join("out")).unwrap(),
+        vec!["notes.txt".to_string()]
+    );
     assert_eq!(
         extract_to(&lower, &dir.path().join("out_lower")).unwrap(),
         vec!["notes.txt".to_string()]
