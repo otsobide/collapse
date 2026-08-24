@@ -34,8 +34,23 @@ impl Algorithm {
     }
 
     /// Try to detect the algorithm from a file extension.
+    ///
+    /// Case insensitive, because a file name is not a wire value: Windows and
+    /// macOS fold case in the filesystem, plenty of tools write `.ZIP`, and a
+    /// perfectly good archive was being refused as an unknown format for the
+    /// spelling of its name alone.
+    ///
+    /// Deliberately NOT the same rule as [`FromStr`], which parses the
+    /// `algorithm=` query parameter of `POST /compress` and the CLI's
+    /// `--format`. Those are wire values with a documented enum, and they stay
+    /// strict. [`Algorithm::extension`] likewise keeps returning lowercase,
+    /// since it names the files this toolkit writes.
+    ///
+    /// ASCII folding rather than [`str::to_lowercase`]: the three extensions
+    /// are ASCII, and Unicode case folding has surprises (Turkish dotless i
+    /// among them) that have no business deciding an archive format.
     pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext {
+        match ext.to_ascii_lowercase().as_str() {
             "7z" => Some(Algorithm::SevenZ),
             "tar" => Some(Algorithm::Tar),
             "zip" => Some(Algorithm::Zip),

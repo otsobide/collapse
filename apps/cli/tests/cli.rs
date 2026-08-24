@@ -346,6 +346,44 @@ fn extract_unknown_extension_errors() {
     ));
 }
 
+/// The same case-insensitive match, reached by the other road: with no
+/// `--format`, the CLI infers the format from the output's extension, so
+/// `-o backup.7Z` used to fall through to the zip default and write a zip
+/// under a name promising a 7z. That archive was then refused by this same
+/// CLI, since extraction dispatched on the extension too.
+#[test]
+fn compress_infers_the_format_from_an_uppercase_output_extension() {
+    for (shouted, magic) in [("BACKUP.7Z", &b"7z"[..]), ("BACKUP.ZIP", &b"PK"[..])] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("notes.txt");
+        std::fs::write(&src, b"body").unwrap();
+        let archive = dir.path().join(shouted);
+
+        run_ok(&[
+            "collapse",
+            "compress",
+            src.to_str().unwrap(),
+            "-o",
+            archive.to_str().unwrap(),
+        ]);
+
+        let written = std::fs::read(&archive).unwrap();
+        assert_eq!(
+            &written[..magic.len()],
+            magic,
+            "{shouted} should hold what its name promises"
+        );
+
+        // And the round trip closes: the archive this CLI wrote is one it reads.
+        let out = dir.path().join("out");
+        assert_eq!(
+            collapse_core::extract(&archive, &out).unwrap(),
+            vec!["notes.txt"],
+            "{shouted}"
+        );
+    }
+}
+
 // ------------------------------------------------------- safety / data loss --
 
 #[test]

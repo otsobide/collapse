@@ -1274,11 +1274,11 @@ fn extracting_an_unknown_extension_is_refused() {
 }
 
 #[test]
-fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
-    // KNOWN LIMITATION, pinned rather than endorsed: collapse-core matches the
-    // extension against literal lowercase strings without lowercasing the
-    // input, so a perfectly good zip named `.ZIP` is unreadable. If the match
-    // is ever made case-insensitive, this test should be updated, not deleted.
+fn an_uppercase_extension_extracts_like_any_other() {
+    // The extension is a file name, not a wire value, and Windows and macOS
+    // fold case in the filesystem, so a perfectly good zip called `.ZIP` used
+    // to be refused as an unknown format for the spelling of its name alone.
+    // This is where a user met that: whatever the open dialog handed back.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
@@ -1286,17 +1286,40 @@ fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
     compress_local(&source, &lower, "zip", 3).unwrap();
 
     // A distinct base name, so this still works on a case-insensitive volume.
-    let upper = dir.path().join("LOUD.ZIP");
-    fs::copy(&lower, &upper).unwrap();
+    for shouted in ["LOUD.ZIP", "Mixed.Zip", "SEVEN.7Z", "BALL.TAR"] {
+        let renamed = dir.path().join(shouted);
+        fs::copy(&lower, &renamed).unwrap();
+        let out = dir.path().join(format!("out_{shouted}"));
 
-    let err = extract_to(&upper, &dir.path().join("out")).unwrap_err();
+        // .7Z and .TAR are the wrong format for these bytes, so they must fail
+        // on the CONTENT, not on the name: the point is that the extension was
+        // understood and the archive opened, which is the opposite of what a
+        // rejected name looks like.
+        let outcome = extract_to(&renamed, &out);
+        match shouted {
+            "LOUD.ZIP" | "Mixed.Zip" => assert_eq!(
+                outcome.unwrap(),
+                vec!["notes.txt".to_string()],
+                "{shouted} is a zip and should read as one"
+            ),
+            _ => {
+                let err = outcome.expect_err("zip bytes are not a 7z or a tar");
+                assert!(
+                    !err.contains("Unknown archive extension"),
+                    "{shouted}: the name was understood, so the complaint must be \
+                     about the bytes, got {err}"
+                );
+            }
+        }
+    }
 
-    assert_eq!(err, "Compression failed: Unknown archive extension: .ZIP");
-    // The same bytes under a lowercase name extract fine, which is what makes
-    // the failure above a naming quirk rather than a corrupt archive.
+    // An extension that is not one of ours is still refused, whatever its case:
+    // this made the match lenient about spelling, not about formats.
+    let foreign = dir.path().join("photos.RAR");
+    fs::copy(&lower, &foreign).unwrap();
     assert_eq!(
-        extract_to(&lower, &dir.path().join("out_lower")).unwrap(),
-        vec!["notes.txt".to_string()]
+        extract_to(&foreign, &dir.path().join("out_rar")).unwrap_err(),
+        "Compression failed: Unknown archive extension: .RAR"
     );
 }
 
