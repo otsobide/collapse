@@ -1,6 +1,7 @@
 //! Tests for the 7z backend (`compress_7z` / `extract_7z`).
 
-use collapse_core::compression::{compress_7z, compress_7z_dir, extract_7z};
+use collapse_core::compression::{compress_7z, compress_7z_dir, compress_zip, extract_7z};
+use collapse_core::CompressionError;
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 
 const SAMPLE: &[u8] = b"Hello, Collapse! Hello, Collapse! Hello, Collapse! ";
@@ -254,4 +255,148 @@ fn compress_7z_dir_rejects_non_directory() {
 
     let result = compress_7z_dir(&file, &archive, 1);
     assert!(result.is_err());
+}
+
+// -- error reporting --
+//
+// `sevenz_rust2::Error` implements `Display` as `Debug`, so the backend must
+// translate it rather than stringify it. Every test below fails the moment a
+// `map_err(from_sevenz)` in `compression/sevenz.rs` goes back to
+// `CompressionError::Failed(e.to_string())`: they pin the whole message, and
+// the Debug spelling is never the same string.
+
+/// The six bytes every 7z file starts with, so a header can be hand-built far
+/// enough to reach the check under test.
+const SEVENZ_SIGNATURE: [u8; 6] = [b'7', b'z', 0xBC, 0xAF, 0x27, 0x1C];
+
+#[test]
+fn a_missing_output_directory_reads_exactly_like_zip() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = source_file(dir.path());
+    let missing = dir.path().join("does_not_exist");
+
+    let sevenz_err = compress_7z(&src, &missing.join("out.7z"), "sample.txt", 3).unwrap_err();
+    let zip_err = compress_zip(&src, &missing.join("out.zip"), "sample.txt", 3).unwrap_err();
+
+    // The point of the mapping: the same mistake now reaches the same variant
+    // through all three backends, not just the same prose.
+    assert!(
+        matches!(sevenz_err, CompressionError::Io(_)),
+        "7z should report ENOENT as Io, got {sevenz_err:?}"
+    );
+    assert_eq!(sevenz_err.to_string(), zip_err.to_string());
+    #[cfg(unix)]
+    assert_eq!(
+        sevenz_err.to_string(),
+        "IO error: No such file or directory (os error 2)"
+    );
+    // The dependency puts the absolute output path in the error it hands back;
+    // dropping it is half of why the mapping exists (the server forwards this
+    // string to unauthenticated clients).
+    assert!(
+        !sevenz_err.to_string().contains("out.7z"),
+        "the message leaks the output path: {sevenz_err}"
+    );
+}
+
+#[test]
+fn a_file_that_is_not_an_archive_is_described_in_words() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("corrupt.7z");
+    std::fs::write(&archive, b"this is plain text, not an archive").unwrap();
+
+    let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "Compression failed: not a 7z archive: the file does not start with a 7z signature"
+    );
+    // The old spelling was `BadSignature([116, 104, 105, 115, 32, 105])`: the
+    // first six bytes of the user's file, printed as a byte array.
+    assert!(
+        !err.to_string().contains("116"),
+        "the message still echoes the file's bytes: {err}"
+    );
+}
+
+#[test]
+fn an_unreadable_format_version_is_described_in_words() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("future.7z");
+    let mut bytes = SEVENZ_SIGNATURE.to_vec();
+    // Major/minor, read straight after the signature. Major 0 is the only one
+    // the format defines, so anything else stops the reader right here.
+    bytes.extend_from_slice(&[9, 4]);
+    std::fs::write(&archive, &bytes).unwrap();
+
+    let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "Compression failed: unsupported 7z format version 9.4"
+    );
+}
+
+#[test]
+fn a_corrupt_header_is_described_in_words() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("bent.7z");
+    let mut bytes = SEVENZ_SIGNATURE.to_vec();
+    bytes.extend_from_slice(&[0, 0]); // version 0.0
+    bytes.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // claimed header CRC
+    bytes.extend_from_slice(&[7u8; 20]); // 20 header bytes that do not hash to it
+    std::fs::write(&archive, &bytes).unwrap();
+
+    let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "Compression failed: the 7z archive is corrupt: a checksum did not match"
+    );
+}
+
+#[test]
+fn a_truncated_archive_is_reported_as_an_io_error() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = source_file(dir.path());
+    let archive = dir.path().join("half.7z");
+    compress_7z(&src, &archive, "sample.txt", 3).unwrap();
+    let whole = std::fs::read(&archive).unwrap();
+    std::fs::write(&archive, &whole[..whole.len() / 2]).unwrap();
+
+    let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
+
+    // The dependency reports the short read as its `Io` variant, so the
+    // mapping hands back the `io::Error` verbatim rather than inventing a
+    // "truncated" sentence it cannot actually distinguish from a bad disk.
+    assert!(
+        matches!(err, CompressionError::Io(ref io) if io.kind() == std::io::ErrorKind::UnexpectedEof),
+        "expected an UnexpectedEof Io, got {err:?}"
+    );
+    assert_eq!(err.to_string(), "IO error: failed to fill whole buffer");
+}
+
+#[test]
+fn a_rejected_entry_name_reads_exactly_like_zip() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("evil.7z");
+    {
+        let mut writer = SevenZWriter::create(&archive).unwrap();
+        let mut entry = SevenZArchiveEntry::default();
+        entry.name = "../escape.txt".to_string();
+        writer
+            .push_archive_entry(entry, Some(b"pwned".as_slice()))
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
+
+    // `extract_7z` builds this one itself, as a `sevenz_rust2::Error::Other`,
+    // so it has to survive the round trip through the dependency unchanged:
+    // byte for byte what zip and tar produce for the same entry name.
+    assert_eq!(
+        err.to_string(),
+        "Compression failed: Path traversal detected in archive entry: ../escape.txt"
+    );
 }

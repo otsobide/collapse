@@ -702,10 +702,10 @@ fn a_level_out_of_range_is_refused_for_a_directory_too() {
 #[test]
 fn an_output_inside_a_missing_directory_fails_instead_of_panicking() {
     // The command does not create the parent directory of its output, so the
-    // failure comes from the backend. The two spellings below are the real
-    // messages a user would see; they differ because zip and tar reach it
-    // through `File::create` (surfacing as `CompressionError::Io`) while the
-    // 7z writer stringifies its own error into `Failed`.
+    // failure comes from the backend, and the message below is the real one a
+    // user would see. All three formats now spell it the same way: 7z used to
+    // answer with a `Debug` dump of its dependency's error, absolute output
+    // path included, until core learned to map that error (issue #66).
     for format in FORMATS {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("notes.txt");
@@ -715,20 +715,16 @@ fn an_output_inside_a_missing_directory_fails_instead_of_panicking() {
 
         let err = compress_local(&source, &output, format, 3).unwrap_err();
 
-        if format == "7z" {
-            assert!(err.starts_with("Compression failed:"), "{format}: {err}");
-            assert!(
-                err.contains("NotFound") && err.contains("out.7z"),
-                "the message must name the path it could not write: {err}"
-            );
-        } else {
-            assert!(err.starts_with("IO error:"), "{format}: {err}");
-            #[cfg(unix)]
-            assert_eq!(
-                err, "IO error: No such file or directory (os error 2)",
-                "{format}"
-            );
-        }
+        assert!(err.starts_with("IO error:"), "{format}: {err}");
+        #[cfg(unix)]
+        assert_eq!(
+            err, "IO error: No such file or directory (os error 2)",
+            "{format}"
+        );
+        assert!(
+            !err.contains(&format!("out.{format}")),
+            "{format}: the message names the path the user picked: {err}"
+        );
         assert!(!output.exists(), "{format}: an archive appeared anyway");
     }
 }
@@ -1277,8 +1273,8 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
     // show something a person can act on, and the process must survive. The
     // three messages below are the real ones, and they are pinned by their
     // recognizable half so a zip/7z/tar version bump does not rewrite the test
-    // while a change of *variant* (an `IO error:` prefix, or the extension
-    // error, meaning the dispatch went wrong) still fails it.
+    // while the extension error (meaning the dispatch went wrong before the
+    // archive was ever read) still fails it.
     for format in FORMATS {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("notes.txt");
@@ -1292,24 +1288,31 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
         let out_dir = dir.path().join("extracted");
         let err = extract_to(&archive, &out_dir).unwrap_err();
 
-        assert!(err.starts_with("Compression failed:"), "{format}: {err}");
         assert!(
             !err.contains("Unknown archive extension"),
             "{format}: the extension dispatch failed before the archive was even read: {err}"
         );
+        // No backend may answer with a struct dump, whatever its variant.
+        assert!(
+            !err.contains("Error {") && !err.contains("kind:"),
+            "{format}: this is a Debug dump, not a sentence: {err}"
+        );
         match format {
             // "Compression failed: invalid Zip archive: Could not find EOCD"
             "zip" => {
+                assert!(err.starts_with("Compression failed:"), "{format}: {err}");
                 assert!(err.contains("Zip"), "{err}");
                 assert!(
                     !out_dir.exists(),
                     "zip refuses the archive before creating the output directory"
                 );
             }
-            // "Compression failed: Io(Error { kind: UnexpectedEof, message:
-            //  \"failed to fill whole buffer\" }, \"\")"
+            // The short read reaches core as its dependency's `Io` variant, so
+            // core unwraps it to `CompressionError::Io` (issue #66). It used to
+            // read `Compression failed: Io(Error { kind: UnexpectedEof,
+            // message: "failed to fill whole buffer" }, "")`.
             "7z" => {
-                assert!(err.contains("UnexpectedEof"), "{err}");
+                assert_eq!(err, "IO error: failed to fill whole buffer");
                 let leftovers: Vec<PathBuf> = fs::read_dir(&out_dir)
                     .map(|entries| entries.map(|e| e.unwrap().path()).collect())
                     .unwrap_or_default();
@@ -1317,6 +1320,7 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
             }
             // "Compression failed: failed to unpack `<output dir>/notes.txt`"
             _ => {
+                assert!(err.starts_with("Compression failed:"), "{format}: {err}");
                 assert!(err.contains("failed to unpack"), "{err}");
                 assert!(
                     err.contains("notes.txt"),
