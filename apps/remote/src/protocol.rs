@@ -20,10 +20,19 @@ use crate::RemoteError;
 /// on the CLI it means a flag someone typed wrong. Quietly compressing
 /// locally would hide both.
 pub fn base_url(server: &str) -> Result<&str, RemoteError> {
-    if server.trim().is_empty() {
+    // Normalize first, then decide. Asking `is_empty` of the trimmed input but
+    // returning the untrimmed one let two shapes through that are not
+    // addresses: `"///"` is not blank, so it passed, and then lost its slashes
+    // and reached the caller as an empty base, producing the very "cannot reach
+    // the server at : ..." this function exists to prevent; and a trailing
+    // space defeated the slash trim, so `"http://host:8000/ "` kept the
+    // separator. One rule covers both: an address made of nothing but
+    // whitespace and slashes is not an address.
+    let base = server.trim().trim_end_matches('/');
+    if base.is_empty() {
         return Err(RemoteError::BlankServer);
     }
-    Ok(server.trim_end_matches('/'))
+    Ok(base)
 }
 
 /// The `job_id` out of the 202 body.

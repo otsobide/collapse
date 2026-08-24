@@ -62,6 +62,54 @@ fn a_blank_address_is_not_an_address() {
     }
 }
 
+/// What "blank" means, spelled out where the answer is written. The guard is
+/// `server.trim().is_empty()`, so the rule is Rust's `char::is_whitespace`
+/// (the Unicode White_Space property), not the space and tab an ASCII check
+/// would cover. Every caller's own table tries two or three spellings and
+/// stops, so this is the only place the rule itself is pinned.
+///
+/// None of these is invented: a non-breaking space is what comes out of a
+/// pasted web page, `\r\n` is what a wrapper script gets from a file it read
+/// as a line, and an ideographic space is what an IME leaves behind. Narrow
+/// the guard to `is_empty()`, or to a hand-written `[' ', '\t']` check, and
+/// every row below turns red instead of being sent to a server with no name.
+#[test]
+fn blank_is_whatever_rust_calls_whitespace() {
+    for blank in [
+        "\r",
+        "\r\n",
+        "\u{000b}",         // vertical tab
+        "\u{000c}",         // form feed
+        "\u{00a0}",         // no-break space
+        "\u{2003}",         // em space
+        "\u{3000}",         // ideographic space
+        " \r\n\t\u{00a0} ", // and a mix of them
+    ] {
+        match base_url(blank) {
+            Err(RemoteError::BlankServer) => {}
+            Err(other) => panic!("{blank:?} was refused as {other:?}, not as a blank address"),
+            Ok(base) => panic!("{blank:?} was accepted as the address {base:?}"),
+        }
+    }
+}
+
+/// The other side of that rule, stated rather than left to be discovered: a
+/// zero-width space is not whitespace to Rust, so it is not blank here and
+/// travels on as an address for the HTTP client to reject. Pinned so the
+/// guard cannot quietly grow into a "looks invisible to a human" check whose
+/// boundary nobody could predict, and so the boundary it does have is on the
+/// record.
+#[test]
+fn a_zero_width_character_is_not_blank() {
+    for invisible in ["\u{200b}", "\u{feff}"] {
+        assert_eq!(
+            base_url(invisible).unwrap(),
+            invisible,
+            "{invisible:?} is not whitespace, so this crate has no verdict on it"
+        );
+    }
+}
+
 /// The guard is emptiness, not "looks like a URL": whatever else is wrong
 /// with an address is for the HTTP client to report, and rejecting more here
 /// would refuse hosts this crate has no business judging.
@@ -69,6 +117,46 @@ fn a_blank_address_is_not_an_address() {
 fn a_non_blank_address_is_passed_through() {
     for address in ["localhost:8000", "not a url", "http://host /x"] {
         assert_eq!(base_url(address).unwrap(), address);
+    }
+}
+
+/// An address of nothing but slashes is not an address either.
+///
+/// It has no whitespace to trim, so an emptiness check on the raw input calls
+/// it non blank; trimming its slashes afterwards then leaves nothing, and the
+/// endpoints are joined onto an empty base. That reached the user as "cannot
+/// reach the server at : ...", the nameless-server message issue #65 set out
+/// to remove, by the one road the first version of the fix did not cover.
+/// Normalizing before deciding folds it into the same refusal.
+#[test]
+fn an_address_of_only_slashes_is_refused_like_a_blank_one() {
+    for slashes in ["/", "//", "///", "  //  "] {
+        assert!(
+            matches!(base_url(slashes), Err(RemoteError::BlankServer)),
+            "{slashes:?} is nothing but separators, so there is no address in it"
+        );
+    }
+}
+
+/// Surrounding whitespace is stripped, and the trailing slash with it.
+///
+/// The order matters and is the point: trimming the whitespace first is what
+/// lets the slash trim see the slash. Before that, a trailing space defeated
+/// it, so `http://host:8000/ ` kept the separator this function exists to
+/// remove and every endpoint was joined onto a double slash.
+#[test]
+fn surrounding_whitespace_is_stripped_from_a_real_address() {
+    for (typed, expected) in [
+        (" http://host:8000 ", "http://host:8000"),
+        ("http://host:8000/ ", "http://host:8000"),
+        ("\thttp://host:8000/\n", "http://host:8000"),
+        ("  http://host:8000///  ", "http://host:8000"),
+    ] {
+        assert_eq!(
+            base_url(typed).unwrap(),
+            expected,
+            "{typed:?} should normalize to {expected:?}"
+        );
     }
 }
 
