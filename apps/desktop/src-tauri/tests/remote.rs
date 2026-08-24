@@ -173,7 +173,8 @@ fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// `compress_path` with a server, spelled the way the webview spells it.
+/// `compress_path` with a server, spelled the way the webview spells it: the
+/// Verify box is disabled for a remote destination, so `verify` arrives false.
 fn compress_remotely(
     server: &str,
     source: &Path,
@@ -188,6 +189,7 @@ fn compress_remotely(
         level,
         Some(server.to_string()),
         false,
+        false,
     )
 }
 
@@ -200,6 +202,7 @@ fn compress_locally(source: &Path, output: &Path, format: &str, level: u32) -> S
         format.to_string(),
         level,
         None,
+        false,
         false,
     )
     .expect("the local compression succeeds")
@@ -463,6 +466,7 @@ fn the_server_argument_alone_decides_where_the_work_happens() {
         3,
         Some("   ".to_string()),
         false,
+        false,
     )
     .expect_err("a blank address is not a server");
     assert_eq!(error, BLANK_ADDRESS);
@@ -483,6 +487,49 @@ fn the_server_argument_alone_decides_where_the_work_happens() {
         extracted(&remote_archive, &dir.path().join("r")),
         extracted(&local_archive, &dir.path().join("l"))
     );
+}
+
+/// Asking for the contents check while the work goes to a server is answered
+/// with the archive, not with a refusal.
+///
+/// The UI cannot produce this (the box is disabled and sends false whenever a
+/// server is chosen), so this pins the decision behind that: the flag describes
+/// a check on an archive this app built, and the archive arrives from elsewhere
+/// with no list of expected entries to check it against. Nothing about the
+/// request is harmful, so refusing it would cost the user their compression for
+/// a box the app itself let them tick.
+#[test]
+fn asking_to_check_contents_is_ignored_rather_than_refused_by_a_server_run() {
+    let server = shared_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    let body = b"the checking happens over there, if at all".to_vec();
+    std::fs::write(&source, &body).unwrap();
+
+    let asked = dir.path().join("asked.zip");
+    compress_path(
+        text(&source),
+        text(&asked),
+        "zip".to_string(),
+        3,
+        Some(server.to_string()),
+        false,
+        true,
+    )
+    .expect("a check this side cannot make is not a reason to refuse the compression");
+
+    // And it holds what the same call without the tick holds: the flag reaches
+    // no part of the remote path, so it can change nothing about the result.
+    // (Contents rather than bytes: zip stamps a modification time, so two runs
+    // a second apart differ as files while holding the same archive.)
+    let plain = dir.path().join("plain.zip");
+    compress_remotely(server, &source, &plain, "zip", 3).expect("the server compresses");
+    let asked_entries = extracted(&asked, &dir.path().join("asked-out"));
+    assert_eq!(
+        asked_entries,
+        extracted(&plain, &dir.path().join("plain-out"))
+    );
+    assert_eq!(asked_entries, vec![("notes.txt".to_string(), body)]);
 }
 
 // ---------------------------------------------------------------- failures --

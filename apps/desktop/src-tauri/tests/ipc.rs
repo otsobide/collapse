@@ -1218,6 +1218,7 @@ fn command_signatures_are_pinned_with_their_types() {
                 ("level", "u32"),
                 ("server", "Option<String>"),
                 ("overwrite", "bool"),
+                ("verify", "bool"),
             ],
         ),
         (

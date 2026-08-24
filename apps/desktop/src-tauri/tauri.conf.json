@@ -15,7 +15,7 @@
         "title": "Collapse",
         "label": "main",
         "width": 480,
-        "height": 520,
+        "height": 600,
         "minWidth": 440,
         "minHeight": 460,
         "resizable": true,

@@ -3,7 +3,13 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
-import { baseName, dirOf, isArchive, levelHint as levelHintFor } from './paths.js'
+import {
+  baseName,
+  dirOf,
+  isArchive,
+  levelHint as levelHintFor,
+  verifyNote as verifyNoteFor,
+} from './paths.js'
 import {
   LOCAL,
   labelFor,
@@ -28,6 +34,10 @@ const error = ref(null)
 
 const format = ref('zip')
 const level = ref(3)
+// The deeper of the two checks the archive gets before it is saved, off by
+// default because it costs about as much again as the compression did. The
+// cheap one (reading the listing back) is not optional and runs regardless.
+const verifyContents = ref(false)
 
 // Where compression runs. Remotes are remembered between launches; the
 // dropdown is always on screen in compress mode, so the active one is never
@@ -47,6 +57,26 @@ const isRemote = computed(() => serverUrl.value !== null)
 
 const levelHint = computed(() => levelHintFor(level.value))
 const levelDisabled = computed(() => format.value === 'tar')
+
+// A remote run is compressed on the server and comes back as finished bytes
+// this app never described, so there is no list of expected entries here to
+// check them against. The row stays on screen, dimmed, rather than
+// disappearing the way the destination picker does in extract mode: the picker
+// goes because the whole feature does, while this one is the direct
+// consequence of the choice the user just made one row above, and a control
+// that vanishes under the pointer explains nothing.
+const verifyDisabled = computed(() => isRemote.value)
+// What is really asked for, and what the box shows. Keeping the preference in
+// its own ref means picking a server does not silently forget it, and reading
+// the effective value here means a disabled box can never send `true`.
+const verifyRequested = computed(() => verifyContents.value && !verifyDisabled.value)
+const verifyNote = computed(() =>
+  verifyNoteFor({
+    checked: verifyRequested.value,
+    format: format.value,
+    remote: isRemote.value,
+  })
+)
 
 function selectDestination(value) {
   destination.value = value
@@ -143,6 +173,10 @@ async function compress() {
       format: format.value,
       level: level.value,
       server: serverUrl.value,
+      // Always the effective value, never the raw preference: the checkbox is
+      // disabled for a remote run, so asking for a check the server side
+      // cannot make would be this app lying to itself.
+      verify: verifyRequested.value,
       // The save dialog asks before handing back a path that is already
       // taken, on every platform, so reaching here means the user has
       // already agreed to replace it. The backend still refuses the cases
@@ -369,6 +403,20 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <div class="row" :class="{ dim: verifyDisabled }">
+                <span class="row-label">Verify<em v-if="verifyDisabled">n/a</em></span>
+                <label class="checkbox" :class="{ on: verifyRequested }">
+                  <input
+                    type="checkbox"
+                    :checked="verifyRequested"
+                    :disabled="verifyDisabled"
+                    @change="verifyContents = $event.target.checked"
+                  />
+                  <span>Contents</span>
+                </label>
+              </div>
+              <p class="row-note">{{ verifyNote }}</p>
+
               <button class="cta" :disabled="!canProceed" @click="compress">
                 <span v-if="processing" class="spinner"></span>
                 {{ processing ? (isRemote ? `Compressing on ${destinationLabel}…` : 'Compressing…') : 'Compress' }}
@@ -516,12 +564,17 @@ header {
 .gear svg { width: 15px; height: 15px; }
 .gear:hover { color: var(--accent); border-color: var(--accent); }
 
+/* Scrolls rather than clips. The window is resizable down to `minHeight`, and
+   a long file name wraps, so the options can always end up taller than the
+   space: without this the Compress button is simply not there, and the app
+   looks broken rather than cramped. */
 main {
   position: relative;
   flex: 1;
   display: flex;
   flex-direction: column;
   padding: 10px 22px 22px;
+  overflow-y: auto;
 }
 
 /* Destination picker: a native select, so the list stays usable as servers
@@ -723,6 +776,44 @@ main {
 .segmented button:hover:not(:disabled) { color: var(--text); }
 .segmented button.on { background: var(--accent-dim); color: var(--accent); }
 .segmented button:disabled { cursor: not-allowed; }
+
+/* Verify: a checkbox dressed as one of the pills above it, so the options row
+   reads as one set of controls rather than a form field bolted on. */
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s, border-color 0.18s;
+}
+.checkbox:hover { color: var(--text); }
+.checkbox.on { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+.checkbox input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+/* Not `:has(input:disabled)`: the dimmed row already says the control is out,
+   and this way the rule needs nothing the oldest supported webview lacks. */
+.row.dim .checkbox, .checkbox input:disabled { cursor: not-allowed; }
+
+/* The line under the Verify row: it has to fit a sentence, which is more than
+   the `em` beside a row label can carry. */
+.row-note {
+  margin-top: -5px;
+  font-size: 0.71rem;
+  line-height: 1.45;
+  color: var(--faint);
+}
 
 .cta {
   margin-top: 2px;
