@@ -170,6 +170,31 @@ fn delete_job_reports_why_a_removal_failed() {
     );
 }
 
+/// A name in the staging area that is not a directory is a failure too, not
+/// "nothing to remove". Only `NotFound` may read as nothing to remove: the
+/// callers use that answer to conclude the job's disk is free and drop its
+/// row, and something sitting under a job's name that this server cannot
+/// remove is exactly the state they must keep retrying instead.
+#[test]
+fn delete_job_does_not_report_something_it_cannot_remove_as_absent() {
+    let (storage, base) = storage();
+    std::fs::write(base.path().join("job1"), b"not a directory").unwrap();
+
+    let error = storage
+        .delete_job("job1")
+        .expect_err("a file where a job directory belongs cannot be removed as one");
+
+    assert_ne!(
+        error.kind(),
+        std::io::ErrorKind::NotFound,
+        "which is the one kind that means there was nothing there: {error}"
+    );
+    assert!(
+        base.path().join("job1").is_file(),
+        "and it is still there, which is what the error is for"
+    );
+}
+
 #[test]
 fn delete_job_leaves_other_jobs_alone() {
     let (storage, _base) = storage();

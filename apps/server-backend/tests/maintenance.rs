@@ -152,6 +152,61 @@ fn files_no_job_claims_are_deleted() {
 }
 
 #[test]
+#[cfg(unix)]
+fn an_orphan_that_cannot_be_removed_is_not_counted_as_collected() {
+    // The startup half of the accounting the reaper got wrong. `delete_job`
+    // now answers with three outcomes instead of a bool, and reconcile reads
+    // them: a directory it could not remove must stay out of `orphaned`, or
+    // every boot reports a cleanup that never happened while the disk keeps
+    // filling. The other orphan is here to prove the pass carries on past the
+    // failure: mapping the error out with `?` would refuse to start the whole
+    // server over one unremovable directory, with no API left to fix it from.
+    //
+    // Pinned, not endorsed: `Reconciled` has no `unremovable` field to put the
+    // failure in, the way `Reaped` grew one, so a boot that could not remove a
+    // single orphan still reports itself clean and only the per-entry warning
+    // says otherwise.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    storage.save_input("removable", b"stranded").unwrap();
+    storage.save_input("stuck", b"stranded").unwrap();
+    let stuck = jobs_dir(&dir).join("stuck");
+    std::fs::write(stuck.join("archive.zip"), b"archive").unwrap();
+    if !obstruct(&stuck) {
+        return;
+    }
+
+    let report = reconcile(&registry, &storage).unwrap();
+    // The archive, rather than the upload: a removal that fails part of the
+    // way through still eats what it managed to unlink first (here the upload,
+    // whose own directory is writable), so the file at the top of the job
+    // directory is the one that proves the tree is still there.
+    let stuck_left = (
+        storage.has_job("stuck"),
+        stuck.join("archive.zip").is_file(),
+    );
+    release(&stuck);
+
+    assert_eq!(
+        report,
+        Reconciled {
+            orphaned: 1,
+            ..Reconciled::default()
+        },
+        "only the one that really went is counted"
+    );
+    assert!(
+        !storage.has_job("removable"),
+        "the failure does not stop the sweep reaching the next directory"
+    );
+    assert_eq!(
+        stuck_left,
+        (true, true),
+        "and the one it could not remove is still there, waiting for the next boot"
+    );
+}
+
+#[test]
 fn the_registrys_database_is_not_in_the_area_the_sweep_walks() {
     // The two live in separate directories, so the sweep cannot reach the
     // database at all. When they shared one, the only thing keeping it from
@@ -443,6 +498,115 @@ fn the_next_pass_retries_a_job_it_could_not_remove() {
         !storage.has_job("stuck"),
         "the files that outlived the first pass go in the second"
     );
+}
+
+#[test]
+#[cfg(unix)]
+fn one_sweep_counts_what_it_collected_and_what_it_could_not_apart() {
+    // The two numbers have to be kept apart *within* a pass, which is the
+    // shape the bug hid in: the outcome belongs to each job, not to the sweep.
+    // Every other test here has one job in it, so a pass that counted three
+    // collected because it saw three rows would pass them all.
+    //
+    // The obstructed job is staged between two collectable ones because
+    // `expired` returns rows in the order they were written: a pass that gave
+    // up at the first failure would leave the one after it uncollected, and
+    // the sweep runs on a timer where that is silent.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "before", JobStatus::Completed);
+    staged_job(&registry, &storage, "stuck", JobStatus::Completed);
+    staged_job(&registry, &storage, "after", JobStatus::Completed);
+    let stuck = jobs_dir(&dir).join("stuck");
+    if !obstruct(&stuck) {
+        return;
+    }
+
+    let report = reap(&registry, &storage, any_moment_now()).unwrap();
+    let rows: Vec<bool> = ["before", "after", "stuck"]
+        .iter()
+        .map(|id| registry.get(id).unwrap().is_some())
+        .collect();
+    let staged: Vec<bool> = ["before", "after", "stuck"]
+        .iter()
+        .map(|id| storage.has_job(id))
+        .collect();
+    release(&stuck);
+
+    assert_eq!(
+        report,
+        Reaped {
+            collected: 2,
+            unremovable: 1
+        }
+    );
+    // And each job ended in the state its own outcome calls for.
+    assert_eq!(
+        rows,
+        vec![false, false, true],
+        "the collected jobs lose their rows, the obstructed one keeps its own"
+    );
+    assert_eq!(
+        staged,
+        vec![false, false, true],
+        "and the disk agrees with the registry, job by job"
+    );
+}
+
+/// `is_quiet` is what decides whether the sweep says anything at all, so a
+/// pass that collected nothing but could not remove a job must not be quiet:
+/// the count and its warning would be the only trace of the leak, and the
+/// server would swallow both. Every other test here reads it on an all-zero
+/// report, where an `is_quiet` that only looked at `collected` would pass.
+#[test]
+fn only_a_sweep_that_did_nothing_at_all_is_quiet() {
+    assert!(Reaped::default().is_quiet());
+    assert!(!Reaped {
+        collected: 1,
+        unremovable: 0
+    }
+    .is_quiet());
+    assert!(!Reaped {
+        collected: 0,
+        unremovable: 1
+    }
+    .is_quiet());
+    assert!(!Reaped {
+        collected: 2,
+        unremovable: 3
+    }
+    .is_quiet());
+}
+
+#[test]
+#[cfg(unix)]
+fn a_job_the_reaper_could_not_remove_is_nobody_elses_to_collect() {
+    // The trade-off the commit took on knowingly, pinned so a later change
+    // has to take it on knowingly too: keeping the row also hides the
+    // directory from the startup pass, which only removes what no row claims.
+    // Until the reaper wins, those bytes belong to a job that is past its
+    // window and that a restart will not reclaim either.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "stuck", JobStatus::Completed);
+    let stuck = jobs_dir(&dir).join("stuck");
+    if !obstruct(&stuck) {
+        return;
+    }
+
+    let swept = reap(&registry, &storage, any_moment_now()).unwrap();
+    let restarted = reconcile(&registry, &storage).unwrap();
+    let row = registry.get("stuck").unwrap();
+    let staged = storage.has_job("stuck");
+    release(&stuck);
+
+    assert_eq!(swept.unremovable, 1, "the pass really was obstructed");
+    assert!(
+        restarted.is_clean(),
+        "a claimed directory is not an orphan, so the startup pass leaves it: {restarted:?}"
+    );
+    assert!(row.is_some(), "the row survives the restart");
+    assert!(staged, "and so do the files it points at");
 }
 
 /// The reaper and the startup pass have to agree: what one collects, the other

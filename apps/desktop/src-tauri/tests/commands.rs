@@ -19,6 +19,14 @@ use tempfile::TempDir;
 /// extension for all of them, which is why one array serves both roles.
 const FORMATS: [&str; 3] = ["zip", "7z", "tar"];
 
+/// `RemoteError::BlankServer` rendered, which is the string `App.vue` puts in
+/// its error banner. Spelled out whole so the tests below compare the sentence
+/// a user reads, not a fragment of it: `apps/cli/tests/remote.rs` spells out
+/// the same literal, and the two saying different things is the drift the
+/// shared crate exists to prevent (issue #65).
+const BLANK_ADDRESS: &str =
+    "the server address is blank: it needs a URL, for example http://localhost:8000";
+
 /// Names a real user produces and a tidy-ASCII test suite never would: a
 /// space, an accent, a `#`, a `%`, a leading dash (which a shell would read as
 /// a flag) and a non-Latin script. They cross three boundaries here: the
@@ -541,20 +549,13 @@ fn expect_blank_server_refusal(blank: &str) {
     )
     .expect_err("a blank address is not a server");
 
-    assert!(
-        error.contains("the server address is blank"),
-        "{blank:?} must name the address as the mistake: {error}"
-    );
-    assert!(
-        error.contains("http://localhost:8000"),
-        "{blank:?} must be shown what an address looks like: {error}"
-    );
-    // "cannot reach the server at    " named a server with no name and blamed
-    // the network for what is a bad setting.
-    assert!(
-        !error.contains("cannot reach"),
-        "{blank:?} is not a reachability failure: {error}"
-    );
+    // The whole message rather than fragments of it. The command stringifies
+    // whatever `collapse-remote` returned, so equality is what pins that this
+    // app adds nothing of its own to the sentence the CLI also prints; three
+    // `contains` checks would all still pass if it started prefixing them.
+    // ("cannot reach the server at    " named a server with no name and blamed
+    // the network for what is a bad setting.)
+    assert_eq!(error, BLANK_ADDRESS, "{blank:?}");
 
     // An archive on disk is what a silent local fallback looks like, and its
     // absence is the only thing that tells the two readings apart.
@@ -584,6 +585,39 @@ fn an_empty_server_string_is_refused_not_compressed_locally() {
 fn a_whitespace_only_server_string_is_refused_not_sent() {
     for blank in ["   ", "\t", "\n"] {
         expect_blank_server_refusal(blank);
+    }
+}
+
+/// The dispatch's other arm, and the one the old filter cost the most. With
+/// `Some("")` read as "compress locally", pointing the app at a folder built
+/// a complete archive of the tree on the very machine the user had told it
+/// not to use, and nothing said so. A file cannot show that: it takes a
+/// different route into `collapse-remote` (its own bytes, where a folder
+/// travels as a tar envelope), so both arms have to be pinned.
+#[test]
+fn a_blank_server_string_is_refused_for_a_directory_too() {
+    for blank in ["", "   "] {
+        let dir = TempDir::new().unwrap();
+        let tree = make_tree(dir.path());
+        let output = dir.path().join("out.zip");
+
+        let error = compress_path(
+            tree.to_string_lossy().into_owned(),
+            output.to_string_lossy().into_owned(),
+            "zip".to_string(),
+            3,
+            Some(blank.to_string()),
+            false,
+        )
+        .expect_err("a blank address is not a server");
+
+        assert_eq!(error, BLANK_ADDRESS, "{blank:?}");
+        assert!(
+            !output.exists(),
+            "{blank:?} archived the whole tree locally instead of reporting the address"
+        );
+        // And the tree it would have archived is still there to archive.
+        assert_eq!(fs::read(tree.join("a.txt")).unwrap(), b"top level");
     }
 }
 
