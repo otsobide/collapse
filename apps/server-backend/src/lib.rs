@@ -187,11 +187,15 @@ fn start_reaper(registry: Arc<Registry>, storage: Arc<Storage>, ttl: Duration) {
             .await;
 
             match swept {
-                Ok(Ok(0)) => {}
-                Ok(Ok(jobs)) => tracing::info!(
-                    jobs,
+                Ok(Ok(report)) if report.is_quiet() => {}
+                // Both numbers, always: a pass that collected three jobs and
+                // could not remove a fourth has to say so, or the only trace
+                // of the leak is the per-job warning it is easy to miss.
+                Ok(Ok(report)) => tracing::info!(
+                    collected = report.collected,
+                    unremovable = report.unremovable,
                     ttl_minutes = ttl.as_secs() / 60,
-                    "reaped jobs nobody came back for"
+                    "swept the jobs nobody came back for"
                 ),
                 Ok(Err(e)) => tracing::error!(error = %e, "the reaper could not finish a pass"),
                 Err(e) => tracing::error!(error = %e, "the reaper task died"),

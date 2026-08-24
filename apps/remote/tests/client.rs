@@ -3,7 +3,9 @@
 //! These deliberately do NOT re-do the round trips that `apps/cli/tests/remote.rs`
 //! already drives through a consumer. They cover what no consumer's suite can
 //! reach: the health probe (which only a settings UI calls), the mapping of a
-//! server rejection, and the client-side refusal of an unusable source.
+//! server rejection, the client-side refusal of an unusable source, and the
+//! refusal of an unusable address at both entry points (the guard the
+//! front-ends now lean on instead of each having their own).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -122,6 +124,123 @@ fn respond_with(out: &mut std::net::TcpStream, promised: usize, body: &[u8], con
     // the one place where that can come out as a reset instead, which the
     // client would report as a different error.
     let _ = out.shutdown(std::net::Shutdown::Write);
+}
+
+// --------------------------------------------------------- a blank address --
+
+/// Both entry points refuse a blank address, so a front-end cannot forget to
+/// ask. Nothing is listening on `""`, so without the guard these would come
+/// back as `Unreachable` naming a server with no name, which is the message
+/// issue #65 was filed about.
+#[test]
+fn a_blank_address_is_refused_by_both_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"stay home").unwrap();
+
+    for blank in ["", "   ", "\t"] {
+        let error = check_health(blank).expect_err("a blank address is not a server");
+        assert!(
+            matches!(error, RemoteError::BlankServer),
+            "check_health({blank:?}) gave {error:?}"
+        );
+
+        let error = compress_path(blank, &source, Algorithm::Zip, 3)
+            .expect_err("a blank address is not a server");
+        assert!(
+            matches!(error, RemoteError::BlankServer),
+            "compress_path({blank:?}) gave {error:?}"
+        );
+    }
+}
+
+/// The address is checked before the source is touched. A directory would
+/// otherwise be walked and packed into a tar envelope in full before the
+/// destination turns out to be unusable, and the error would name the wrong
+/// problem: here a missing source proves the ordering with no tree to build.
+#[test]
+fn a_blank_address_is_refused_before_the_source_is_read() {
+    let missing = Path::new("/nonexistent/collapse-issue-65/notes.txt");
+
+    let error = compress_path("", missing, Algorithm::Zip, 3).expect_err("the address is blank");
+
+    assert!(
+        matches!(error, RemoteError::BlankServer),
+        "the address must be judged before the source: got {error:?}"
+    );
+}
+
+/// The same ordering for the branch it actually costs something in. A missing
+/// file (above) is refused by a single `read`; a directory is walked and
+/// copied into a tar on disk before a byte goes out, so a guard sitting after
+/// `pack_directory` would spend the whole tree to learn the destination was
+/// never usable. Only a real directory reaches that code, so only a real
+/// directory can pin it.
+///
+/// A directory nobody may read is what makes the ordering observable: packing
+/// it fails as `Packing`, so `BlankServer` can only be the answer if the
+/// address was judged first. The unreachable-server call is the control that
+/// proves the trap is armed rather than the test passing for want of anything
+/// to trip over: with an address that is merely unusable, the same call really
+/// does reach the packing and dies there.
+///
+/// Unix only (permissions), and skipped when the process can read the
+/// directory anyway, which is what happens under root.
+#[cfg(unix)]
+#[test]
+fn a_blank_address_is_refused_before_a_directory_is_packed() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("photos");
+    std::fs::create_dir(&locked).unwrap();
+    std::fs::write(locked.join("a.txt"), b"never packed").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    if std::fs::read_dir(&locked).is_ok() {
+        // Root ignores the permission bits, so the trap cannot be armed here.
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        return;
+    }
+
+    let control = compress_path(UNREACHABLE, &locked, Algorithm::Zip, 3)
+        .expect_err("the tree cannot be read, so it cannot be packed");
+    assert!(
+        matches!(control, RemoteError::Packing { .. }),
+        "the control must fail in the packing this test claims to precede: got {control:?}"
+    );
+
+    let error = compress_path("   ", &locked, Algorithm::Zip, 3).expect_err("the address is blank");
+    assert!(
+        matches!(error, RemoteError::BlankServer),
+        "a blank address must be refused before the tree is packed: got {error:?}"
+    );
+
+    // Restore, or the TempDir cannot clean itself up.
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// The road the first version of the blank guard left open, closed and pinned
+/// where a user meets it.
+///
+/// An address of nothing but slashes is not blank, so an emptiness check on
+/// the raw input let it through; it then lost its slashes and came back as
+/// "cannot reach the server at : ", naming a server with no name, which is the
+/// message issue #65 was filed about. Normalizing before deciding folds it into
+/// the same refusal, and this asserts the user meets that refusal rather than
+/// the transport failure.
+#[test]
+fn an_address_of_only_slashes_is_refused_by_name() {
+    let error = check_health("///").expect_err("there is no address in a run of slashes");
+
+    assert!(
+        matches!(error, RemoteError::BlankServer),
+        "expected the blank refusal, got {error:?}"
+    );
+    assert!(
+        !error.to_string().contains("cannot reach the server at : "),
+        "the nameless-server message is what this guard exists to prevent: {error}"
+    );
 }
 
 // ------------------------------------------------------------ health probe --

@@ -8,6 +8,13 @@ use thiserror::Error;
 /// protocol.
 #[derive(Debug, Error)]
 pub enum RemoteError {
+    /// The address is not an address at all: empty, or nothing but
+    /// whitespace. Refused before any request is attempted, because a
+    /// transport failure naming a server with no name reads as a network
+    /// problem when the real mistake is the destination.
+    #[error("the server address is blank: it needs a URL, for example http://localhost:8000")]
+    BlankServer,
+
     /// No HTTP exchange happened: DNS, connection refused, timeout, TLS.
     #[error("cannot reach the server at {server}: {reason}")]
     Unreachable { server: String, reason: String },

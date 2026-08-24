@@ -71,6 +71,13 @@ fn start_server() -> (String, std::path::PathBuf) {
 // guard-order tests point --server here to prove no request is ever made.
 const UNREACHABLE: &str = "http://127.0.0.1:9";
 
+/// `RemoteError::BlankServer` rendered, which is what a user of the CLI reads
+/// verbatim. Spelled out here rather than matched in fragments so a front-end
+/// that started decorating the message would fail: the point of moving this
+/// answer into `collapse-remote` was that both apps say the same sentence.
+const BLANK_ADDRESS: &str =
+    "the server address is blank: it needs a URL, for example http://localhost:8000";
+
 // ------------------------------------------------------------------ parsing --
 
 #[test]
@@ -288,6 +295,82 @@ fn remote_compress_unreachable_server_errors() {
     assert!(matches!(err, CliError::Remote(_)), "got {err:?}");
     // No partial output file is left behind.
     assert!(!dir.path().join("notes.txt.zip").exists());
+}
+
+// ------------------------------------------------------------ blank address --
+
+/// `--server ""` and `--server "   "` are a flag typed wrong, and the
+/// realistic way to get one is a wrapper script running
+/// `--server "$COLLAPSE_SERVER"` with the variable unset. Both name the
+/// address as the mistake instead of failing against a server with no name,
+/// and neither quietly compresses locally: the message and the empty
+/// directory are what tell the two apart.
+///
+/// `collapse-remote` owns that answer, so the desktop's
+/// `an_empty_server_string_is_refused_not_compressed_locally` and
+/// `a_whitespace_only_server_string_is_refused_not_sent` assert the very same
+/// message. The two front-ends used to disagree here (issue #65).
+#[test]
+fn remote_compress_rejects_a_blank_server() {
+    for blank in ["", "   ", "\t"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("notes.txt");
+        std::fs::write(&src, b"stay home").unwrap();
+
+        let err = run_err(&[
+            "collapse",
+            "compress",
+            src.to_str().unwrap(),
+            "--server",
+            blank,
+        ]);
+
+        assert!(matches!(err, CliError::Remote(_)), "{blank:?}: {err:?}");
+        // The whole message, not a fragment of it. `CliError::Remote` is
+        // `#[error(transparent)]`, which is what makes the CLI's wording and
+        // the desktop's the same string; giving the variant a format of its
+        // own ("remote error: {0}") would still contain every fragment a
+        // `contains` check looks for, so only equality can see that happen.
+        // The old wording, "cannot reach the server at    : ...", sent the
+        // user hunting for a network problem that was never there.
+        assert_eq!(err.to_string(), BLANK_ADDRESS, "{blank:?}");
+
+        assert!(
+            !dir.path().join("notes.txt.zip").exists(),
+            "{blank:?} must not fall back to compressing locally"
+        );
+        assert_eq!(std::fs::read(&src).unwrap(), b"stay home");
+    }
+}
+
+/// The dispatch's other arm. `--server` sends a directory as a tar envelope,
+/// so a blank address there is refused before a whole tree is walked and
+/// copied into a temporary tar (the ordering is pinned in
+/// `apps/remote/tests/client.rs`). Covered separately because the file case
+/// above cannot see it: a directory reaches the guard by a different route
+/// and, if the refusal were ever softened into a local fallback, this is the
+/// call that would quietly produce a full archive of the tree.
+#[test]
+fn remote_compress_rejects_a_blank_server_for_a_directory_too() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("a.txt"), b"first").unwrap();
+
+    let err = run_err(&[
+        "collapse",
+        "compress",
+        root.to_str().unwrap(),
+        "--server",
+        "   ",
+    ]);
+
+    assert_eq!(err.to_string(), BLANK_ADDRESS);
+    assert!(
+        !dir.path().join("photos.zip").exists(),
+        "the tree was archived locally instead of being reported"
+    );
+    assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"first");
 }
 
 // ------------------------------------------------------- safety guard order --

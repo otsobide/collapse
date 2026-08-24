@@ -198,6 +198,18 @@ download, or give up), while the HTTP plumbing in `client.rs` stays private.
 Errors are a `RemoteError` of its own, so the crate does not depend on any
 front-end's error type; the CLI absorbs it into `CliError`.
 
+It also owns **what counts as an address at all**. `base_url` refuses one that
+is empty or nothing but whitespace (`RemoteError::BlankServer`), and both entry
+points, `compress_path` and `check_health`, go through it before any request,
+so no front-end decides that on its own. They used to, and disagreed: the
+desktop read `""` as "compress locally" and `"   "` as a real destination,
+while the CLI sent both over the wire and failed against a server with no name.
+A blank is **refused, not read as "compress locally"**: the desktop's UI never
+produces one (`sources.js` normalizes an address to `null` or a real URL), so
+it means a stale stored value or a mistyped `--server`, and compressing
+locally would hide both. Nothing else about the address is judged here;
+whatever else is wrong with it is the HTTP client's to report.
+
 ## collapse-server-backend — the compression server
 
 `collapse-server-backend` (`apps/server-backend`) lets a client compress on another machine; it is

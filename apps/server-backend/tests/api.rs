@@ -434,6 +434,110 @@ async fn delete_removes_the_job_and_its_files() {
     assert_eq!(download.status(), StatusCode::NOT_FOUND);
 }
 
+/// A completed job, staged and finished, ready to be deleted.
+async fn completed_job(router: &Router) -> String {
+    let accepted = post_compress(router, "name=a.txt", b"delete me after").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(wait_for_job(router, &job_id).await["status"], "completed");
+    job_id
+}
+
+/// Make a job's staging directory refuse to give up what is inside it, the
+/// way a volume gone read-only does. Answers whether the obstruction took: as
+/// root it does not, since mode bits are not enforced there, and a test that
+/// went on to assert a failed removal would be asserting the opposite of what
+/// it means.
+#[cfg(unix)]
+fn obstruct(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Unlinking an entry needs write permission on the directory holding it,
+    // so a probe that lands is proof the mode bits are not being enforced.
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        std::fs::remove_file(&probe).unwrap();
+        release(dir);
+        return false;
+    }
+    true
+}
+
+/// Undo [`obstruct`], so the TempDir can be cleaned up afterwards. Called
+/// before the assertions, never after: a panic in between would leave the
+/// directory behind for good.
+#[cfg(unix)]
+fn release(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn delete_answers_that_the_files_stayed_when_they_could_not_be_removed() {
+    // The handler reads the removal's outcome now instead of taking it as
+    // done, and it makes the opposite call to the reaper: the row goes
+    // regardless, because the caller asked for the job to go and is being
+    // told, in the same answer, that its files did not. `deleted` was `true`
+    // for this case before the outcome was carried out of `delete_job`, which
+    // told the client its disk was freed when it was not.
+    let (router, storage) = app();
+    let job_id = completed_job(&router).await;
+    let job_dir = storage.path().join(JOBS_DIR).join(&job_id);
+    if !obstruct(&job_dir) {
+        return;
+    }
+
+    let response = request(&router, Method::DELETE, &format!("/jobs/{job_id}"), b"").await;
+    let status = response.status();
+    let json = body_json(response).await;
+    // The row is dropped even so, so the job is gone from every endpoint.
+    let after = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+    let after_status = after.status();
+    let leftovers: Vec<String> = std::fs::read_dir(&job_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    release(&job_dir);
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a failed removal is reported, not refused"
+    );
+    assert_eq!(json["job_id"], job_id);
+    assert_eq!(json["deleted"], false, "and reported honestly");
+    assert_eq!(after_status, StatusCode::NOT_FOUND);
+    assert!(
+        leftovers.iter().any(|name| name.starts_with("archive.")),
+        "the archive is still on the disk the client thinks it freed: {leftovers:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_answers_that_the_files_stayed_when_there_were_none() {
+    // The third answer arriving over the wire as the second one: `deleted`
+    // means "this request removed files", so a job whose directory is already
+    // gone gets `false` too. The distinction that matters is against the
+    // failure above, which must not read as a success, and it is the log line
+    // (not the response) that tells the two apart.
+    let (router, storage) = app();
+    let job_id = completed_job(&router).await;
+    std::fs::remove_dir_all(storage.path().join(JOBS_DIR).join(&job_id)).unwrap();
+
+    let response = request(&router, Method::DELETE, &format!("/jobs/{job_id}"), b"").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["deleted"], false);
+    let after = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+    assert_eq!(after.status(), StatusCode::NOT_FOUND, "the row goes anyway");
+}
+
 // ---------------------------------------------------------------------------
 // Unknown jobs
 // ---------------------------------------------------------------------------

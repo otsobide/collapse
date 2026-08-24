@@ -194,9 +194,22 @@ pub(crate) async fn delete_job(
 
     let storage = state.storage.clone();
     let delete_id = job_id.clone();
-    let deleted = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
+    let removal = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // A removal that failed is reported, not refused: the caller asked for
+    // this job to go, and the answer already says whether its files went with
+    // it. The reaper makes the opposite call (it keeps the row and retries)
+    // because it has nobody to tell; here the reason goes to the log and the
+    // outcome goes back on the wire.
+    let deleted = match removal {
+        Ok(deleted) => deleted,
+        Err(e) => {
+            tracing::warn!(job = %job_id, error = %e, "cannot remove the staged files");
+            false
+        }
+    };
     state.registry.forget(&job_id)?;
     tracing::info!(job = %job_id, files_removed = deleted, "deleted");
 

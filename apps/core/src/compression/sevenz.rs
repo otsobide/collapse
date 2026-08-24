@@ -9,6 +9,89 @@ use super::CompressionError;
 /// API level (1–5) → LZMA2 preset (1–9).
 const SEVENZ_PRESETS: [u32; 5] = [1, 3, 5, 7, 9];
 
+/// Translate a `sevenz_rust2::Error` into this crate's error type.
+///
+/// Never call `to_string()` on one of those: the dependency implements
+/// `Display` as `Debug` (sevenz-rust2 0.13.2, `src/error.rs`), so stringifying
+/// it hands the user a struct dump such as
+/// `Io(Os { code: 2, kind: NotFound, ... }, "/var/lib/collapse/jobs/<id>/a.7z")`.
+/// That is unreadable, and the absolute path in it is a disclosure once the
+/// server forwards a job's error message to its clients.
+///
+/// So the two variants that carry an `io::Error` unwrap to
+/// [`CompressionError::Io`], which is exactly what zip and tar already produce
+/// for the same failure (they reach it through `std`), and every other variant
+/// gets a sentence written here.
+///
+/// The match is deliberately exhaustive: when the dependency grows a variant
+/// this stops compiling, instead of quietly reintroducing a dump through a
+/// catch-all arm.
+fn from_sevenz(e: sevenz_rust2::Error) -> CompressionError {
+    use sevenz_rust2::Error as SevenZError;
+
+    let message = match e {
+        // The second field is the file name the dependency was working on;
+        // dropping it is the point. `io::Error`'s own Display already says
+        // what went wrong ("No such file or directory (os error 2)"), and the
+        // caller knows which path it asked for.
+        SevenZError::Io(io, _) | SevenZError::FileOpen(io, _) => return CompressionError::Io(io),
+        // `Other` is prose, and it is also the variant `extract_7z` builds for
+        // a rejected entry name, so passing it through unchanged is what keeps
+        // the traversal message identical across the three formats.
+        SevenZError::Other(reason) => reason.into_owned(),
+        SevenZError::BadSignature(_) => {
+            "not a 7z archive: the file does not start with a 7z signature".to_string()
+        }
+        SevenZError::UnsupportedVersion { major, minor } => {
+            format!("unsupported 7z format version {major}.{minor}")
+        }
+        // Raised for the start header and for an entry alike, so the sentence
+        // must not claim which one.
+        SevenZError::ChecksumVerificationFailed => {
+            "the 7z archive is corrupt: a checksum did not match".to_string()
+        }
+        SevenZError::NextHeaderCrcMismatch => {
+            "the 7z archive is corrupt: its header failed the checksum".to_string()
+        }
+        // The five "bad terminated" variants each name an internal header
+        // section, and the byte they carry is the property id the parser did
+        // not expect. Neither tells a user anything the sentence does not.
+        SevenZError::BadTerminatedStreamsInfo(_)
+        | SevenZError::BadTerminatedUnpackInfo
+        | SevenZError::BadTerminatedPackInfo(_)
+        | SevenZError::BadTerminatedSubStreamsInfo
+        | SevenZError::BadTerminatedheader(_) => {
+            "the 7z archive is corrupt: its header is malformed".to_string()
+        }
+        SevenZError::ExternalUnsupported => {
+            "this 7z archive keeps its file list in an external stream, which is not supported"
+                .to_string()
+        }
+        // The payload is quoted nowhere on purpose: two of the construction
+        // sites pass a method name, a third passes `format!("{:?}", id)` over
+        // the raw method id bytes, and there is no way to tell them apart.
+        SevenZError::UnsupportedCompressionMethod(_) => {
+            "the 7z archive uses a compression method this build cannot decode".to_string()
+        }
+        SevenZError::MaxMemLimited { max_kb, actaul_kb } => format!(
+            "decoding the 7z archive needs {actaul_kb} KB of memory, over the {max_kb} KB limit"
+        ),
+        // Nothing here ever supplies a password, so an encrypted archive is
+        // simply out of reach; both variants mean the same thing to a user.
+        SevenZError::PasswordRequired | SevenZError::MaybeBadPassword(_) => {
+            "the 7z archive is encrypted, and passwords are not supported".to_string()
+        }
+        // Same reasoning as UnsupportedCompressionMethod: one construction
+        // site formats a method id with `{:?}`.
+        SevenZError::Unsupported(_) => {
+            "the 7z archive uses a feature this build does not support".to_string()
+        }
+        SevenZError::FileNotFound => "the entry was not found in the 7z archive".to_string(),
+    };
+
+    CompressionError::Failed(message)
+}
+
 pub fn compress_7z(
     source: &Path,
     output: &Path,
@@ -19,8 +102,7 @@ pub fn compress_7z(
 
     let content = fs::read(source)?;
 
-    let mut writer =
-        SevenZWriter::create(output).map_err(|e| CompressionError::Failed(e.to_string()))?;
+    let mut writer = SevenZWriter::create(output).map_err(from_sevenz)?;
 
     let lzma2_opts = LZMA2Options::with_preset(preset);
     writer.set_content_methods(vec![
@@ -32,11 +114,11 @@ pub fn compress_7z(
 
     writer
         .push_archive_entry(entry, Some(content.as_slice()))
-        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+        .map_err(from_sevenz)?;
 
-    writer
-        .finish()
-        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+    // `finish` is the one call here that answers with a plain `io::Error`, so
+    // `?` alone already lands it in `CompressionError::Io`.
+    writer.finish()?;
 
     Ok(())
 }
@@ -54,8 +136,7 @@ pub fn compress_7z_dir(
     let entries = super::walk_tree(source_dir)?;
     let preset = SEVENZ_PRESETS[(level - 1) as usize];
 
-    let mut writer =
-        SevenZWriter::create(output).map_err(|e| CompressionError::Failed(e.to_string()))?;
+    let mut writer = SevenZWriter::create(output).map_err(from_sevenz)?;
     let lzma2_opts = LZMA2Options::with_preset(preset);
     writer.set_content_methods(vec![
         SevenZMethodConfiguration::new(SevenZMethod::LZMA2).with_options(lzma2_opts.into())
@@ -67,18 +148,17 @@ pub fn compress_7z_dir(
         if entry.is_dir {
             writer
                 .push_archive_entry::<&[u8]>(sz_entry, None)
-                .map_err(|e| CompressionError::Failed(e.to_string()))?;
+                .map_err(from_sevenz)?;
         } else {
             let content = fs::read(&entry.disk_path)?;
             writer
                 .push_archive_entry(sz_entry, Some(content.as_slice()))
-                .map_err(|e| CompressionError::Failed(e.to_string()))?;
+                .map_err(from_sevenz)?;
         }
     }
 
-    writer
-        .finish()
-        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+    // See `compress_7z`: `finish` fails with a plain `io::Error`.
+    writer.finish()?;
 
     Ok(())
 }
@@ -115,7 +195,7 @@ pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Comp
         }
         Ok(true)
     })
-    .map_err(|e| CompressionError::Failed(e.to_string()))?;
+    .map_err(from_sevenz)?;
 
     Ok(extracted)
 }
