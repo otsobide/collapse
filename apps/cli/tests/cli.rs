@@ -3,6 +3,8 @@
 
 use clap::Parser;
 use collapse_cli::{run, Cli, CliError, Command, Outcome};
+use collapse_core::compression::verify_archive;
+use collapse_core::{Algorithm, Verify};
 
 /// Parse an argv-style slice through the real CLI definition.
 fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
@@ -19,7 +21,19 @@ fn run_err(args: &[&str]) -> CliError {
 
 fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
     match outcome {
-        Outcome::Compressed { output } => output,
+        Outcome::Compressed { output, .. } => output,
+        other => panic!("expected compressed, got {other:?}"),
+    }
+}
+
+/// The depth `run` says it checked the archive at.
+///
+/// `run_compress` binds that depth once and uses the same binding for the call
+/// into the engine and for the `Outcome`, so this is what the engine was
+/// given, not a second opinion about it.
+fn checked_depth(outcome: Outcome) -> Option<Verify> {
+    match outcome {
+        Outcome::Compressed { checked, .. } => checked,
         other => panic!("expected compressed, got {other:?}"),
     }
 }
@@ -52,6 +66,7 @@ fn compress_parses_defaults() {
             level,
             output,
             force,
+            verify,
             format,
             server,
         } => {
@@ -60,6 +75,9 @@ fn compress_parses_defaults() {
             assert!(output.is_none());
             assert!(format.is_none());
             assert!(!force);
+            // Off unless asked for: the deeper check costs about twice the
+            // work, so it can only ever be opt-in.
+            assert!(!verify);
             assert!(server.is_none());
         }
         _ => panic!("expected compress"),
@@ -287,6 +305,160 @@ fn tar_output_is_independent_of_level() {
     assert_eq!(std::fs::read(&a1).unwrap(), std::fs::read(&a5).unwrap());
 }
 
+// -------------------------------------------------------------------- verify --
+
+/// Bytes deflate and LZMA2 cannot shrink, so the archive's data region is about
+/// as long as the input and a byte flipped in the middle of the file is
+/// certainly inside it rather than in a header or the listing. Same
+/// construction, and same reason, as `incompressible` in core's `verify.rs`.
+fn incompressible(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|i| ((i as u64).wrapping_mul(2_654_435_761) >> 13) as u8)
+        .collect()
+}
+
+fn flip_byte(path: &std::path::Path, offset: usize) {
+    let mut bytes = std::fs::read(path).unwrap();
+    bytes[offset] ^= 0xFF;
+    std::fs::write(path, &bytes).unwrap();
+}
+
+#[test]
+fn verify_flag_parses() {
+    let cli = parse(&["collapse", "compress", "f.txt", "--verify"]).unwrap();
+    match cli.command {
+        Command::Compress { verify, .. } => assert!(verify),
+        _ => panic!("expected compress"),
+    }
+}
+
+/// Which check `--verify` asks the engine for, established by running that
+/// check rather than by reading the CLI's source: the depth `run` reports is
+/// the one it handed the engine, so pointing it at a damaged archive says what
+/// the flag bought.
+///
+/// The CLI cannot be made to write a corrupt archive (its compressors checksum
+/// exactly the bytes they wrote), so the damage is done afterwards, to the
+/// archive the CLI itself produced.
+///
+/// Falsifiable in both directions: map `--verify` to the listing check and the
+/// second half stops failing; make the listing check read entry data too and
+/// the first half stops passing. It leans on `run_compress` binding the depth
+/// once for both the call and the report, which is why that binding is single
+/// and says so.
+#[test]
+fn verify_asks_for_the_check_that_catches_a_corrupt_entry() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.bin");
+    std::fs::write(&src, incompressible(8192)).unwrap();
+
+    let compress_to = |archive: &std::path::Path, flag: Option<&str>| -> Verify {
+        let mut args = vec![
+            "collapse",
+            "compress",
+            src.to_str().unwrap(),
+            "-o",
+            archive.to_str().unwrap(),
+        ];
+        args.extend(flag);
+        checked_depth(run_ok(&args)).expect("a local compression checks the archive it wrote")
+    };
+
+    let plain = dir.path().join("plain.zip");
+    let deep = dir.path().join("deep.zip");
+    let shallow_depth = compress_to(&plain, None);
+    let deep_depth = compress_to(&deep, Some("--verify"));
+
+    // Both archives are sound as written, so the difference between the two
+    // depths is invisible until one of them is damaged. Halfway through the
+    // file: zip puts the entry's data first and its listing at the end, and
+    // this data does not compress, so the flip lands in the payload.
+    for archive in [&plain, &deep] {
+        let midpoint = std::fs::metadata(archive).unwrap().len() as usize / 2;
+        flip_byte(archive, midpoint);
+    }
+
+    let expected = ["notes.bin".to_string()];
+    assert!(
+        verify_archive(&plain, Algorithm::Zip, &expected, shallow_depth).is_ok(),
+        "the default depth reads the listing, which a flipped data byte leaves intact"
+    );
+    let caught = verify_archive(&deep, Algorithm::Zip, &expected, deep_depth)
+        .expect_err("--verify must ask for the depth that reads every entry back");
+    assert!(
+        caught.to_string().contains("notes.bin"),
+        "the failure names the entry that went bad: {caught}"
+    );
+
+    // And the same two answers in the engine's own words.
+    assert_eq!(shallow_depth, Verify::Index);
+    assert_eq!(deep_depth, Verify::Contents);
+}
+
+/// The deeper check must pass on a healthy archive, for every format and both
+/// shapes. It runs on the archive's way to the destination, so a false
+/// positive would not merely be noise: nothing would land at all, and
+/// `--verify` would be unusable. The tree carries the two entries most likely
+/// to trip a reader that assumes every entry has data, an empty file and an
+/// empty directory.
+///
+/// Falsifiable: have the contents check read a directory entry as a stream, or
+/// treat a zero-length entry as a short read, and this goes red.
+#[test]
+fn verify_still_lands_a_correct_archive_for_every_format() {
+    for (fmt, ext) in [("zip", "zip"), ("7z", "7z"), ("tar", "tar")] {
+        let dir = tempfile::TempDir::new().unwrap();
+
+        let file = dir.path().join("notes.txt");
+        std::fs::write(&file, b"hello verify").unwrap();
+        let file_archive = dir.path().join(format!("file.{ext}"));
+        let outcome = run_ok(&[
+            "collapse",
+            "compress",
+            file.to_str().unwrap(),
+            "-f",
+            fmt,
+            "-o",
+            file_archive.to_str().unwrap(),
+            "--verify",
+        ]);
+        assert_eq!(checked_depth(outcome), Some(Verify::Contents), "{fmt}");
+        let out = dir.path().join("file-out");
+        assert_eq!(
+            listing(collapse_core::extract(&file_archive, &out).unwrap()),
+            vec!["notes.txt"],
+            "{fmt}"
+        );
+
+        let root = dir.path().join("photos");
+        std::fs::create_dir_all(root.join("empty_dir")).unwrap();
+        std::fs::write(root.join("a.txt"), b"alpha").unwrap();
+        std::fs::write(root.join("empty.txt"), b"").unwrap();
+        let dir_archive = dir.path().join(format!("tree.{ext}"));
+        let outcome = run_ok(&[
+            "collapse",
+            "compress",
+            root.to_str().unwrap(),
+            "-f",
+            fmt,
+            "-o",
+            dir_archive.to_str().unwrap(),
+            "--verify",
+        ]);
+        assert_eq!(checked_depth(outcome), Some(Verify::Contents), "{fmt}");
+        let out = dir.path().join("tree-out");
+        assert_eq!(
+            listing(collapse_core::extract(&dir_archive, &out).unwrap()),
+            vec!["photos/a.txt", "photos/empty.txt"],
+            "{fmt}"
+        );
+        assert!(
+            out.join("photos").join("empty_dir").is_dir(),
+            "{fmt}: the empty directory survived the round trip"
+        );
+    }
+}
+
 // ----------------------------------------------------------------- extraction --
 
 #[test]
@@ -295,7 +467,7 @@ fn extract_lists_and_writes_files() {
     let src = dir.path().join("data.bin");
     std::fs::write(&src, b"payload").unwrap();
     let archive = dir.path().join("data.zip");
-    collapse_core::compress(&src, &archive, "data.bin", collapse_core::Algorithm::Zip, 1).unwrap();
+    collapse_core::compress(&src, &archive, "data.bin", Algorithm::Zip, 1, Verify::Index).unwrap();
 
     let out = dir.path().join("out");
     let outcome = run_ok(&[
@@ -321,7 +493,7 @@ fn extract_creates_deep_nested_output_dir() {
     let src = dir.path().join("data.bin");
     std::fs::write(&src, b"deep").unwrap();
     let archive = dir.path().join("data.zip");
-    collapse_core::compress(&src, &archive, "data.bin", collapse_core::Algorithm::Zip, 1).unwrap();
+    collapse_core::compress(&src, &archive, "data.bin", Algorithm::Zip, 1, Verify::Index).unwrap();
 
     let out = dir.path().join("a/b/c");
     assert!(!out.exists());

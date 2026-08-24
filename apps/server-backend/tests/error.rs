@@ -4,7 +4,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
 
-use collapse_server_backend::error::ApiError;
+use collapse_core::CompressionError;
+use collapse_server_backend::error::{failure_message, ApiError};
 
 async fn detail_of(response: Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -53,4 +54,65 @@ async fn io_errors_become_internal_errors() {
 
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert!(detail_of(response).await.contains("denied"));
+}
+
+// ------------------------------------------------ what a failed job says --
+
+/// The engine names the file it read back, and for a job that is a path inside
+/// the staging directory: `/var/lib/collapse/jobs/<uuid>/archive.zip`. Handing
+/// that to a client tells them where the server keeps its files and nothing
+/// they can act on, so the archive's own name replaces it.
+#[test]
+fn a_verification_failure_names_the_archive_not_the_servers_own_path() {
+    let error = CompressionError::VerificationFailed {
+        archive: std::path::PathBuf::from("/var/lib/collapse/jobs/abc123/archive.zip"),
+        reason: "1 entry is missing: \"photos/b.jpg\"".to_string(),
+    };
+
+    let message = failure_message("photos.zip", &error);
+
+    assert!(
+        message.contains("photos.zip"),
+        "names the archive the client asked for: {message}"
+    );
+    assert!(
+        !message.contains("/var/lib/collapse"),
+        "and not where the server keeps it: {message}"
+    );
+    assert!(
+        !message.contains("abc123"),
+        "nor the staging directory's name: {message}"
+    );
+}
+
+/// It has to read as a sentence, because clients print `error_message`
+/// verbatim: the CLI to a terminal, the web app into the page.
+#[test]
+fn a_verification_failure_reads_as_a_sentence_and_keeps_the_reason() {
+    let error = CompressionError::VerificationFailed {
+        archive: std::path::PathBuf::from("/tmp/x/archive.zip"),
+        reason: "2 entries are missing: \"a.txt\", \"b.txt\"".to_string(),
+    };
+
+    assert_eq!(
+        failure_message("photos.zip", &error),
+        "photos.zip was compressed but did not check out, so it was discarded: \
+         2 entries are missing: \"a.txt\", \"b.txt\""
+    );
+}
+
+/// Every other engine error already says something the client can act on, and
+/// rewriting those would throw away the only description of what went wrong.
+#[test]
+fn other_engine_errors_are_passed_through_word_for_word() {
+    for error in [
+        CompressionError::Failed("unexpected end of file".to_string()),
+        CompressionError::InvalidLevel(9),
+        CompressionError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        )),
+    ] {
+        assert_eq!(failure_message("photos.zip", &error), error.to_string());
+    }
 }

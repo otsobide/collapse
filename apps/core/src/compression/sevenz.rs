@@ -1,13 +1,21 @@
 use std::fs;
+use std::io;
 use std::path::Path;
 
 use sevenz_rust2::lzma::LZMA2Options;
 use sevenz_rust2::{SevenZArchiveEntry, SevenZMethod, SevenZMethodConfiguration, SevenZWriter};
 
-use super::CompressionError;
+use super::{CompressionError, Verify};
 
 /// API level (1–5) → LZMA2 preset (1–9).
 const SEVENZ_PRESETS: [u32; 5] = [1, 3, 5, 7, 9];
+
+/// One sentence for a failed CRC, wherever it is raised.
+///
+/// The dependency reports the same condition two ways (a variant of its own for
+/// the header, an `io::Error` wrapping that variant for a decoded stream), and
+/// a user has no use for the difference.
+const CHECKSUM_MISMATCH: &str = "the 7z archive is corrupt: a checksum did not match";
 
 /// Translate a `sevenz_rust2::Error` into this crate's error type.
 ///
@@ -34,7 +42,7 @@ fn from_sevenz(e: sevenz_rust2::Error) -> CompressionError {
         // dropping it is the point. `io::Error`'s own Display already says
         // what went wrong ("No such file or directory (os error 2)"), and the
         // caller knows which path it asked for.
-        SevenZError::Io(io, _) | SevenZError::FileOpen(io, _) => return CompressionError::Io(io),
+        SevenZError::Io(io, _) | SevenZError::FileOpen(io, _) => return from_sevenz_io(io),
         // `Other` is prose, and it is also the variant `extract_7z` builds for
         // a rejected entry name, so passing it through unchanged is what keeps
         // the traversal message identical across the three formats.
@@ -47,9 +55,7 @@ fn from_sevenz(e: sevenz_rust2::Error) -> CompressionError {
         }
         // Raised for the start header and for an entry alike, so the sentence
         // must not claim which one.
-        SevenZError::ChecksumVerificationFailed => {
-            "the 7z archive is corrupt: a checksum did not match".to_string()
-        }
+        SevenZError::ChecksumVerificationFailed => CHECKSUM_MISMATCH.to_string(),
         SevenZError::NextHeaderCrcMismatch => {
             "the 7z archive is corrupt: its header failed the checksum".to_string()
         }
@@ -90,6 +96,77 @@ fn from_sevenz(e: sevenz_rust2::Error) -> CompressionError {
     };
 
     CompressionError::Failed(message)
+}
+
+/// Unwrap an `io::Error` the dependency handed back.
+///
+/// Almost always it is a real IO failure and belongs in
+/// [`CompressionError::Io`] untouched. The exception is the CRC guard on a
+/// decoded stream: it reports a mismatch as an `io::Error` *wrapping*
+/// `sevenz_rust2::Error::ChecksumVerificationFailed`, and since that type's
+/// `Display` is its `Debug`, passing it through prints the bare variant name at
+/// the user. It is not an IO problem either, so it gets the same sentence the
+/// header-side mismatch already gets.
+fn from_sevenz_io(io: std::io::Error) -> CompressionError {
+    let checksum = io
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<sevenz_rust2::Error>())
+        .is_some_and(|inner| matches!(inner, sevenz_rust2::Error::ChecksumVerificationFailed));
+    if checksum {
+        CompressionError::Failed(CHECKSUM_MISMATCH.to_string())
+    } else {
+        CompressionError::Io(io)
+    }
+}
+
+/// Read a 7z back for [`verify_archive`](super::verify_archive), returning the
+/// names it holds.
+///
+/// [`Verify::Index`] decodes the archive header (which is itself compressed)
+/// and reads no entry. [`Verify::Contents`] decodes every entry into a sink,
+/// which is what makes the dependency compare each one against the CRC it
+/// stores per file.
+pub(crate) fn read_7z_entries(
+    archive: &Path,
+    depth: Verify,
+) -> Result<Vec<String>, CompressionError> {
+    if depth == Verify::Index {
+        let listing = sevenz_rust2::Archive::open(archive).map_err(from_sevenz)?;
+        return Ok(listing.files.iter().map(|f| f.name.clone()).collect());
+    }
+
+    let mut reader = sevenz_rust2::SevenZReader::open(archive, sevenz_rust2::Password::empty())
+        .map_err(from_sevenz)?;
+    let mut names = Vec::new();
+    reader
+        .for_each_entries(|entry, stream| {
+            names.push(entry.name.clone());
+            // Reading to the end is what makes the CRC guard fire; the bytes
+            // themselves are not wanted anywhere.
+            match io::copy(stream, &mut io::sink()) {
+                Ok(_) => Ok(true),
+                // `Other` is the one variant `from_sevenz` passes through
+                // unchanged, which is how a sentence written here survives the
+                // mapping and keeps the entry's name attached to it.
+                Err(e) => Err(sevenz_rust2::Error::other(format!(
+                    "entry {:?} could not be read back: {}",
+                    entry.name,
+                    describe_stream_failure(e)
+                ))),
+            }
+        })
+        .map_err(from_sevenz)?;
+    Ok(names)
+}
+
+/// Say in words why a decoded stream stopped, with no prefix: the caller is
+/// building a longer sentence around it.
+fn describe_stream_failure(e: std::io::Error) -> String {
+    match from_sevenz_io(e) {
+        CompressionError::Failed(message) => message,
+        CompressionError::Io(io) => io.to_string(),
+        other => other.to_string(),
+    }
 }
 
 pub fn compress_7z(

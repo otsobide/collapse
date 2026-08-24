@@ -18,7 +18,16 @@ fn run_err(args: &[&str]) -> CliError {
 
 fn compressed_output(outcome: Outcome) -> std::path::PathBuf {
     match outcome {
-        Outcome::Compressed { output } => output,
+        Outcome::Compressed { output, .. } => output,
+        other => panic!("expected compressed, got {other:?}"),
+    }
+}
+
+/// The depth `run` says it checked the archive at, `None` when it checked
+/// nothing. Same helper as in `tests/cli.rs`.
+fn checked_depth(outcome: Outcome) -> Option<collapse_core::Verify> {
+    match outcome {
+        Outcome::Compressed { checked, .. } => checked,
         other => panic!("expected compressed, got {other:?}"),
     }
 }
@@ -77,6 +86,12 @@ const UNREACHABLE: &str = "http://127.0.0.1:9";
 /// answer into `collapse-remote` was that both apps say the same sentence.
 const BLANK_ADDRESS: &str =
     "the server address is blank: it needs a URL, for example http://localhost:8000";
+
+/// `CliError::RemoteVerifyUnsupported` rendered. Spelled out in full because
+/// this sentence is the entire answer the user gets: it has to name the flag
+/// that cannot be honoured, why, and what to do instead, and a `contains`
+/// check on a fragment would not notice any of the three going missing.
+const VERIFY_NOT_REMOTE: &str = "--verify cannot be used with --server: the archive is built on the server, which this build has no way to ask for that check (compress locally to use --verify)";
 
 // ------------------------------------------------------------------ parsing --
 
@@ -295,6 +310,105 @@ fn remote_compress_unreachable_server_errors() {
     assert!(matches!(err, CliError::Remote(_)), "got {err:?}");
     // No partial output file is left behind.
     assert!(!dir.path().join("notes.txt.zip").exists());
+}
+
+// ---------------------------------------------------------- verify vs server --
+
+/// `--verify` asks for a check that happens where the archive is built, and
+/// with `--server` that is the other machine. This build cannot ask the server
+/// for it, so the combination is refused: a flag whose whole purpose is a
+/// stronger guarantee is the last one that may quietly do nothing.
+///
+/// Two things are pinned besides the message. The refusal comes ahead of the
+/// filesystem guards, so the output that already exists here is reported as
+/// the flag mistake it is rather than sending the user off to add `--force`
+/// and meet this on the next run. And it is a refusal, not a fallback: no
+/// archive appears anywhere, least of all one compressed locally that the user
+/// would take for the server's work.
+///
+/// The address points at a port nothing listens on, so nothing here depends on
+/// a server existing; if the guard were ever moved after the dispatch, this
+/// would fail as a connection error instead.
+#[test]
+fn verify_is_refused_with_server_rather_than_ignored() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"stay home").unwrap();
+    let archive = dir.path().join("out.zip");
+    std::fs::write(&archive, b"pre-existing").unwrap();
+
+    let err = run_err(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "-o",
+        archive.to_str().unwrap(),
+        "--verify",
+        "--server",
+        UNREACHABLE,
+    ]);
+
+    assert!(
+        matches!(err, CliError::RemoteVerifyUnsupported),
+        "got {err:?}"
+    );
+    assert_eq!(err.to_string(), VERIFY_NOT_REMOTE);
+    assert_eq!(
+        std::fs::read(&archive).unwrap(),
+        b"pre-existing",
+        "the refusal must not have touched the file it was aimed at"
+    );
+    assert!(
+        !dir.path().join("notes.txt.zip").exists(),
+        "and it must not have compressed locally instead"
+    );
+}
+
+/// Without `--verify` the two flags never meet, so `--server` keeps working
+/// exactly as before.
+#[test]
+fn server_without_verify_is_unaffected() {
+    let (server, _storage) = start_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"compressed far away").unwrap();
+
+    let output = compressed_output(run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &server,
+    ]));
+
+    let out = dir.path().join("out");
+    assert_eq!(
+        listing(collapse_core::extract(&output, &out).unwrap()),
+        vec!["notes.txt"]
+    );
+}
+
+/// The remote path reports that it checked nothing, because it checked
+/// nothing: the archive arrives finished, and the list of entries to hold it
+/// against belongs to the server. Naming a depth here would have the CLI claim
+/// a guarantee only the local path can give, and the claim would be invisible
+/// to every other test in this file, which look at the archive rather than at
+/// what was promised about it.
+#[test]
+fn remote_compress_claims_no_check_of_its_own() {
+    let (server, _storage) = start_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let src = dir.path().join("notes.txt");
+    std::fs::write(&src, b"nobody checked this here").unwrap();
+
+    let outcome = run_ok(&[
+        "collapse",
+        "compress",
+        src.to_str().unwrap(),
+        "--server",
+        &server,
+    ]);
+    assert_eq!(checked_depth(outcome), None);
 }
 
 // ------------------------------------------------------------ blank address --

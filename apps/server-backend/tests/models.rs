@@ -1,7 +1,7 @@
 //! Unit tests for the job model, including the JSON shape clients parse.
 
 use collapse_core::Algorithm;
-use collapse_server_backend::models::{Envelope, Job, JobStatus};
+use collapse_server_backend::models::{Envelope, Job, JobStatus, Verify};
 
 fn job(name: &str, algorithm: Algorithm) -> Job {
     Job::new(
@@ -10,6 +10,7 @@ fn job(name: &str, algorithm: Algorithm) -> Job {
         algorithm,
         3,
         Envelope::None,
+        Verify::Index,
     )
 }
 
@@ -88,6 +89,7 @@ fn job_serializes_the_expected_fields() {
             "level",
             "name",
             "status",
+            "verify",
         ]
     );
 
@@ -98,6 +100,7 @@ fn job_serializes_the_expected_fields() {
     assert_eq!(value["level"], 3);
     assert_eq!(value["status"], "queued");
     assert_eq!(value["envelope"], "none");
+    assert_eq!(value["verify"], "index");
     assert_eq!(value["error_message"], serde_json::Value::Null);
 }
 
@@ -140,6 +143,49 @@ fn an_envelope_prints_what_the_wire_carries() {
             serde_json::to_value(envelope).unwrap().as_str().unwrap()
         );
     }
+}
+
+#[test]
+fn a_verify_depth_prints_and_parses_what_the_wire_carries() {
+    // Three places have to agree on one spelling: the query parameter a client
+    // sends, the JSON a client reads back, and the database column the worker
+    // reads. The column is parsed with `FromStr` and written with `Display`, so
+    // a disagreement between those two would make every job unreadable after a
+    // restart, and a disagreement with serde would make the wire lie.
+    for verify in [Verify::Index, Verify::Contents] {
+        let json = serde_json::to_value(verify).unwrap();
+        let text = json.as_str().unwrap();
+        assert_eq!(verify.to_string(), text);
+        assert_eq!(text.parse::<Verify>().unwrap(), verify);
+    }
+
+    assert_eq!(Verify::Index.to_string(), "index");
+    assert_eq!(Verify::Contents.to_string(), "contents");
+}
+
+#[test]
+fn an_unknown_verify_depth_says_what_it_would_have_accepted() {
+    // The message goes straight into the 400 body, so a caller who guessed
+    // `full` or `true` has to be able to see what to send instead.
+    let error = "full".parse::<Verify>().unwrap_err();
+    assert!(error.contains("full"), "quotes what was sent: {error}");
+    assert!(error.contains("index"), "names the choices: {error}");
+    assert!(error.contains("contents"), "names the choices: {error}");
+}
+
+#[test]
+fn each_depth_selects_the_engine_depth_of_the_same_name() {
+    // The whole point of the parameter: swap these two arms and every job asks
+    // the engine for the wrong amount of work while still reporting the right
+    // one on the wire.
+    assert_eq!(
+        collapse_core::Verify::from(Verify::Index),
+        collapse_core::Verify::Index
+    );
+    assert_eq!(
+        collapse_core::Verify::from(Verify::Contents),
+        collapse_core::Verify::Contents
+    );
 }
 
 #[test]

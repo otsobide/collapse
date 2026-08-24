@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::INTERRUPTED;
-use collapse_server_backend::models::{Envelope, Job, JobStatus};
+use collapse_server_backend::models::{Envelope, Job, JobStatus, Verify};
 use collapse_server_backend::registry::Registry;
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
 use tempfile::TempDir;
@@ -538,6 +538,7 @@ fn a_job_caught_mid_compression_comes_back_failed() {
             Algorithm::Zip,
             3,
             Envelope::None,
+            Verify::Index,
         );
         registry.add(&job).unwrap();
         registry

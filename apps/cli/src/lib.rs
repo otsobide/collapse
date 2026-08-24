@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use collapse_core::paths::{inside, same_file};
-use collapse_core::{compress, compress_dir, extract, Algorithm};
+use collapse_core::{compress, compress_dir, extract, Algorithm, Verify};
 use thiserror::Error;
 
 /// Compress and extract files and folders.
@@ -40,6 +40,12 @@ pub enum Command {
         /// Overwrite the output archive if it already exists.
         #[arg(long)]
         force: bool,
+
+        /// Read every entry back, not just the archive's listing: about twice
+        /// the work, and it checks the per-entry checksums zip and 7z store
+        /// (tar stores none).
+        #[arg(long)]
+        verify: bool,
 
         /// Compress on a remote Collapse server instead of locally
         /// (e.g. http://localhost:8000).
@@ -83,6 +89,14 @@ impl From<Format> for Algorithm {
 pub enum Outcome {
     Compressed {
         output: PathBuf,
+        /// How thoroughly the archive was checked before it landed at
+        /// `output`, or `None` when this side checked nothing at all.
+        ///
+        /// `None` is the remote path: the archive arrives already finished and
+        /// the list of entries to hold it against is the server's, not ours.
+        /// Reporting a depth there would claim a check that never ran, and the
+        /// whole point of the check is that a user can trust it.
+        checked: Option<Verify>,
     },
     Extracted {
         output_dir: PathBuf,
@@ -94,7 +108,17 @@ impl Outcome {
     /// Print a human-readable summary to stdout.
     pub fn report(&self) {
         match self {
-            Outcome::Compressed { output } => {
+            // Only the deeper check is mentioned, because it is the only one
+            // the user asked for and paid for. The listing check runs on every
+            // local compression, so announcing it would be noise on every
+            // single run.
+            Outcome::Compressed {
+                output,
+                checked: Some(Verify::Contents),
+            } => {
+                println!("Created {} (contents verified)", output.display());
+            }
+            Outcome::Compressed { output, .. } => {
                 println!("Created {}", output.display());
             }
             Outcome::Extracted { output_dir, files } => {
@@ -131,6 +155,16 @@ pub enum CliError {
     #[error("invalid path: {}", .0.display())]
     InvalidPath(PathBuf),
 
+    /// `--verify` asks for work that happens where the archive is built, and
+    /// with `--server` that is the other end of the wire.
+    ///
+    /// Refused rather than ignored: a flag that asks for a stronger guarantee
+    /// is the last one to silently do nothing. It is also not something this
+    /// side can make up for by checking the download, because for a directory
+    /// it has no list of entries to hold the archive against.
+    #[error("--verify cannot be used with --server: the archive is built on the server, which this build has no way to ask for that check (compress locally to use --verify)")]
+    RemoteVerifyUnsupported,
+
     #[error(transparent)]
     Remote(#[from] collapse_remote::RemoteError),
 
@@ -150,8 +184,9 @@ pub fn run(cli: Cli) -> Result<Outcome, CliError> {
             level,
             output,
             force,
+            verify,
             server,
-        } => run_compress(path, format, level, output, force, server),
+        } => run_compress(path, format, level, output, force, verify, server),
         Command::Extract { archive, output } => run_extract(archive, output),
     }
 }
@@ -162,8 +197,17 @@ fn run_compress(
     level: u32,
     output: Option<PathBuf>,
     force: bool,
+    verify: bool,
     server: Option<String>,
 ) -> Result<Outcome, CliError> {
+    // First, ahead of the filesystem: this one is a mistake in the command
+    // itself, decidable from the arguments alone. Reporting "output already
+    // exists" first would send the user off to add --force and meet this on
+    // the next run.
+    if verify && server.is_some() {
+        return Err(CliError::RemoteVerifyUnsupported);
+    }
+
     // Canonicalize so `.`/`..`/trailing slashes resolve to a real path with a
     // usable file name (and to detect an output that aliases the source).
     let source = source
@@ -208,25 +252,39 @@ fn run_compress(
         return Err(CliError::UnsupportedSource(source));
     }
 
-    match server.as_deref() {
+    // Every local compression is checked; --verify only says how deeply. The
+    // depth is bound once and then both handed to the engine and reported, so
+    // the Outcome cannot end up naming a check that did not happen.
+    let depth = if verify {
+        Verify::Contents
+    } else {
+        Verify::Index
+    };
+
+    let checked = match server.as_deref() {
         // Remote handles both shapes: a file goes as-is, a directory travels
         // as a tar envelope the server unwraps.
         Some(server) => {
             let archive = collapse_remote::compress_path(server, &source, algorithm, level)?;
             std::fs::write(&output, archive)?;
+            None
         }
-        None if source.is_dir() => compress_dir(&source, &output, algorithm, level)?,
+        None if source.is_dir() => {
+            compress_dir(&source, &output, algorithm, level, depth)?;
+            Some(depth)
+        }
         None => {
             let arcname = source
                 .file_name()
                 .ok_or_else(|| CliError::InvalidPath(source.clone()))?
                 .to_string_lossy()
                 .into_owned();
-            compress(&source, &output, &arcname, algorithm, level)?;
+            compress(&source, &output, &arcname, algorithm, level, depth)?;
+            Some(depth)
         }
-    }
+    };
 
-    Ok(Outcome::Compressed { output })
+    Ok(Outcome::Compressed { output, checked })
 }
 
 /// Resolve the archive format: explicit `--format`, else the output file's
