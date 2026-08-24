@@ -359,6 +359,14 @@ or a file inside the folder being compressed, replaces an existing output only
 when `overwrite` says the user agreed to it in the save dialog, and hands the
 work to a remote server when one is chosen),
 `extract_archive`, and `check_server` (a health probe for the settings panel).
+
+All three of those carry `#[tauri::command(async)]`. A bare `#[tauri::command]`
+on a synchronous function runs the body on the thread handling the IPC message,
+so the window stops repainting until it returns: a compression froze it for its
+whole duration, and a mistyped server address froze it for the 30 seconds of
+ureq's connect timeout. `is_directory` is the exception, being a single `stat`.
+Nothing type-checks that distinction either, so `tests/ipc.rs` pins which
+commands must carry it and which must not.
 Remote work goes through [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server)
 from Rust rather than the webview, so the app's CSP stays `default-src 'self'`. Every path is chosen through the native
 open/save dialogs, which is also what makes the app work under the macOS App

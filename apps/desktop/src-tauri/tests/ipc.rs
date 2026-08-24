@@ -938,6 +938,84 @@ fn no_command_attribute_renames_the_wire_contract() {
     }
 }
 
+#[test]
+fn every_command_that_can_block_is_marked_async() {
+    // The only place this can be pinned. A `#[tauri::command]` is an ordinary
+    // function, so every other test in this crate calls these directly and gets
+    // the identical result whatever the attribute says: the argument changes
+    // how TAURI invokes them, and nothing else.
+    //
+    // What it changes is which thread runs the body. Bare, tauri-macros 2.6.3
+    // compiles a synchronous command to its `sync` path, which runs inline on
+    // the thread handling the IPC message, so the window stops repainting until
+    // the call returns. `async` moves it to `sync_threadpool`, off that thread.
+    //
+    // Measured before this was fixed: `check_server` against an unroutable
+    // address froze the window for the whole of ureq's 30 second connect
+    // timeout, and a compression froze it for as long as the compression took.
+    const MUST_NOT_BLOCK: [(&str, &str); 3] = [
+        (
+            "compress_path",
+            "compresses a whole tree, or waits on a server with no read timeout",
+        ),
+        ("extract_archive", "unpacks a whole archive"),
+        (
+            "check_server",
+            "waits out a connect timeout when the address is wrong",
+        ),
+    ];
+    // The exception, listed rather than merely absent so that adding a command
+    // here is a decision someone made on purpose.
+    const MAY_BLOCK: [(&str, &str); 1] = [(
+        "is_directory",
+        "one stat, called while the user is still choosing",
+    )];
+
+    let commands = parse_rust_commands(&commands_rs());
+    for (name, why) in MUST_NOT_BLOCK {
+        let command = commands
+            .get(name)
+            .unwrap_or_else(|| panic!("`{name}` is gone from src/commands.rs: update this list"));
+        let args: Vec<char> = command.attribute_args.chars().collect();
+        assert!(
+            find_word(&args, "async", 0).is_some(),
+            "`{name}` (src/commands.rs line {}) has no `async` in its attribute, and it {why}.\n\
+             Without it Tauri runs the body on the thread handling the IPC message and the \
+             window freezes for the whole call. Write `#[tauri::command(async)]`, or, if this \
+             command genuinely cannot block any more, move it to MAY_BLOCK with the reason.",
+            command.line
+        );
+    }
+    for (name, why) in MAY_BLOCK {
+        let command = commands
+            .get(name)
+            .unwrap_or_else(|| panic!("`{name}` is gone from src/commands.rs: update this list"));
+        let args: Vec<char> = command.attribute_args.chars().collect();
+        assert!(
+            find_word(&args, "async", 0).is_none(),
+            "`{name}` (src/commands.rs line {}) is marked `async`, but it is listed here as \
+             cheap enough not to need it ({why}).\n\
+             Marking it is not harmful, it just costs a round trip through the runtime for a \
+             call the UI makes while the user is still choosing. If it now does real work, \
+             move it to MUST_NOT_BLOCK.",
+            command.line
+        );
+    }
+    // Nothing may sit in neither list: a new command has to be classified.
+    let listed: BTreeSet<&str> = MUST_NOT_BLOCK
+        .iter()
+        .chain(MAY_BLOCK.iter())
+        .map(|(name, _)| *name)
+        .collect();
+    let found: BTreeSet<&str> = commands.keys().map(|k| k.as_str()).collect();
+    assert_eq!(
+        found, listed,
+        "src/commands.rs and this test disagree about which commands exist. Every command has \
+         to be in MUST_NOT_BLOCK or in MAY_BLOCK, so that whether it can freeze the window is \
+         something someone decided rather than something nobody noticed."
+    );
+}
+
 // -------------------------------------------------------------- registration --
 
 #[test]
