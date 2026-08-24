@@ -731,6 +731,27 @@ fn check_server_reports_an_unreachable_address() {
     );
 }
 
+/// A blank address never leaves the machine: the probe says the address is
+/// the problem instead of reporting a server with no name as unreachable.
+/// `sources.js` refuses a blank before the sheet can send one, so reaching
+/// this means a stale stored value, and "cannot reach" would point the user
+/// at the network for it (issue #65).
+#[test]
+fn check_server_rejects_a_blank_address() {
+    for blank in ["", "   ", "\t"] {
+        let error = check_server(blank.to_string()).expect_err("a blank address is not a server");
+        assert!(
+            error.contains("the server address is blank")
+                && error.contains("http://localhost:8000"),
+            "{blank:?} must name the address as the mistake: {error}"
+        );
+        assert!(
+            !error.contains("cannot reach"),
+            "{blank:?} is not a reachability failure: {error}"
+        );
+    }
+}
+
 /// A URL no HTTP client can even parse is still just a failed probe: the
 /// settings sheet gets a message, and the app does not come down with it. The
 /// message has to say more than "unreachable", or a user typing a broken

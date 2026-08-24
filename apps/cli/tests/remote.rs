@@ -290,6 +290,58 @@ fn remote_compress_unreachable_server_errors() {
     assert!(!dir.path().join("notes.txt.zip").exists());
 }
 
+// ------------------------------------------------------------ blank address --
+
+/// `--server ""` and `--server "   "` are a flag typed wrong, and the
+/// realistic way to get one is a wrapper script running
+/// `--server "$COLLAPSE_SERVER"` with the variable unset. Both name the
+/// address as the mistake instead of failing against a server with no name,
+/// and neither quietly compresses locally: the message and the empty
+/// directory are what tell the two apart.
+///
+/// `collapse-remote` owns that answer, so the desktop's
+/// `a_blank_server_string_is_refused_rather_than_guessed` asserts the very
+/// same message. The two front-ends used to disagree here (issue #65).
+#[test]
+fn remote_compress_rejects_a_blank_server() {
+    for blank in ["", "   ", "\t"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("notes.txt");
+        std::fs::write(&src, b"stay home").unwrap();
+
+        let err = run_err(&[
+            "collapse",
+            "compress",
+            src.to_str().unwrap(),
+            "--server",
+            blank,
+        ]);
+
+        assert!(matches!(err, CliError::Remote(_)), "{blank:?}: {err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("the server address is blank"),
+            "{blank:?} must name the address as the mistake: {message}"
+        );
+        assert!(
+            message.contains("http://localhost:8000"),
+            "{blank:?} must be shown what an address looks like: {message}"
+        );
+        // The old wording, "cannot reach the server at    : ...", sent the
+        // user hunting for a network problem that was never there.
+        assert!(
+            !message.contains("cannot reach"),
+            "{blank:?} is not a reachability failure: {message}"
+        );
+
+        assert!(
+            !dir.path().join("notes.txt.zip").exists(),
+            "{blank:?} must not fall back to compressing locally"
+        );
+        assert_eq!(std::fs::read(&src).unwrap(), b"stay home");
+    }
+}
+
 // ------------------------------------------------------- safety guard order --
 
 #[test]

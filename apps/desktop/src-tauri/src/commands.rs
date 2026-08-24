@@ -47,7 +47,9 @@ pub fn is_directory(path: String) -> bool {
 /// the bytes go out (a folder as a tar envelope), the archive comes back and
 /// is written to the same `output` the local path would use. That exchange has
 /// no read timeout, so it can outlast any patience: all the more reason for
-/// the `async` on the attribute below (see the module header).
+/// the `async` on the attribute below (see the module header). Only `None`
+/// means "this computer"; a `Some` that holds a blank string is an error from
+/// `collapse-remote`, not a quiet fallback to local.
 ///
 /// `overwrite` is the caller saying the user already agreed to replace what is
 /// at `output`, which is what the native save dialog asks on every platform.
@@ -107,7 +109,13 @@ pub fn compress_path(
         // as it was. Removing it up front would trade that away for nothing.
     }
 
-    match server.as_deref().filter(|s| !s.is_empty()) {
+    // `Some(_)` is the caller asking for a server, whatever it put in the
+    // string: whether that string is usable is `collapse-remote`'s answer,
+    // not this app's. Filtering here is what let the two front-ends disagree
+    // (this one read `""` as "compress locally" and `"   "` as a real
+    // destination, the CLI read both as a destination). "This computer" is
+    // `null` from the UI, which arrives as `None`.
+    match server.as_deref() {
         Some(server) => {
             let archive = collapse_remote::compress_path(server, &source, algorithm, level)
                 .map_err(|e| e.to_string())?;

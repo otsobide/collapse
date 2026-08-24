@@ -516,50 +516,16 @@ fn a_symlinked_directory_is_archived_under_the_links_own_name() {
     );
 }
 
-#[test]
-fn an_empty_server_string_is_treated_as_local() {
-    // The dispatcher filters the empty string out before choosing the remote
-    // branch. If that filter went missing this would try to reach a server at
-    // "" and fail, with nothing listening anywhere.
-    let dir = TempDir::new().unwrap();
-    let source = dir.path().join("notes.txt");
-    fs::write(&source, b"local please").unwrap();
-    let output = dir.path().join("out.zip");
-
-    let returned = compress_path(
-        source.to_string_lossy().into_owned(),
-        output.to_string_lossy().into_owned(),
-        "zip".to_string(),
-        3,
-        Some(String::new()),
-        false,
-    )
-    .expect("an empty server string must compress locally");
-
-    assert_eq!(returned, output.to_string_lossy());
-
-    // The same archive the `None` path produces, proven by opening it: "did not
-    // error" would also be satisfied by an empty archive of the wrong source.
-    let out_dir = dir.path().join("extracted");
-    assert_eq!(
-        extract_to(&output, &out_dir).unwrap(),
-        vec!["notes.txt".to_string()]
-    );
-    assert_eq!(
-        fs::read(out_dir.join("notes.txt")).unwrap(),
-        b"local please"
-    );
-}
-
-#[test]
-fn a_whitespace_only_server_string_takes_the_remote_branch() {
-    // KNOWN DEFECT, pinned rather than endorsed. The dispatcher filters on
-    // `!s.is_empty()`, not on a trim, so a server string of blanks is treated
-    // as a real destination: the compression leaves the machine (or tries to)
-    // instead of running locally. A stale or half-cleared localStorage entry in
-    // the settings sheet is enough to produce one. If the filter ever learns to
-    // trim, this test should be rewritten to assert the local result, not
-    // deleted.
+/// Drive `compress_path` with a blank `server` and assert the single answer
+/// both spellings of blank now get: the address is named as the mistake,
+/// nothing is written, and the source is untouched.
+///
+/// The wording belongs to `collapse-remote`, which is where the decision now
+/// lives, and `apps/cli/tests/remote.rs` asserts the very same message. That
+/// is the point of the fix: the two front-ends used to answer this
+/// differently (issue #65), and the shared crate is what stops them drifting
+/// again. "This computer" is `None`, covered by every local test above.
+fn expect_blank_server_refusal(blank: &str) {
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"should have stayed here").unwrap();
@@ -570,22 +536,55 @@ fn a_whitespace_only_server_string_takes_the_remote_branch() {
         output.to_string_lossy().into_owned(),
         "zip".to_string(),
         3,
-        Some("   ".to_string()),
+        Some(blank.to_string()),
         false,
     )
-    .expect_err("blanks are not a reachable server");
+    .expect_err("a blank address is not a server");
 
-    // The wording is the remote client's, which is the proof the branch was
-    // taken: no local error can mention a server.
     assert!(
-        error.starts_with("cannot reach the server at"),
-        "the remote branch must be what failed: {error}"
+        error.contains("the server address is blank"),
+        "{blank:?} must name the address as the mistake: {error}"
     );
+    assert!(
+        error.contains("http://localhost:8000"),
+        "{blank:?} must be shown what an address looks like: {error}"
+    );
+    // "cannot reach the server at    " named a server with no name and blamed
+    // the network for what is a bad setting.
+    assert!(
+        !error.contains("cannot reach"),
+        "{blank:?} is not a reachability failure: {error}"
+    );
+
+    // An archive on disk is what a silent local fallback looks like, and its
+    // absence is the only thing that tells the two readings apart.
     assert!(
         !output.exists(),
-        "nothing was compressed locally, so no archive may exist"
+        "{blank:?} was compressed locally instead of being reported"
     );
     assert_eq!(fs::read(&source).unwrap(), b"should have stayed here");
+}
+
+/// Was `an_empty_server_string_is_treated_as_local`, which pinned the
+/// dispatcher's `!s.is_empty()` filter turning `""` into a local compression.
+/// Nothing sends `""`: `App.vue` sends `null` for this computer, so an empty
+/// string means a stale stored value or a caller's bug, and compressing
+/// locally hid it. It is now refused, the same as on the CLI.
+#[test]
+fn an_empty_server_string_is_refused_not_compressed_locally() {
+    expect_blank_server_refusal("");
+}
+
+/// Was `a_whitespace_only_server_string_takes_the_remote_branch`, the KNOWN
+/// DEFECT this replaces: the old filter tested emptiness rather than trimming,
+/// so a run of blanks was a real destination and the compression tried to
+/// leave the machine. It is refused before any request now, with the same
+/// message `""` gets, so the two spellings can no longer mean two things.
+#[test]
+fn a_whitespace_only_server_string_is_refused_not_sent() {
+    for blank in ["   ", "\t", "\n"] {
+        expect_blank_server_refusal(blank);
+    }
 }
 
 // ----------------------------------------------------------- compress guards --

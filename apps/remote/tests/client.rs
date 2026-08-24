@@ -3,7 +3,9 @@
 //! These deliberately do NOT re-do the round trips that `apps/cli/tests/remote.rs`
 //! already drives through a consumer. They cover what no consumer's suite can
 //! reach: the health probe (which only a settings UI calls), the mapping of a
-//! server rejection, and the client-side refusal of an unusable source.
+//! server rejection, the client-side refusal of an unusable source, and the
+//! refusal of an unusable address at both entry points (the guard the
+//! front-ends now lean on instead of each having their own).
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -122,6 +124,50 @@ fn respond_with(out: &mut std::net::TcpStream, promised: usize, body: &[u8], con
     // the one place where that can come out as a reset instead, which the
     // client would report as a different error.
     let _ = out.shutdown(std::net::Shutdown::Write);
+}
+
+// --------------------------------------------------------- a blank address --
+
+/// Both entry points refuse a blank address, so a front-end cannot forget to
+/// ask. Nothing is listening on `""`, so without the guard these would come
+/// back as `Unreachable` naming a server with no name, which is the message
+/// issue #65 was filed about.
+#[test]
+fn a_blank_address_is_refused_by_both_entry_points() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"stay home").unwrap();
+
+    for blank in ["", "   ", "\t"] {
+        let error = check_health(blank).expect_err("a blank address is not a server");
+        assert!(
+            matches!(error, RemoteError::BlankServer),
+            "check_health({blank:?}) gave {error:?}"
+        );
+
+        let error = compress_path(blank, &source, Algorithm::Zip, 3)
+            .expect_err("a blank address is not a server");
+        assert!(
+            matches!(error, RemoteError::BlankServer),
+            "compress_path({blank:?}) gave {error:?}"
+        );
+    }
+}
+
+/// The address is checked before the source is touched. A directory would
+/// otherwise be walked and packed into a tar envelope in full before the
+/// destination turns out to be unusable, and the error would name the wrong
+/// problem: here a missing source proves the ordering with no tree to build.
+#[test]
+fn a_blank_address_is_refused_before_the_source_is_read() {
+    let missing = Path::new("/nonexistent/collapse-issue-65/notes.txt");
+
+    let error = compress_path("", missing, Algorithm::Zip, 3).expect_err("the address is blank");
+
+    assert!(
+        matches!(error, RemoteError::BlankServer),
+        "the address must be judged before the source: got {error:?}"
+    );
 }
 
 // ------------------------------------------------------------ health probe --

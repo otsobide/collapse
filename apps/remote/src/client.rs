@@ -29,12 +29,21 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// The name stored inside the archive is the source's own file or directory
 /// name. Blocks until the job settles, so callers that must stay responsive
 /// should run it off their main thread.
+///
+/// A blank `server` is refused ([`RemoteError::BlankServer`]) rather than
+/// read as "compress locally": that decision belongs here, once, not to each
+/// front-end (see [`protocol::base_url`]).
 pub fn compress_path(
     server: &str,
     source: &Path,
     algorithm: Algorithm,
     level: u32,
 ) -> Result<Vec<u8>, RemoteError> {
+    // First, ahead of even looking at the source: a blank address is the
+    // thing that is wrong, and packing a whole directory into a tar envelope
+    // before saying so throws away the work for nothing.
+    let base = protocol::base_url(server)?;
+
     let name = source
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -49,7 +58,7 @@ pub fn compress_path(
         (std::fs::read(source)?, "none")
     };
 
-    upload_and_collect(server, &name, algorithm, level, envelope, &data)
+    upload_and_collect(base, &name, algorithm, level, envelope, &data)
 }
 
 /// Pack a directory into a tar, on disk, and hand back its bytes. The archive
@@ -67,16 +76,16 @@ fn pack_directory(source: &Path, name: &str) -> Result<Vec<u8>, RemoteError> {
     Ok(std::fs::read(&tar)?)
 }
 
+/// `base` is already normalized by [`protocol::base_url`], which is also what
+/// rejects an unusable address, so every caller has to go through it first.
 fn upload_and_collect(
-    server: &str,
+    base: &str,
     name: &str,
     algorithm: Algorithm,
     level: u32,
     envelope: &str,
     data: &[u8],
 ) -> Result<Vec<u8>, RemoteError> {
-    let base = protocol::base_url(server);
-
     let job = create_job(base, name, algorithm, level, envelope, data)?;
     let job_id = protocol::job_id_of(&job)?.to_string();
 
@@ -95,7 +104,7 @@ fn upload_and_collect(
 /// Used before adding a server to a UI's list, so a typo shows up there
 /// instead of at the end of an upload.
 pub fn check_health(server: &str) -> Result<(), RemoteError> {
-    let base = protocol::base_url(server);
+    let base = protocol::base_url(server)?;
     let response = ureq::get(&format!("{base}/health"))
         .call()
         .map_err(|e| remote_error(base, e))?;

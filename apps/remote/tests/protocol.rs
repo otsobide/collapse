@@ -15,17 +15,61 @@ fn message_of(error: RemoteError) -> String {
 
 #[test]
 fn base_url_trims_trailing_slashes() {
-    assert_eq!(base_url("http://host:8000"), "http://host:8000");
-    assert_eq!(base_url("http://host:8000/"), "http://host:8000");
-    assert_eq!(base_url("http://host:8000///"), "http://host:8000");
+    assert_eq!(base_url("http://host:8000").unwrap(), "http://host:8000");
+    assert_eq!(base_url("http://host:8000/").unwrap(), "http://host:8000");
+    assert_eq!(base_url("http://host:8000///").unwrap(), "http://host:8000");
 }
 
 #[test]
 fn base_url_keeps_a_path_prefix() {
     // A server mounted under a path must keep it: only the trailing
     // separator goes.
-    assert_eq!(base_url("http://host/collapse/"), "http://host/collapse");
-    assert_eq!(base_url("https://host/api/v1"), "https://host/api/v1");
+    assert_eq!(
+        base_url("http://host/collapse/").unwrap(),
+        "http://host/collapse"
+    );
+    assert_eq!(
+        base_url("https://host/api/v1").unwrap(),
+        "https://host/api/v1"
+    );
+}
+
+/// A blank address is refused here, once, so no front-end has to decide what
+/// it means: the desktop used to read `""` as "compress locally" and `"   "`
+/// as a real destination, while the CLI sent both over the wire.
+#[test]
+fn a_blank_address_is_not_an_address() {
+    for blank in ["", " ", "   ", "\t", "\n", " \t \n "] {
+        let message = match base_url(blank) {
+            Err(error) => message_of(error),
+            Ok(base) => panic!("{blank:?} was accepted as the address {base:?}"),
+        };
+        // The message has to name the mistake and show a real address: the
+        // old failure said "cannot reach the server at    ", which blames the
+        // network for a destination that was never typed.
+        assert!(
+            message.contains("blank"),
+            "{blank:?} must be named as blank: {message:?}"
+        );
+        assert!(
+            message.contains("http://localhost:8000"),
+            "{blank:?} must be shown what an address looks like: {message:?}"
+        );
+        assert!(
+            !message.contains("cannot reach"),
+            "{blank:?} is not a reachability problem: {message:?}"
+        );
+    }
+}
+
+/// The guard is emptiness, not "looks like a URL": whatever else is wrong
+/// with an address is for the HTTP client to report, and rejecting more here
+/// would refuse hosts this crate has no business judging.
+#[test]
+fn a_non_blank_address_is_passed_through() {
+    for address in ["localhost:8000", "not a url", "http://host /x"] {
+        assert_eq!(base_url(address).unwrap(), address);
+    }
 }
 
 // --------------------------------------------------------------- job ids --
