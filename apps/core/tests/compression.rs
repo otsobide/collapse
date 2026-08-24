@@ -106,7 +106,97 @@ fn from_extension_unknown() {
     assert_eq!(Algorithm::from_extension(""), None);
 }
 
+/// An extension is a file name, not a wire value. Windows and macOS fold case
+/// in the filesystem and plenty of tools write `.ZIP`, so a valid archive was
+/// being refused as an unknown format for the spelling of its name alone.
+#[test]
+fn from_extension_is_case_insensitive() {
+    for (spelling, expected) in [
+        ("ZIP", Algorithm::Zip),
+        ("Zip", Algorithm::Zip),
+        ("zIp", Algorithm::Zip),
+        ("7Z", Algorithm::SevenZ),
+        ("TAR", Algorithm::Tar),
+        ("Tar", Algorithm::Tar),
+    ] {
+        assert_eq!(
+            Algorithm::from_extension(spelling),
+            Some(expected),
+            "{spelling} names the same format as its lowercase spelling"
+        );
+    }
+}
+
+/// Lenient about spelling, not about formats: a case-insensitive match must not
+/// become a match that accepts anything.
+#[test]
+fn from_extension_still_refuses_a_format_it_does_not_have() {
+    for unknown in ["RAR", "Gz", "TAR.GZ", "ZIPX", " zip", "zip "] {
+        assert_eq!(
+            Algorithm::from_extension(unknown),
+            None,
+            "{unknown:?} is not one of the three"
+        );
+    }
+}
+
+/// The two parsers are deliberately different rules, and this is the one that
+/// must NOT follow: `FromStr` reads the `algorithm=` query parameter of
+/// `POST /compress` and the CLI's `--format`, both wire values with a
+/// documented enum. Loosening it here would silently widen the API.
+#[test]
+fn from_str_stays_strict_about_case() {
+    for shouted in ["ZIP", "Zip", "7Z", "TAR"] {
+        assert!(
+            shouted.parse::<Algorithm>().is_err(),
+            "{shouted} is not a wire value, whatever from_extension says about file names"
+        );
+    }
+}
+
+/// What names the files this toolkit writes stays lowercase, so making the
+/// reader case insensitive cannot start producing `photos.ZIP`.
+#[test]
+fn extension_is_always_written_lowercase() {
+    for algorithm in [Algorithm::Zip, Algorithm::SevenZ, Algorithm::Tar] {
+        let ext = algorithm.extension();
+        assert_eq!(
+            ext,
+            ext.to_ascii_lowercase(),
+            "{algorithm} names output files"
+        );
+    }
+}
+
 // -- extract dispatcher tests --
+
+/// The dispatcher end to end, not just the parser: a real archive written by
+/// this toolkit, renamed the way a user or another tool would, still opens.
+/// The parser test above would keep passing if `extract` stopped calling it.
+#[test]
+fn extract_opens_an_archive_whatever_the_case_of_its_name() {
+    for (algorithm, shouted) in [
+        (Algorithm::Zip, "OUT.ZIP"),
+        (Algorithm::SevenZ, "Out.7Z"),
+        (Algorithm::Tar, "OUT.Tar"),
+    ] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("input.txt");
+        std::fs::write(&src, b"shouted name").unwrap();
+
+        let archive = dir.path().join(shouted);
+        compress(&src, &archive, "input.txt", algorithm, 1).unwrap();
+
+        let out = dir.path().join("extracted");
+        let files = extract(&archive, &out).expect("the name is understood");
+        assert_eq!(listing(files), vec!["input.txt"], "{shouted}");
+        assert_eq!(
+            std::fs::read(out.join("input.txt")).unwrap(),
+            b"shouted name",
+            "{shouted}"
+        );
+    }
+}
 
 #[test]
 fn extract_dispatches_zip() {

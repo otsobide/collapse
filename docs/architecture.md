@@ -66,7 +66,7 @@ below.
 | Module | Responsibility |
 |--------|----------------|
 | `compression.rs` | Public dispatchers (`compress`, `compress_dir`, `extract`), the `CompressionError` type, and the `sanitize_entry_path` path-traversal guard. |
-| `compression/algorithm.rs` | The `Algorithm` enum (`SevenZ`, `Tar`, `Zip`) and its `extension()` / `media_type()` / `from_extension()` / `FromStr` / `Display`. |
+| `compression/algorithm.rs` | The `Algorithm` enum (`SevenZ`, `Tar`, `Zip`) and its `extension()` / `media_type()` / `from_extension()` / `FromStr` / `Display`. Two parsers, deliberately different: `from_extension` reads a file name and is case insensitive, `FromStr` reads a wire value (the API's `algorithm=` and the CLI's `--format`) and is strict. |
 | `compression/walk.rs` | `walk_tree` — the shared, symlink-skipping directory walker that turns a folder into a deterministic list of entries. |
 | `compression/sevenz.rs` | 7z backend: `compress_7z`, `compress_7z_dir`, `extract_7z`. |
 | `compression/zip.rs` | ZIP backend: `compress_zip`, `compress_zip_dir`, `extract_zip`. |
