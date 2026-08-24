@@ -135,7 +135,10 @@ on a mounted volume, since the split images run as an unprivileged user.
 **Disk is filling.** Compare `du -sh /var/lib/collapse/jobs/*` against the
 registry. Directories the registry does not know about will go at the next
 startup. Jobs that are known and finished go when their window passes; lower
-`--job-ttl-minutes` if the window is too generous for the disk you have.
+`--job-ttl-minutes` if the window is too generous for the disk you have. If a
+directory outlives its window, the reaper is being refused: it logs
+`cannot remove the staged files` with the reason on every sweep, and keeps the
+row so it can try again once the reason goes away.
 
 **A client says its job vanished.** Either it was deleted (by the client, or
 by the reaper after its window) or the server was restarted while it was

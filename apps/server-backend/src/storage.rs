@@ -85,15 +85,32 @@ impl Storage {
         fs::write(path, data)
     }
 
-    /// Remove a job's directory (input, unpacked tree and archive). Returns
-    /// `true` if it existed and is now gone.
+    /// Remove a job's directory (input, unpacked tree and archive).
+    /// `Ok(true)` if it was there and is now gone, `Ok(false)` if there was
+    /// nothing to remove, `Err` if the removal failed and why.
+    ///
+    /// The three answers are kept apart on purpose. A caller that cannot tell
+    /// "already gone" from "could not go" has to treat both as failures (and
+    /// strand a row whose files were never there) or both as successes (and
+    /// report a cleanup that did not happen); the reaper did the second for a
+    /// while. The error is carried out rather than swallowed because the only
+    /// place that can say anything useful about a permission problem or a
+    /// vanished mount is a log line, and it needs the reason.
     ///
     /// Takes anything that names a directory, not just a `&str`: a name read
     /// off the filesystem is bytes, and going through a `String` on the way
     /// back would rebuild a path that does not exist.
-    pub fn delete_job(&self, job_id: impl AsRef<OsStr>) -> bool {
+    pub fn delete_job(&self, job_id: impl AsRef<OsStr>) -> io::Result<bool> {
         let dir = self.base.join(job_id.as_ref());
-        Path::new(&dir).exists() && fs::remove_dir_all(&dir).is_ok()
+        match fs::remove_dir_all(&dir) {
+            Ok(()) => Ok(true),
+            // Asking the filesystem to remove it and reading what came back
+            // beats checking first: an `exists()` before the removal answers
+            // for an instant that has already passed by the time the removal
+            // runs.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Whether a job still has files staged.

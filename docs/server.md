@@ -445,8 +445,21 @@ the server sweeps: **a finished job nobody downloads again within
 together, and says so:
 
 ```
-INFO collapse_server_backend: reaped jobs nobody came back for jobs=3 ttl_minutes=60
+INFO collapse_server_backend: swept the jobs nobody came back for collected=3 unremovable=0 ttl_minutes=60
 ```
+
+`unremovable` is the honest half of that line: jobs whose files the server
+could not delete, usually because something else is holding them (a volume
+gone read-only, a scanner with a file open). Those keep their row, so the next
+sweep tries again and each attempt says why:
+
+```
+WARN collapse_server_backend: cannot remove the staged files, keeping the row for the next sweep job=1a6a95fa... error=Permission denied (os error 13)
+```
+
+A number that keeps climbing there is disk that is not coming back on its own,
+and the job it names is still listed by the API even though its window has
+passed.
 
 Three rules make that safe to leave running unattended:
 

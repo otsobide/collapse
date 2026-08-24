@@ -3,7 +3,7 @@
 //! nobody came back for.
 
 use collapse_core::Algorithm;
-use collapse_server_backend::maintenance::{reap, reconcile, Reconciled, INTERRUPTED};
+use collapse_server_backend::maintenance::{reap, reconcile, Reaped, Reconciled, INTERRUPTED};
 use collapse_server_backend::models::{Envelope, Job, JobStatus};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE};
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
@@ -217,15 +217,6 @@ fn one_pass_puts_every_kind_of_disagreement_right() {
 }
 
 // ------------------------------------------------------------- the reaper --
-//
-// Known defect, deliberately not fixed here and not covered below: `reap`
-// discards what `delete_job` returned, so a directory it could not remove is
-// still counted as reaped and its row is still forgotten. That is the exact
-// files-without-a-row case `reconcile` refuses to report as clean, and only
-// the next startup sweep collects it. It is invisible on Unix, where
-// `remove_dir_all` on a directory the server owns does not fail; on Windows a
-// file held open by another process (a virus scanner, an indexer) makes it
-// reachable, and a long-running server would log cleanups it did not do.
 
 #[test]
 fn a_finished_job_nobody_came_back_for_is_reaped() {
@@ -233,9 +224,15 @@ fn a_finished_job_nobody_came_back_for_is_reaped() {
     let (registry, storage) = server(&dir);
     staged_job(&registry, &storage, "forgotten", JobStatus::Completed);
 
-    let reaped = reap(&registry, &storage, any_moment_now()).unwrap();
+    let report = reap(&registry, &storage, any_moment_now()).unwrap();
 
-    assert_eq!(reaped, 1);
+    assert_eq!(
+        report,
+        Reaped {
+            collected: 1,
+            unremovable: 0
+        }
+    );
     assert!(registry.get("forgotten").unwrap().is_none());
     assert!(!storage.has_job("forgotten"), "its files go with it");
 }
@@ -248,7 +245,12 @@ fn a_failed_job_is_reaped_too() {
     let (registry, storage) = server(&dir);
     staged_job(&registry, &storage, "failed", JobStatus::Failed);
 
-    assert_eq!(reap(&registry, &storage, any_moment_now()).unwrap(), 1);
+    assert_eq!(
+        reap(&registry, &storage, any_moment_now())
+            .unwrap()
+            .collected,
+        1
+    );
     assert!(!storage.has_job("failed"));
 }
 
@@ -258,9 +260,9 @@ fn a_job_inside_its_window_is_left_alone() {
     let (registry, storage) = server(&dir);
     staged_job(&registry, &storage, "recent", JobStatus::Completed);
 
-    let reaped = reap(&registry, &storage, LONG_AGO).unwrap();
+    let report = reap(&registry, &storage, LONG_AGO).unwrap();
 
-    assert_eq!(reaped, 0);
+    assert!(report.is_quiet(), "nothing to collect: {report:?}");
     assert!(registry.get("recent").unwrap().is_some());
     assert!(storage.has_job("recent"));
 }
@@ -274,9 +276,9 @@ fn work_in_progress_is_never_reaped_however_old_it_looks() {
     staged_job(&registry, &storage, "queued", JobStatus::Queued);
     staged_job(&registry, &storage, "running", JobStatus::Compressing);
 
-    let reaped = reap(&registry, &storage, any_moment_now()).unwrap();
+    let report = reap(&registry, &storage, any_moment_now()).unwrap();
 
-    assert_eq!(reaped, 0);
+    assert!(report.is_quiet(), "the worker keeps its jobs: {report:?}");
     assert!(storage.has_job("queued"));
     assert!(storage.has_job("running"));
 }
@@ -293,7 +295,7 @@ fn downloading_restarts_the_clock() {
     std::thread::sleep(std::time::Duration::from_millis(1100)); // the clock has one-second resolution
     registry.touch("wanted").unwrap();
 
-    assert_eq!(reap(&registry, &storage, deadline).unwrap(), 0);
+    assert_eq!(reap(&registry, &storage, deadline).unwrap().collected, 0);
     assert!(storage.has_job("wanted"));
 }
 
@@ -302,7 +304,145 @@ fn reaping_an_empty_registry_is_a_no_op() {
     let dir = TempDir::new().unwrap();
     let (registry, storage) = server(&dir);
 
-    assert_eq!(reap(&registry, &storage, any_moment_now()).unwrap(), 0);
+    // Quiet in both numbers, which is what keeps an idle server from logging
+    // a sweep every few minutes.
+    assert_eq!(
+        reap(&registry, &storage, any_moment_now()).unwrap(),
+        Reaped::default()
+    );
+}
+
+// -------------------------------------- what the reaper could not collect --
+//
+// A pass that cannot remove a job's files must say so. It used to forget the
+// row and count the job regardless, which left files nothing claimed (the one
+// state neither the API nor the reaper can see again, only the next startup)
+// under a log line reporting a clean sweep. On Unix the arm is reached through
+// mode bits, as below; the case an operator actually meets is a volume gone
+// read-only, or a file another process holds open on Windows.
+
+/// Make a job's staging directory refuse to give up what is inside it.
+/// Answers whether the obstruction took: as root it does not, since mode bits
+/// are not enforced there, and a test that went on to assert a failed removal
+/// would be asserting the opposite of what it means.
+#[cfg(unix)]
+fn obstruct(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Unlinking an entry needs write permission on the directory holding it,
+    // so a probe that lands is proof the mode bits are not being enforced.
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        std::fs::remove_file(&probe).unwrap();
+        release(dir);
+        return false;
+    }
+    true
+}
+
+/// Undo [`obstruct`], so the temp directory can be cleaned up afterwards.
+/// Called before the assertions, never after: a panic in between would leave
+/// the directory behind for good.
+#[cfg(unix)]
+fn release(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn a_job_whose_files_cannot_be_removed_is_not_forgotten() {
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "stuck", JobStatus::Completed);
+    let staged = jobs_dir(&dir).join("stuck");
+    // The archive is what an operator finds left behind, so it is what the
+    // test looks for afterwards.
+    std::fs::write(staged.join("archive.zip"), b"archive").unwrap();
+    if !obstruct(&staged) {
+        return;
+    }
+
+    let report = reap(&registry, &storage, any_moment_now()).unwrap();
+    let row = registry.get("stuck").unwrap();
+    let archive_left = staged.join("archive.zip").is_file();
+    release(&staged);
+
+    assert_eq!(
+        report,
+        Reaped {
+            collected: 0,
+            unremovable: 1
+        },
+        "a sweep must not report a job it could not collect"
+    );
+    assert!(
+        row.is_some(),
+        "the row stays, so the next sweep comes back for it"
+    );
+    assert!(
+        archive_left,
+        "and it has to: the archive is still on the disk the reaper exists to free"
+    );
+}
+
+#[test]
+fn a_job_whose_files_are_already_gone_is_still_forgotten() {
+    // Keeping the row when a removal fails must not also keep it when there
+    // was nothing to remove: that would trade the leak on disk for a row
+    // nothing will ever collect, which is the same bug in the other store.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "fileless", JobStatus::Completed);
+    std::fs::remove_dir_all(jobs_dir(&dir).join("fileless")).unwrap();
+
+    let report = reap(&registry, &storage, any_moment_now()).unwrap();
+
+    assert_eq!(
+        report,
+        Reaped {
+            collected: 1,
+            unremovable: 0
+        }
+    );
+    assert!(
+        registry.get("fileless").unwrap().is_none(),
+        "the row goes with the files it no longer has"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn the_next_pass_retries_a_job_it_could_not_remove() {
+    // Which is the whole reason the row is kept: whatever held the files is
+    // usually gone by the next sweep, and nobody has to intervene.
+    let dir = TempDir::new().unwrap();
+    let (registry, storage) = server(&dir);
+    staged_job(&registry, &storage, "stuck", JobStatus::Completed);
+    let staged = jobs_dir(&dir).join("stuck");
+    if !obstruct(&staged) {
+        return;
+    }
+
+    let first = reap(&registry, &storage, any_moment_now()).unwrap();
+    release(&staged);
+    let second = reap(&registry, &storage, any_moment_now()).unwrap();
+
+    assert_eq!(first.unremovable, 1, "the first pass really was obstructed");
+    assert_eq!(
+        second,
+        Reaped {
+            collected: 1,
+            unremovable: 0
+        }
+    );
+    assert!(registry.get("stuck").unwrap().is_none());
+    assert!(
+        !storage.has_job("stuck"),
+        "the files that outlived the first pass go in the second"
+    );
 }
 
 /// The reaper and the startup pass have to agree: what one collects, the other
@@ -398,9 +538,12 @@ fn an_unreadable_row_does_not_stop_the_reaper() {
     plant_unreadable_row(&dir, "unreadable");
     storage.save_input("unreadable", b"stranded").unwrap();
 
-    let reaped = reap(&registry, &storage, any_moment_now()).unwrap();
+    let report = reap(&registry, &storage, any_moment_now()).unwrap();
 
-    assert_eq!(reaped, 2, "both went, including the one it cannot read");
+    assert_eq!(
+        report.collected, 2,
+        "both went, including the one it cannot read"
+    );
     assert!(!storage.has_job("healthy"));
     assert!(!storage.has_job("unreadable"));
     assert!(registry.ids().unwrap().is_empty());
