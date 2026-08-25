@@ -11,6 +11,14 @@ import {
   verifyNote as verifyNoteFor,
 } from './paths.js'
 import {
+  adjustmentNote,
+  characterLabel,
+  faultNote,
+  initialAnswers,
+  replacementError,
+  substitutions,
+} from './names.js'
+import {
   LOCAL,
   labelFor,
   loadDestination,
@@ -51,6 +59,19 @@ const checking = ref(null) // source id being tested
 const checkResults = ref({}) // id -> { ok, message }
 const addError = ref(null)
 
+// An extraction held up on a naming question. `naming` is what the backend
+// found in the archive (entries, one question per offending character, and the
+// characters an answer may not contain), `namingArchive` and `namingInto` the
+// archive and destination the question is about, `answers` what the user has
+// typed so far, and `nameProblem` what came back from an attempt that was
+// refused. Nothing is on disk while these are set: the backend settles every
+// name before it writes the first byte.
+const naming = ref(null)
+const namingArchive = ref(null)
+const namingInto = ref(null)
+const answers = ref({})
+const nameProblem = ref(null)
+
 const destinationLabel = computed(() => labelFor(sources.value, destination.value))
 const serverUrl = computed(() => urlFor(sources.value, destination.value))
 const isRemote = computed(() => serverUrl.value !== null)
@@ -77,6 +98,38 @@ const verifyNote = computed(() =>
     remote: isRemote.value,
   })
 )
+
+// Checked as it is typed, from the set the backend sent, so an answer that
+// cannot be written is refused before the user commits to it rather than after
+// a round trip. The backend refuses it again on its own account.
+const answerErrors = computed(() => {
+  if (!naming.value) return {}
+  const errors = {}
+  for (const { character } of naming.value.characters) {
+    const problem = replacementError(
+      answers.value[character] ?? '',
+      naming.value.rejectedInReplacement
+    )
+    if (problem) errors[character] = problem
+  }
+  return errors
+})
+const answersOk = computed(() => Object.keys(answerErrors.value).length === 0)
+
+// The problems with no character to replace: one line each saying what will be
+// done about them, deduplicated because the same sentence for the same entry is
+// one thing to read, not two.
+const adjustments = computed(() => {
+  if (!naming.value) return []
+  const notes = []
+  for (const entry of naming.value.entries) {
+    for (const problem of entry.problems) {
+      const note = adjustmentNote(problem, entry.entry)
+      if (note && !notes.includes(note)) notes.push(note)
+    }
+  }
+  return notes
+})
 
 function selectDestination(value) {
   destination.value = value
@@ -119,6 +172,10 @@ async function checkSource(source) {
 async function pick(path) {
   error.value = null
   result.value = null
+  // A question asked about the previous archive is not a question about this
+  // one. A drop lands even while the sheet is up, and answering it afterwards
+  // would apply one archive's replacements to another's names.
+  closeNaming()
   inputPath.value = path
   inputName.value = baseName(path)
   try {
@@ -140,6 +197,7 @@ function reset() {
   isDir.value = false
   result.value = null
   error.value = null
+  closeNaming()
 }
 
 async function browse() {
@@ -196,7 +254,11 @@ async function extract() {
   if (!inputPath.value || processing.value) return
   error.value = null
 
-  const { dir } = dirOf(inputPath.value)
+  // Held from here on, rather than read back from `inputPath` at each step: a
+  // drop can change the selection while a dialog is open, and an extraction
+  // that started on one archive must not finish on another.
+  const archive = inputPath.value
+  const { dir } = dirOf(archive)
   const outputDir = await open({
     directory: true,
     multiple: false,
@@ -207,16 +269,83 @@ async function extract() {
 
   processing.value = true
   try {
-    const files = await invoke('extract_archive', {
-      archive: inputPath.value,
-      outputDir,
-    })
-    result.value = { files, dir: outputDir }
+    // Ask the archive what it holds before writing any of it. A tarball built
+    // on Linux can carry names this computer cannot save, and the user is the
+    // only one who can say what they should become; this reads the listing
+    // only, so nothing is created if the answer is "ask them".
+    const inspection = await invoke('unwritable_names', { archive })
+    if (inspection.entries.length > 0) {
+      answers.value = initialAnswers(inspection.characters)
+      nameProblem.value = null
+      namingArchive.value = archive
+      namingInto.value = outputDir
+      naming.value = inspection
+      return
+    }
+    await runExtraction(archive, outputDir, {})
   } catch (e) {
     error.value = String(e)
   } finally {
     processing.value = false
   }
+}
+
+/**
+ * Extract with these answers, and put the result on screen.
+ *
+ * A refusal about a name is not a failure: nothing was written, and the sheet
+ * stays open on the question so the user can answer it differently. Anything
+ * else throws and is caught by the caller, which is the error banner's job.
+ */
+async function runExtraction(archive, outputDir, replacements) {
+  const outcome = await invoke('extract_archive', {
+    archive,
+    outputDir,
+    replacements,
+  })
+  if (outcome.status === 'nameProblem') {
+    nameProblem.value = outcome.message
+    return
+  }
+  closeNaming()
+  // The names as written, which is what the backend returns: an entry that had
+  // to be renamed is listed under the name that is on disk.
+  result.value = { files: outcome.files, dir: outputDir }
+}
+
+async function confirmNames() {
+  if (processing.value || !answersOk.value) return
+  nameProblem.value = null
+  processing.value = true
+  try {
+    await runExtraction(
+      namingArchive.value,
+      namingInto.value,
+      substitutions(naming.value.characters, answers.value)
+    )
+  } catch (e) {
+    // Not a naming question, so the sheet has nothing left to ask: it gets out
+    // of the way of the error banner.
+    closeNaming()
+    error.value = String(e)
+  } finally {
+    processing.value = false
+  }
+}
+
+function cancelNaming() {
+  // Not while the extraction is in flight: there would be nothing to cancel,
+  // and closing the sheet would hide the answer it is about to come back with.
+  if (processing.value) return
+  closeNaming()
+}
+
+function closeNaming() {
+  naming.value = null
+  namingArchive.value = null
+  namingInto.value = null
+  answers.value = {}
+  nameProblem.value = null
 }
 
 const canProceed = computed(() => !!inputPath.value && !processing.value)
@@ -306,6 +435,67 @@ onUnmounted(() => {
             <button class="cta small" type="submit">Add</button>
           </form>
           <p v-if="addError" class="add-error">{{ addError }}</p>
+        </div>
+      </div>
+    </Transition>
+
+    <!-- Names this computer cannot write. Shown between choosing a destination
+         and extracting, and only when the archive holds such a name: on macOS
+         and Linux that is almost never, since Unix refuses the NUL byte alone. -->
+    <Transition name="fade">
+      <div v-if="naming" class="sheet naming" @click.self="cancelNaming">
+        <div class="sheet-panel">
+          <div class="sheet-head">
+            <p class="sheet-title">Names this computer cannot write</p>
+            <button class="ghost small" :disabled="processing" @click="cancelNaming">Cancel</button>
+          </div>
+          <p class="sheet-hint">
+            {{ naming.entries.length }}
+            {{ naming.entries.length === 1 ? 'entry is named' : 'entries are named' }}
+            in a way this computer cannot save. <strong>Nothing has been extracted yet.</strong>
+            Say what each character should become; every other name is written exactly as the
+            archive spells it.
+          </p>
+
+          <ul class="unwritable">
+            <li v-for="e in naming.entries.slice(0, 6)" :key="e.entry">{{ e.entry }}</li>
+            <li v-if="naming.entries.length > 6" class="more">
+              +{{ naming.entries.length - 6 }} more
+            </li>
+          </ul>
+
+          <div v-for="c in naming.characters" :key="c.character" class="answer">
+            <div class="answer-head">
+              <code class="offender">{{ characterLabel(c.character) }}</code>
+              <span class="answer-count">
+                in {{ c.entries }} {{ c.entries === 1 ? 'entry' : 'entries' }}
+              </span>
+            </div>
+            <p class="answer-why">{{ faultNote(c.fault) }}</p>
+            <input
+              v-model="answers[c.character]"
+              class="answer-field"
+              type="text"
+              :aria-label="`Replacement for ${characterLabel(c.character)}`"
+              placeholder="leave empty to remove it"
+            />
+            <p v-if="answerErrors[c.character]" class="answer-error">
+              {{ answerErrors[c.character] }}
+            </p>
+          </div>
+
+          <!-- No field for these: there is no character to replace, so all the
+               dialog can do is say what will be done about them. -->
+          <ul v-if="adjustments.length" class="adjustments">
+            <li v-for="note in adjustments" :key="note">{{ note }}</li>
+          </ul>
+
+          <p v-if="nameProblem" class="name-problem">{{ nameProblem }}</p>
+
+          <button class="cta" :disabled="!answersOk || processing" @click="confirmNames">
+            <span v-if="processing" class="spinner"></span>
+            {{ processing ? 'Extracting…' : 'Extract' }}
+          </button>
         </div>
       </div>
     </Transition>
@@ -662,6 +852,84 @@ main {
 }
 .add-source input:focus { outline: none; border-color: var(--accent); }
 .add-error { font-size: 0.74rem; color: var(--danger); }
+
+/* ---- unwritable names sheet ---- */
+/* Same sheet as the servers panel, so the two modals read as one idea. */
+
+.unwritable {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+.unwritable li { word-break: break-all; }
+.unwritable .more { color: var(--faint); }
+
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.answer-head { display: flex; align-items: baseline; gap: 8px; }
+
+/* The character itself, big enough to be unmistakable: the whole question is
+   "what should THIS become", and a `?` lost in a sentence does not ask it. */
+.offender {
+  font-family: var(--font);
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: 6px;
+  padding: 1px 8px;
+}
+.answer-count { font-size: 0.71rem; color: var(--faint); }
+.answer-why { font-size: 0.73rem; line-height: 1.45; color: var(--muted); }
+
+.answer-field {
+  font-family: var(--font);
+  font-size: 0.82rem;
+  color: var(--text);
+  background: var(--cream);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+}
+.answer-field:focus { outline: none; border-color: var(--accent); }
+.answer-error { font-size: 0.72rem; line-height: 1.4; color: var(--danger); }
+
+.adjustments {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.73rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* A refusal that arrived from the backend (two entries landing on one name, an
+   answer that leaves no name at all). Louder than a per-field message: it is
+   about the set of answers rather than one of them. */
+.name-problem {
+  padding: 9px 11px;
+  border-radius: var(--r-sm);
+  background: var(--danger-dim);
+  border: 1px solid rgba(158, 59, 42, 0.18);
+  color: var(--danger);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
 
 .work { display: flex; flex-direction: column; gap: 14px; flex: 1; }
 
