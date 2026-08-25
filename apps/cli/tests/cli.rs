@@ -478,9 +478,18 @@ fn extract_lists_and_writes_files() {
         out.to_str().unwrap(),
     ]);
     match outcome {
-        Outcome::Extracted { output_dir, files } => {
+        Outcome::Extracted {
+            output_dir,
+            files,
+            adjusted,
+        } => {
             assert_eq!(output_dir, out);
             assert_eq!(listing(files), vec!["data.bin"]);
+            // A name this machine can write is written as it is spelled. The
+            // adjustment list exists for the Windows cases in tests/names.rs,
+            // and an ordinary archive must never populate it, or every run
+            // would end with a paragraph about renames that did not happen.
+            assert!(adjusted.is_empty());
         }
         _ => panic!("expected extracted"),
     }
