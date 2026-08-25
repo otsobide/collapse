@@ -68,22 +68,38 @@ sqlite3 /var/lib/collapse/registry/jobs.db "SELECT status, count(*) FROM jobs GR
 ```
 
 The columns are `job_id`, `name`, `archive_name`, `algorithm`, `level`,
-`envelope`, `status`, `error_message`, `created_at`, `updated_at` (unix
-seconds) and `server_version`, the build that wrote the row.
+`envelope`, `verify`, `status`, `error_message`, `created_at`, `updated_at`
+(unix seconds) and `server_version`, the build that wrote the row.
+
+`verify` is `index` or `contents`, the depth the client asked for when it
+uploaded. It is in the row because it has to be: the worker is handed a job id
+over the queue and nothing else, and reads everything it needs from here.
 
 ## Schema versions
 
 `PRAGMA user_version` carries the schema version, and the server migrates
 forward on open: an older database gains what it is missing and keeps its
-rows.
+rows. Each step is applied in order, so a database several versions behind is
+walked all the way forward in one open rather than one hop per restart.
+
+| Version | What it added |
+|---|---|
+| 1 | The `jobs` table as it first shipped. |
+| 2 | `server_version`, the build that wrote each row, so a value this build cannot read can say where it came from. |
+| 3 | `verify`, how deeply the archive is checked. Rows from before it read `index`. |
+
+A migrated row reading `index` is not a claim about what the older build did
+(it verified nothing at all). It is the floor, and it is only ever read for a
+job the worker still has to run: the startup reconciliation fails every job
+left `queued` or `compressing`, so no migrated row reaches a worker.
 
 **It refuses to open a database from a newer schema.** Downgrading is not
 supported, and carrying on would mean reading columns this build does not
 understand:
 
 ```
-This registry was written by a newer Collapse (schema 3; this server
-understands 2). Downgrading is not supported: run the newer version, or
+This registry was written by a newer Collapse (schema 4; this server
+understands 3). Downgrading is not supported: run the newer version, or
 start from an empty registry.
 ```
 
@@ -93,10 +109,11 @@ move `jobs.db` aside and start clean, losing whatever jobs were in flight.
 
 ## Rows this build cannot read
 
-A schema version cannot catch everything. Adding a compression format does not
-add a column, so a database written by a newer build can be structurally
-identical and still hold, say, `algorithm = 'zstd'`. That only surfaces when
-the value is read back, and then it says so:
+A schema version cannot catch everything. Adding a compression format, or a
+third verification depth, does not add a column, so a database written by a
+newer build can be structurally identical and still hold `algorithm = 'zstd'`
+or `verify = 'paranoid'`. That only surfaces when the value is read back, and
+then it says so:
 
 ```json
 {

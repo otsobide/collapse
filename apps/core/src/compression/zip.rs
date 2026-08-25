@@ -1,11 +1,11 @@
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use super::CompressionError;
+use super::{CompressionError, Verify};
 
 /// API level (1–5) → Deflate compresslevel (1–9).
 const ZIP_LEVELS: [i64; 5] = [1, 3, 5, 7, 9];
@@ -18,6 +18,13 @@ pub fn compress_zip(
 ) -> Result<(), CompressionError> {
     let compress_level = ZIP_LEVELS[(level - 1) as usize];
 
+    // Read the source before creating the output, the way `compress_tar` and
+    // `compress_7z` already do: the other order left a zero-byte `.zip` behind
+    // whenever the source could not be opened.
+    let mut source_file = File::open(source)?;
+    let mut buffer = Vec::new();
+    source_file.read_to_end(&mut buffer)?;
+
     let output_file = File::create(output)?;
     let mut writer = ZipWriter::new(output_file);
 
@@ -28,10 +35,6 @@ pub fn compress_zip(
     writer
         .start_file(arcname, options)
         .map_err(|e| CompressionError::Failed(e.to_string()))?;
-
-    let mut source_file = File::open(source)?;
-    let mut buffer = Vec::new();
-    source_file.read_to_end(&mut buffer)?;
     writer.write_all(&buffer)?;
 
     writer
@@ -68,10 +71,16 @@ pub fn compress_zip_dir(
                 .add_directory(&entry.archive_name, dir_options)
                 .map_err(|e| CompressionError::Failed(e.to_string()))?;
         } else {
+            // Read the member before naming it in the archive. The other order
+            // put the name in first, so a member that could not be read still
+            // appeared in the archive with nothing behind it, and the CRC
+            // written for it was the CRC of nothing: an archive no reader could
+            // fault, holding an empty file where a real one belonged. Whole
+            // files are buffered here either way, so this costs nothing.
+            let bytes = fs::read(&entry.disk_path)?;
             writer
                 .start_file(&entry.archive_name, file_options)
                 .map_err(|e| CompressionError::Failed(e.to_string()))?;
-            let bytes = fs::read(&entry.disk_path)?;
             writer.write_all(&bytes)?;
         }
     }
@@ -81,6 +90,43 @@ pub fn compress_zip_dir(
         .map_err(|e| CompressionError::Failed(e.to_string()))?;
 
     Ok(())
+}
+
+/// Read a ZIP back for [`verify_archive`](super::verify_archive), returning the
+/// names it holds.
+///
+/// At [`Verify::Index`] this reads the central directory and stops there. At
+/// [`Verify::Contents`] every file entry is decompressed into a sink, which is
+/// what makes the `zip` crate compare it against the CRC32 stored beside it:
+/// the check fires on the read that reports end of file, so an entry has to be
+/// read all the way through for it to happen at all.
+pub(crate) fn read_zip_entries(
+    archive: &Path,
+    depth: Verify,
+) -> Result<Vec<String>, CompressionError> {
+    let file = File::open(archive)?;
+    let mut zip = zip::ZipArchive::new(file).map_err(|e| {
+        CompressionError::Failed(format!("the archive could not be read back: {e}"))
+    })?;
+
+    if depth == Verify::Index {
+        return Ok(zip.file_names().map(|name| name.to_string()).collect());
+    }
+
+    let mut names = Vec::with_capacity(zip.len());
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| {
+            CompressionError::Failed(format!("entry {i} could not be read back: {e}"))
+        })?;
+        let name = entry.name().to_string();
+        if !entry.is_dir() {
+            io::copy(&mut entry, &mut io::sink()).map_err(|e| {
+                CompressionError::Failed(format!("entry {name:?} could not be read back: {e}"))
+            })?;
+        }
+        names.push(name);
+    }
+    Ok(names)
 }
 
 pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {

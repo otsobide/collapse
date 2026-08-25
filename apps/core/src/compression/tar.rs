@@ -1,9 +1,10 @@
 use std::fs::{self, File};
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use tar::{Archive, Builder, EntryType};
 
-use super::CompressionError;
+use super::{CompressionError, Verify};
 
 /// tar is an archive container without compression, so there is no level.
 pub fn compress_tar(source: &Path, output: &Path, arcname: &str) -> Result<(), CompressionError> {
@@ -58,6 +59,49 @@ pub fn compress_tar_dir(source_dir: &Path, output: &Path) -> Result<(), Compress
         .map_err(|e| CompressionError::Failed(e.to_string()))?;
 
     Ok(())
+}
+
+/// Read a tar back for [`verify_archive`](super::verify_archive), returning the
+/// names it holds.
+///
+/// Both depths walk every header, and the `tar` crate checks each header's
+/// `cksum` field as it goes, so a bent header is caught either way; both also
+/// have to move over the data to reach the next header, which is what catches a
+/// member cut short.
+///
+/// [`Verify::Contents`] additionally reads each entry's bytes into a sink, and
+/// it is worth being honest about what that adds: **tar stores no checksum over
+/// an entry's data**, only over the 512 byte header, so this confirms the data
+/// is all there and readable and cannot confirm it is unchanged. zip and 7z get
+/// a real per-entry CRC here; tar cannot, from any reader.
+pub(crate) fn read_tar_entries(
+    archive: &Path,
+    depth: Verify,
+) -> Result<Vec<String>, CompressionError> {
+    let file = File::open(archive)?;
+    let mut ar = Archive::new(file);
+    let entries = ar.entries().map_err(|e| {
+        CompressionError::Failed(format!("the archive could not be read back: {e}"))
+    })?;
+
+    let mut names = Vec::new();
+    for entry in entries {
+        let mut entry = entry.map_err(|e| {
+            CompressionError::Failed(format!("the archive could not be read back: {e}"))
+        })?;
+        let name = entry
+            .path()
+            .map_err(|e| CompressionError::Failed(format!("an entry has an unreadable name: {e}")))?
+            .to_string_lossy()
+            .to_string();
+        if depth == Verify::Contents {
+            io::copy(&mut entry, &mut io::sink()).map_err(|e| {
+                CompressionError::Failed(format!("entry {name:?} could not be read back: {e}"))
+            })?;
+        }
+        names.push(name);
+    }
+    Ok(names)
 }
 
 pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {

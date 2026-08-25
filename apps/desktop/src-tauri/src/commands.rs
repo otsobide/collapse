@@ -26,7 +26,7 @@
 
 use std::path::PathBuf;
 
-use collapse_core::{compress, compress_dir, extract, Algorithm};
+use collapse_core::{compress, compress_dir, extract, Algorithm, Verify};
 
 use crate::paths::{inside, same_file};
 
@@ -56,6 +56,24 @@ pub fn is_directory(path: String) -> bool {
 /// It is the `--force` of the CLI, and like it, it cannot buy past the two
 /// guards below: agreeing to replace a file is not agreeing to destroy the
 /// source, nor to destroy a file that is part of what is being archived.
+///
+/// `verify` picks between the two depths core checks a local archive at before
+/// it is allowed to reach `output`. It is never "check or do not check": with
+/// `false` the archive's own listing is read back and compared against the
+/// entries it was meant to hold, which decompresses nothing and is what catches
+/// the failure this exists for, a compression that died half way through and
+/// finalised a valid-looking archive anyway. With `true` every entry is
+/// decompressed as well, so zip's and 7z's per-entry checksums are checked; tar
+/// stores no checksum over an entry's data at all, so there the deeper pass can
+/// only confirm the archive is complete and well formed. It roughly doubles the
+/// work, which is why it is the user's call and not the default.
+///
+/// It says nothing about a run with a `server`. The archive is built over there
+/// and arrives as bytes this app never described, so there is no list of
+/// expected entries here to check it against. The UI disables the checkbox in
+/// that case, and a caller that asks anyway gets the archive rather than a
+/// refusal: nothing about the request is harmful, it is just not something this
+/// side can do.
 #[tauri::command(async)]
 pub fn compress_path(
     path: String,
@@ -64,6 +82,7 @@ pub fn compress_path(
     level: u32,
     server: Option<String>,
     overwrite: bool,
+    verify: bool,
 ) -> Result<String, String> {
     let source = PathBuf::from(&path);
     if !source.exists() {
@@ -103,11 +122,21 @@ pub fn compress_path(
                 "The output already exists: {output}. Delete it first, or choose another name."
             ));
         }
-        // Deliberately NOT unlinked here. The write happens only once the
-        // archive is fully in hand (the remote path downloads it all before
-        // touching disk), so a failed run leaves the previous archive exactly
-        // as it was. Removing it up front would trade that away for nothing.
+        // Deliberately NOT unlinked here. Neither branch touches this path
+        // until the archive is whole: core writes a local archive to a
+        // temporary beside it and renames it in only once it passes its check,
+        // and the remote branch downloads every byte before it writes. So a
+        // failed run leaves the previous archive exactly as it was, and
+        // removing it up front would trade that away for nothing.
     }
+
+    // Two depths, no "off": see the note on `verify` above. Unused by the
+    // remote arm below, which has nothing of its own to check.
+    let depth = if verify {
+        Verify::Contents
+    } else {
+        Verify::Index
+    };
 
     // `Some(_)` is the caller asking for a server, whatever it put in the
     // string: whether that string is usable is `collapse-remote`'s answer,
@@ -121,16 +150,15 @@ pub fn compress_path(
                 .map_err(|e| e.to_string())?;
             std::fs::write(&output_path, archive).map_err(|e| e.to_string())?;
         }
-        None if source.is_dir() => {
-            compress_dir(&source, &output_path, algorithm, level).map_err(|e| e.to_string())?
-        }
+        None if source.is_dir() => compress_dir(&source, &output_path, algorithm, level, depth)
+            .map_err(|e| e.to_string())?,
         None => {
             let arcname = source
                 .file_name()
                 .ok_or_else(|| "Invalid source path.".to_string())?
                 .to_string_lossy()
                 .into_owned();
-            compress(&source, &output_path, &arcname, algorithm, level)
+            compress(&source, &output_path, &arcname, algorithm, level, depth)
                 .map_err(|e| e.to_string())?;
         }
     }

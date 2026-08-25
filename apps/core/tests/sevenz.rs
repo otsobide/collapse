@@ -213,9 +213,10 @@ fn compress_nonexistent_source_errors() {
         err.to_string(),
         "IO error: No such file or directory (os error 2)"
     );
-    // And the observable effect: unlike `compress_zip`, which creates its
-    // output before opening the source, `compress_7z` reads first, so a
-    // missing source leaves no zero-byte archive behind.
+    // And the observable effect: the source is read before the writer exists,
+    // so a missing source leaves no stub archive behind. All three backends
+    // agree on this now; `compress_zip` used to create its output first and
+    // leave a zero-byte `.zip`, and `zip.rs` pins that it no longer does.
     assert!(!output.exists(), "a stub archive was left on disk");
 }
 
@@ -391,6 +392,52 @@ fn a_corrupt_header_is_described_in_words() {
     bytes.extend_from_slice(&0xDEAD_BEEFu32.to_le_bytes()); // claimed header CRC
     bytes.extend_from_slice(&[7u8; 20]); // 20 header bytes that do not hash to it
     std::fs::write(&archive, &bytes).unwrap();
+
+    let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
+
+    assert_eq!(
+        err.to_string(),
+        "Compression failed: the 7z archive is corrupt: a checksum did not match"
+    );
+}
+
+/// A one entry archive with a byte flipped inside the entry's own data.
+///
+/// Written with the COPY method on purpose: with LZMA2 a flipped byte usually
+/// breaks the decoder before the checksum is ever compared, which reaches a
+/// different arm of the mapping.
+fn bitrotted_archive(dir: &Path) -> std::path::PathBuf {
+    let archive = dir.join("bitrot.7z");
+    {
+        let mut writer = SevenZWriter::create(&archive).unwrap();
+        writer.set_content_methods(vec![sevenz_rust2::SevenZMethodConfiguration::new(
+            sevenz_rust2::SevenZMethod::COPY,
+        )]);
+        let entry = SevenZArchiveEntry {
+            name: "sample.txt".to_string(),
+            ..Default::default()
+        };
+        writer.push_archive_entry(entry, Some(SAMPLE)).unwrap();
+        writer.finish().unwrap();
+    }
+
+    // The packed streams start straight after the 32 byte signature header, so
+    // this lands in the entry's stored bytes and nowhere near a header.
+    let mut bytes = std::fs::read(&archive).unwrap();
+    bytes[40] ^= 0xFF;
+    std::fs::write(&archive, &bytes).unwrap();
+    archive
+}
+
+/// The dependency reports a header CRC mismatch as a variant of its own, but a
+/// *data* CRC mismatch as an `io::Error` wrapping that variant, and its
+/// `Display` is its `Debug`, so unwrapped it reached the user as
+/// `IO error: ChecksumVerificationFailed`. Both spellings must arrive as the
+/// same sentence, since the difference means nothing to whoever reads it.
+#[test]
+fn a_flipped_bit_in_the_data_is_described_in_words() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = bitrotted_archive(dir.path());
 
     let err = extract_7z(&archive, &dir.path().join("out")).unwrap_err();
 
@@ -794,6 +841,10 @@ fn every_provokable_failure(dir: &Path) -> Vec<(&'static str, CompressionError)>
         (
             "extracting an archive whose entry name escapes the output",
             extract_7z(&hostile, &dir.join("out_hostile")).unwrap_err(),
+        ),
+        (
+            "extracting an archive with a flipped bit in an entry's data",
+            extract_7z(&bitrotted_archive(dir), &dir.join("out_bitrot")).unwrap_err(),
         ),
     ];
 

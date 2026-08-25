@@ -378,6 +378,116 @@ async fn a_tar_envelope_holding_another_directory_fails_the_job() {
     assert!(done["error_message"].as_str().unwrap().contains("photos"));
 }
 
+// ---------------------------------------------------------------------------
+// POST /compress?verify= : how deeply the archive is checked
+// ---------------------------------------------------------------------------
+
+/// The deeper check costs roughly a second compression's worth of work, so a
+/// client that says nothing must not be signed up for it.
+#[tokio::test]
+async fn compress_checks_the_index_only_unless_asked_for_more() {
+    let (router, _storage) = app();
+    let job = body_json(post_compress(&router, "name=a.txt", b"body").await).await;
+
+    assert_eq!(job["verify"], "index");
+}
+
+/// The worker is handed a job id and nothing else, so what the client asked for
+/// only survives the hop through the registry row. Reading it back off a job
+/// that has *finished* is what proves it made the round trip: the 202 body
+/// alone is just the handler echoing its own parse.
+#[tokio::test]
+async fn the_depth_asked_for_reaches_the_finished_job() {
+    let (router, _storage) = app();
+    let accepted = post_compress(&router, "name=a.txt&verify=contents", b"body").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+
+    let job = body_json(accepted).await;
+    assert_eq!(job["verify"], "contents", "the handler parsed it");
+    let job_id = job["job_id"].as_str().unwrap().to_string();
+
+    let done = wait_for_job(&router, &job_id).await;
+    assert_eq!(done["status"], "completed", "job failed: {done}");
+    assert_eq!(
+        done["verify"], "contents",
+        "and the row the worker read still says so"
+    );
+}
+
+/// The archive is checked before it is moved into place, so checking it harder
+/// must not change what a client ends up with. A reader left half-consumed, or
+/// one that truncated the file it read, would show up here and nowhere else.
+#[tokio::test]
+async fn checking_the_contents_yields_the_very_same_archive() {
+    let (router, _storage) = app();
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"second").unwrap();
+    });
+
+    let expected = vec![
+        ("photos/a.txt".to_string(), b"first".to_vec()),
+        ("photos/sub/b.txt".to_string(), b"second".to_vec()),
+    ];
+
+    // Every format, because what "checking the contents" reads differs in each:
+    // zip and 7z decode entries and compare a stored CRC, tar walks members.
+    for (algorithm, extension) in [("zip", "zip"), ("7z", "7z"), ("tar", "tar")] {
+        let response = compress_and_download(
+            &router,
+            &format!("name=photos&algorithm={algorithm}&envelope=tar&verify=contents"),
+            &tar,
+        )
+        .await;
+
+        assert_eq!(
+            extract_archive(&body_bytes(response).await, extension),
+            expected,
+            "{algorithm} at verify=contents"
+        );
+    }
+}
+
+/// Rejected the way an out-of-range `level` is, rather than falling back to the
+/// default: a client that asked for the deeper check and silently did not get
+/// it has been told its archive was checked more thoroughly than it was.
+#[tokio::test]
+async fn compress_rejects_an_unknown_verification_depth() {
+    let (router, _storage) = app();
+
+    // `true` is the likely guess, the parameter being described as off by
+    // default; `full` is the likely misremembering of `contents`.
+    for value in ["true", "full", ""] {
+        let response = post_compress(&router, &format!("name=a.txt&verify={value}"), b"x").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "verify={value:?} was accepted"
+        );
+
+        let detail = error_detail(response).await;
+        assert!(detail.contains("verify"), "names the parameter: {detail}");
+        assert!(detail.contains("contents"), "names the choices: {detail}");
+    }
+}
+
+/// And nothing is staged for a request that never became a job, so a client
+/// hammering a typo cannot fill the disk.
+#[tokio::test]
+async fn a_rejected_verification_depth_stages_nothing() {
+    let (router, storage) = app();
+    let response = post_compress(&router, "name=a.txt&verify=full", b"x").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let jobs = storage.path().join(JOBS_DIR);
+    assert_eq!(
+        std::fs::read_dir(&jobs).unwrap().count(),
+        0,
+        "the staging area is untouched"
+    );
+}
+
 #[tokio::test]
 async fn download_can_be_repeated_until_deleted() {
     let (router, _storage) = app();

@@ -62,7 +62,7 @@
           "compress"
         ],
         "summary": "Upload a file and queue a compression job",
-        "description": "Step 1 of the asynchronous flow. The request body is the **raw bytes of the file** to compress: not multipart, not JSON, not base64. Everything else travels in the query string.\n\nThe server validates the parameters, writes the upload to the job's staging directory, registers the job and hands it to the background worker, then answers `202 Accepted` immediately with the job in its `queued` state. Compression has not started yet when the response arrives, so the job in the body always reads `\"status\": \"queued\"` and `\"error_message\": null`.\n\nExactly one file goes into the archive, stored under `name`. The archive itself is named `archive_name`, which is `<name>.<extension>` for the chosen algorithm. An empty body is accepted and produces an archive holding an empty file.\n\nContinue with `GET /jobs/{job_id}` to poll the job.\n\n**Directories.** HTTP has no notion of a folder, so a client packs one into a tar and sets `envelope=tar`; the server unpacks it and compresses the tree, giving the same archive a local run would produce. Tar is the envelope because it does not compress: the CPU work still happens here, and the upload cap still bounds how much can be unpacked.",
+        "description": "Step 1 of the asynchronous flow. The request body is the **raw bytes of the file** to compress: not multipart, not JSON, not base64. Everything else travels in the query string.\n\nThe server validates the parameters, writes the upload to the job's staging directory, registers the job and hands it to the background worker, then answers `202 Accepted` immediately with the job in its `queued` state. Compression has not started yet when the response arrives, so the job in the body always reads `\"status\": \"queued\"` and `\"error_message\": null`.\n\nExactly one file goes into the archive, stored under `name`. The archive itself is named `archive_name`, which is `<name>.<extension>` for the chosen algorithm. An empty body is accepted and produces an archive holding an empty file.\n\nContinue with `GET /jobs/{job_id}` to poll the job.\n\n**Directories.** HTTP has no notion of a folder, so a client packs one into a tar and sets `envelope=tar`; the server unpacks it and compresses the tree, giving the same archive a local run would produce. Tar is the envelope because it does not compress: the CPU work still happens here, and the upload cap still bounds how much can be unpacked.\n\n**Verification.** Every archive is read back before the job is called `completed`, and one that does not hold what it was meant to is discarded and the job `failed`. `verify=contents` asks for the deeper check, which decompresses every entry as well.",
         "operationId": "createCompressionJob",
         "parameters": [
           {
@@ -109,6 +109,17 @@
               "$ref": "#/components/schemas/Envelope",
               "default": "none"
             }
+          },
+          {
+            "name": "verify",
+            "in": "query",
+            "required": false,
+            "description": "How deeply the finished archive is checked before the job is called `completed`. `index` (the default) reads the archive's own listing back and confirms it names exactly the entries that were meant to go in, decompressing nothing. `contents` does that and then decompresses every entry and throws it away, so the format's own checksums fire; it roughly doubles the work, which is why it is asked for rather than assumed.\n\nEither way a job whose archive does not check out is `failed` and the archive is discarded, so a download never hands back an archive that was known to be wrong.",
+            "schema": {
+              "$ref": "#/components/schemas/Verify",
+              "default": "index"
+            },
+            "example": "contents"
           }
         ],
         "requestBody": {
@@ -140,6 +151,8 @@
                       "archive_name": "notes.txt.7z",
                       "algorithm": "7z",
                       "level": 4,
+                      "envelope": "none",
+                      "verify": "index",
                       "status": "queued",
                       "error_message": null
                     }
@@ -152,6 +165,8 @@
                       "archive_name": "report.pdf.zip",
                       "algorithm": "zip",
                       "level": 3,
+                      "envelope": "none",
+                      "verify": "index",
                       "status": "queued",
                       "error_message": null
                     }
@@ -161,7 +176,7 @@
             }
           },
           "400": {
-            "description": "The request was rejected before any work was queued. Two different bodies are possible. Validation performed by the handler (an unknown `algorithm`, a `level` outside 1 to 5, a `name` that is not a bare file name) answers with the JSON error shape. Failures of the query string parser itself (`name` missing entirely, `level` not an integer) answer with plain text, because they happen before the handler runs.",
+            "description": "The request was rejected before any work was queued. Two different bodies are possible. Validation performed by the handler (an unknown `algorithm`, `envelope` or `verify`, a `level` outside 1 to 5, a `name` that is not a bare file name) answers with the JSON error shape. Failures of the query string parser itself (`name` missing entirely, `level` not an integer) answer with plain text, because they happen before the handler runs.",
             "content": {
               "application/json": {
                 "schema": {
@@ -272,6 +287,8 @@
                       "archive_name": "notes.txt.7z",
                       "algorithm": "7z",
                       "level": 4,
+                      "envelope": "none",
+                      "verify": "index",
                       "status": "compressing",
                       "error_message": null
                     }
@@ -284,6 +301,8 @@
                       "archive_name": "notes.txt.7z",
                       "algorithm": "7z",
                       "level": 4,
+                      "envelope": "none",
+                      "verify": "index",
                       "status": "completed",
                       "error_message": null
                     }
@@ -296,8 +315,24 @@
                       "archive_name": "notes.txt.zip",
                       "algorithm": "zip",
                       "level": 3,
+                      "envelope": "none",
+                      "verify": "index",
                       "status": "failed",
                       "error_message": "Compression failed: unexpected end of file"
+                    }
+                  },
+                  "failedVerification": {
+                    "summary": "The archive did not check out and was discarded",
+                    "value": {
+                      "job_id": "8b2e0f7a15c94d3f92a6c4718de0b35a",
+                      "name": "photos",
+                      "archive_name": "photos.zip",
+                      "algorithm": "zip",
+                      "level": 3,
+                      "envelope": "tar",
+                      "verify": "index",
+                      "status": "failed",
+                      "error_message": "photos.zip was compressed but did not check out, so it was discarded: 2 entries are missing: \"photos/b.jpg\", \"photos/c.jpg\""
                     }
                   }
                 }
@@ -540,6 +575,15 @@
         "default": "none",
         "description": "How the request body should be read. `none` means the body is the file to compress, as it is. `tar` means the body is a tar holding exactly one directory, which the server unpacks and compresses as a tree.\n\nThe flag is required rather than inferred: a `.tar` upload may equally be a file the caller wants compressed as itself, and guessing would make that impossible to ask for."
       },
+      "Verify": {
+        "type": "string",
+        "enum": [
+          "index",
+          "contents"
+        ],
+        "default": "index",
+        "description": "How thoroughly the archive is checked once it is written.\n\n`index` reads the archive's listing back and confirms it holds exactly the entries it was meant to, decompressing nothing. This is what catches a compression that stopped early: zip and tar finalise as they close, so an interrupted one is a *valid* archive silently missing entries, and nothing in the archive itself says so.\n\n`contents` adds decompressing every entry into a sink. What that buys differs by format, and the difference is worth stating rather than implying all three are equal: zip stores a CRC32 per entry and 7z stores a CRC per file, both compared as the entry is read, so a flipped bit in the data is caught. tar stores no checksum over an entry's data at all (its header `cksum` field covers the 512 byte header only), so there this confirms the archive is well formed and complete and nothing more."
+      },
       "JobStatus": {
         "title": "JobStatus",
         "description": "Lifecycle state of a compression job. It advances `queued` to `compressing` to either `completed` or `failed`, and never moves backwards. `completed` and `failed` are terminal: only then may the job be downloaded or deleted.",
@@ -565,6 +609,7 @@
           "algorithm",
           "level",
           "envelope",
+          "verify",
           "status",
           "error_message"
         ],
@@ -610,6 +655,14 @@
               }
             ],
             "description": "How the upload was read for this job."
+          },
+          "verify": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Verify"
+              }
+            ],
+            "description": "How deeply this job's archive is checked before it is offered for download."
           },
           "status": {
             "$ref": "#/components/schemas/JobStatus"

@@ -4,7 +4,7 @@
 
 use collapse_core::Algorithm;
 use collapse_server_backend::maintenance::{reap, reconcile, Reaped, Reconciled, INTERRUPTED};
-use collapse_server_backend::models::{Envelope, Job, JobStatus};
+use collapse_server_backend::models::{Envelope, Job, JobStatus, Verify};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE};
 use collapse_server_backend::storage::{Storage, JOBS_DIR, REGISTRY_DIR};
 use tempfile::TempDir;
@@ -42,6 +42,7 @@ fn job(id: &str) -> Job {
         Algorithm::Zip,
         3,
         Envelope::None,
+        Verify::Index,
     )
 }
 

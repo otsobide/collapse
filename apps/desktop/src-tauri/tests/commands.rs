@@ -47,7 +47,7 @@ fn compress_local(
     format: &str,
     level: u32,
 ) -> Result<String, String> {
-    compress_local_with(source, output, format, level, false)
+    compress_local_with(source, output, format, level, false, false)
 }
 
 /// The same call with the caller reporting that the user agreed to replace
@@ -59,7 +59,18 @@ fn compress_local_overwriting(
     format: &str,
     level: u32,
 ) -> Result<String, String> {
-    compress_local_with(source, output, format, level, true)
+    compress_local_with(source, output, format, level, true, false)
+}
+
+/// The same call with the Verify box ticked, which asks for the deeper of the
+/// two checks: every entry decompressed rather than the listing alone.
+fn compress_local_checking_contents(
+    source: &Path,
+    output: &Path,
+    format: &str,
+    level: u32,
+) -> Result<String, String> {
+    compress_local_with(source, output, format, level, false, true)
 }
 
 fn compress_local_with(
@@ -68,6 +79,7 @@ fn compress_local_with(
     format: &str,
     level: u32,
     overwrite: bool,
+    verify: bool,
 ) -> Result<String, String> {
     compress_path(
         source.to_string_lossy().into_owned(),
@@ -76,6 +88,7 @@ fn compress_local_with(
         level,
         None,
         overwrite,
+        verify,
     )
 }
 
@@ -492,6 +505,131 @@ fn the_level_reaches_the_backend_because_one_and_five_compress_differently() {
     );
 }
 
+// ------------------------------------------------------------- verification --
+
+/// Every file an archive holds, with its bytes, so two runs can be compared by
+/// what they really contain rather than by the size of the file they produced.
+fn contents_of(archive: &Path, into: &Path) -> Vec<(String, Vec<u8>)> {
+    listing(extract_to(archive, into).expect("the archive extracts cleanly"))
+        .into_iter()
+        .map(|name| {
+            let bytes = fs::read(into.join(&name)).expect("an extracted file is readable");
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// The Verify checkbox, both ways, for both source shapes and every format.
+///
+/// What this can prove from out here: ticking it is accepted rather than
+/// refused, the archive it produces holds exactly what the unticked run's does,
+/// and the staging the check runs on top of leaves nothing behind. What it
+/// cannot prove is that `true` reaches core as the deeper depth: a compression
+/// that succeeds looks identical at both depths by construction, since the
+/// check only reads, and telling them apart needs an archive whose listing is
+/// right and whose entry data is corrupt, which this command cannot be made to
+/// produce. Core's own suite owns that half; here the parameter is held in
+/// place by these three claims plus the frozen signature in tests/ipc.rs.
+#[test]
+fn checking_contents_is_accepted_and_yields_the_same_archive() {
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("notes.txt");
+        fs::write(&file, prose(20_000)).unwrap();
+        let tree = make_tree(dir.path());
+
+        for (shape, source) in [("file", &file), ("tree", &tree)] {
+            let mut by_depth = Vec::new();
+            for (depth, checked) in [("listing", false), ("contents", true)] {
+                // A folder of its own for the archive, so "what is beside it"
+                // has exactly one right answer: nothing else writes here.
+                let destination = dir.path().join(format!("{format}-{shape}-{depth}"));
+                fs::create_dir(&destination).unwrap();
+                let archive = destination.join(format!("out.{format}"));
+
+                let call = if checked {
+                    compress_local_checking_contents(source, &archive, format, 3)
+                } else {
+                    compress_local(source, &archive, format, 3)
+                };
+                call.unwrap_or_else(|e| panic!("{format} {shape}, {depth} check: {e}"));
+
+                // The archive is built in a temporary beside the destination
+                // and renamed in, so one that outlived the run shows up here.
+                let mut beside: Vec<String> = fs::read_dir(&destination)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect();
+                beside.sort();
+                assert_eq!(
+                    beside,
+                    vec![format!("out.{format}")],
+                    "{format} {shape}, {depth} check: something was left beside the archive"
+                );
+
+                by_depth.push(contents_of(
+                    &archive,
+                    &dir.path().join(format!("{format}-{shape}-{depth}-out")),
+                ));
+            }
+
+            assert_eq!(
+                by_depth[0], by_depth[1],
+                "{format} {shape}: checking the contents changed what the archive holds"
+            );
+            assert!(
+                !by_depth[0].is_empty(),
+                "{format} {shape}: the comparison above passed on two empty archives"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_data_loss_guards_hold_whatever_the_verify_box_says() {
+    // Checking happens after an archive exists; the guards happen before
+    // anything is read or written. Ticking the box must not reorder that, or
+    // the app would destroy a source and then carefully verify the archive it
+    // made out of it.
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("notes.txt");
+        fs::write(&source, b"irreplaceable").unwrap();
+
+        let err = compress_local_checking_contents(&source, &source, format, 3).unwrap_err();
+
+        assert_eq!(
+            err, "The output is the same file as the source.",
+            "{format}"
+        );
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"irreplaceable",
+            "{format}: the source was modified"
+        );
+    }
+
+    // The other irreversible one, with consent given as well, since that is
+    // the combination the containment guard exists to refuse.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    fs::create_dir_all(&root).unwrap();
+    let victim = root.join("a.txt");
+    fs::write(&victim, b"irreplaceable member").unwrap();
+
+    let err = compress_local_with(&root, &victim, "zip", 3, true, true).unwrap_err();
+
+    assert_eq!(
+        err,
+        format!(
+            "The output is inside the folder being compressed: {}. \
+             It would be destroyed instead of archived. Choose a location outside it.",
+            victim.display()
+        )
+    );
+    assert_eq!(fs::read(&victim).unwrap(), b"irreplaceable member");
+}
+
 #[test]
 #[cfg(unix)]
 fn a_symlinked_directory_is_archived_under_the_links_own_name() {
@@ -545,6 +683,7 @@ fn expect_blank_server_refusal(blank: &str) {
         "zip".to_string(),
         3,
         Some(blank.to_string()),
+        false,
         false,
     )
     .expect_err("a blank address is not a server");
@@ -607,6 +746,7 @@ fn a_blank_server_string_is_refused_for_a_directory_too() {
             "zip".to_string(),
             3,
             Some(blank.to_string()),
+            false,
             false,
         )
         .expect_err("a blank address is not a server");
@@ -1003,35 +1143,58 @@ fn an_existing_output_is_replaced_when_the_caller_says_the_user_agreed() {
 }
 
 #[test]
-fn replacing_an_output_writes_through_a_hardlink_to_it() {
-    // KNOWN LIMITATION, pinned rather than endorsed. The archive is not written
-    // to a temporary file and renamed into place, so replacing an output that
-    // happens to be a hardlink writes through the shared inode and takes the
-    // other name down with it. Unlinking first would fix this and cost more
-    // than it is worth: nothing is written until the archive is fully in hand,
-    // which is what lets a failed run leave the previous archive untouched (see
-    // the truncated-download tests in tests/remote.rs). Writing to a temporary
-    // file and renaming would buy both, and is the real fix if this ever bites.
+fn replacing_an_output_no_longer_writes_through_a_hardlink_to_it() {
+    // This was a KNOWN LIMITATION and is now the opposite assertion. The
+    // archive used to be written straight to the output path, so replacing an
+    // output that happened to be a hardlink wrote through the shared inode and
+    // took the other name down with it: someone else's copy of an old archive
+    // silently became this one. Core now writes to a temporary beside the
+    // destination and renames it in, and a rename replaces the *name*, so the
+    // other name keeps the file it always had.
     //
-    // Not `cfg(unix)`: nothing here is Unix-only, and NTFS hardlinks share
-    // their data the same way, so the limitation is shipped on every platform
-    // and is pinned on every platform.
+    // Not `cfg(unix)`: NTFS hardlinks share their data the same way, so this is
+    // a property of every platform the app ships to.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
     let output = dir.path().join("out.zip");
-    fs::write(&output, b"an older archive the user agreed to replace").unwrap();
+    let previous = b"an older archive the user agreed to replace";
+    fs::write(&output, previous).unwrap();
     let bystander = dir.path().join("someone-elses-copy.zip");
     fs::hard_link(&output, &bystander).unwrap();
 
     compress_local_overwriting(&source, &output, "zip", 3).expect("the user agreed");
 
-    assert_ne!(
+    assert_eq!(
         fs::read(&bystander).unwrap(),
-        b"an older archive the user agreed to replace",
-        "the hardlink kept its content, so the write stopped going through the \
-         inode: update this test"
+        previous,
+        "the write went through the shared inode and destroyed a file nobody \
+         named in the dialog"
     );
+    // And the file the user did name really was replaced, so this is not a
+    // refusal dressed up as a fix.
+    let out_dir = dir.path().join("extracted");
+    assert_eq!(
+        listing(extract_to(&output, &out_dir).unwrap()),
+        vec!["notes.txt".to_string()]
+    );
+    assert_eq!(fs::read(out_dir.join("notes.txt")).unwrap(), b"hello");
+    // The two names are now two files, which is what a rename into place means
+    // and what a write-through would have avoided.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&bystander).unwrap().nlink(),
+            1,
+            "the archive still shares an inode with the bystander"
+        );
+        assert_ne!(
+            fs::metadata(&output).unwrap().ino(),
+            fs::metadata(&bystander).unwrap().ino(),
+            "both names still point at one file"
+        );
+    }
 }
 
 #[test]
@@ -1061,7 +1224,7 @@ fn an_output_landing_on_a_member_of_the_source_tree_is_refused_even_with_consent
 
     for format in FORMATS {
         for consented in [false, true] {
-            let err = compress_local_with(&root, &victim, format, 3, consented).unwrap_err();
+            let err = compress_local_with(&root, &victim, format, 3, consented, false).unwrap_err();
             assert_eq!(err, expected, "{format}, overwrite={consented}");
             assert_eq!(
                 fs::read(&victim).unwrap(),
@@ -1153,7 +1316,7 @@ fn an_output_hardlinked_to_a_member_of_the_source_tree_is_refused_even_with_cons
     );
 
     for consented in [false, true] {
-        let err = compress_local_with(&root, &alias, "zip", 3, consented).unwrap_err();
+        let err = compress_local_with(&root, &alias, "zip", 3, consented, false).unwrap_err();
         assert_eq!(err, expected, "overwrite={consented}");
         assert_eq!(
             fs::read(&member).unwrap(),

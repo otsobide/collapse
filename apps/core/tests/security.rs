@@ -10,7 +10,7 @@ use std::path::Path;
 use collapse_core::compression::{
     compress_7z_dir, compress_tar_dir, compress_zip_dir, extract_7z, extract_tar, extract_zip,
 };
-use collapse_core::{extract, Algorithm};
+use collapse_core::{extract, Algorithm, Verify};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 use tar::{Builder, EntryType, Header};
 use zip::write::SimpleFileOptions;
@@ -364,7 +364,15 @@ fn benign_nested_names_still_extract() {
 
     for algo in [Algorithm::Zip, Algorithm::SevenZ, Algorithm::Tar] {
         let archive = dir.path().join(format!("ok.{}", algo.extension()));
-        collapse_core::compress(&src, &archive, "nested/dir/input.txt", algo, 1).unwrap();
+        collapse_core::compress(
+            &src,
+            &archive,
+            "nested/dir/input.txt",
+            algo,
+            1,
+            Verify::Index,
+        )
+        .unwrap();
 
         let out = dir.path().join(format!("out_{}", algo.extension()));
         let files = extract(&archive, &out).unwrap();

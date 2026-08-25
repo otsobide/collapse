@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use collapse_core::{compress, compress_dir, extract, Algorithm, CompressionError};
+use collapse_core::{compress, compress_dir, extract, Algorithm, CompressionError, Verify};
 
 /// Normalize and sort an extracted listing so the expectations read the same
 /// on a platform whose path separator is not `/`.
@@ -72,13 +72,27 @@ fn algorithm_serde_roundtrip() {
 
 #[test]
 fn compress_invalid_level_zero() {
-    let result = compress(Path::new("/x"), Path::new("/y"), "f", Algorithm::Zip, 0);
+    let result = compress(
+        Path::new("/x"),
+        Path::new("/y"),
+        "f",
+        Algorithm::Zip,
+        0,
+        Verify::Index,
+    );
     assert!(matches!(result, Err(CompressionError::InvalidLevel(0))));
 }
 
 #[test]
 fn compress_invalid_level_six() {
-    let result = compress(Path::new("/x"), Path::new("/y"), "f", Algorithm::Zip, 6);
+    let result = compress(
+        Path::new("/x"),
+        Path::new("/y"),
+        "f",
+        Algorithm::Zip,
+        6,
+        Verify::Index,
+    );
     assert!(matches!(result, Err(CompressionError::InvalidLevel(6))));
 }
 
@@ -185,7 +199,7 @@ fn extract_opens_an_archive_whatever_the_case_of_its_name() {
         std::fs::write(&src, b"shouted name").unwrap();
 
         let archive = dir.path().join(shouted);
-        compress(&src, &archive, "input.txt", algorithm, 1).unwrap();
+        compress(&src, &archive, "input.txt", algorithm, 1, Verify::Index).unwrap();
 
         let out = dir.path().join("extracted");
         let files = extract(&archive, &out).expect("the name is understood");
@@ -205,7 +219,15 @@ fn extract_dispatches_zip() {
     std::fs::write(&src, b"dispatch zip").unwrap();
 
     let archive = dir.path().join("out.zip");
-    compress(&src, &archive, "input.txt", Algorithm::Zip, 1).unwrap();
+    compress(
+        &src,
+        &archive,
+        "input.txt",
+        Algorithm::Zip,
+        1,
+        Verify::Index,
+    )
+    .unwrap();
 
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
@@ -223,7 +245,15 @@ fn extract_dispatches_7z() {
     std::fs::write(&src, b"dispatch 7z").unwrap();
 
     let archive = dir.path().join("out.7z");
-    compress(&src, &archive, "input.txt", Algorithm::SevenZ, 1).unwrap();
+    compress(
+        &src,
+        &archive,
+        "input.txt",
+        Algorithm::SevenZ,
+        1,
+        Verify::Index,
+    )
+    .unwrap();
 
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
@@ -241,7 +271,15 @@ fn extract_dispatches_tar() {
     std::fs::write(&src, b"dispatch tar").unwrap();
 
     let archive = dir.path().join("out.tar");
-    compress(&src, &archive, "input.txt", Algorithm::Tar, 1).unwrap();
+    compress(
+        &src,
+        &archive,
+        "input.txt",
+        Algorithm::Tar,
+        1,
+        Verify::Index,
+    )
+    .unwrap();
 
     let out = dir.path().join("extracted");
     let files = extract(&archive, &out).unwrap();
@@ -260,12 +298,28 @@ fn tar_level_is_ignored() {
 
     // All valid levels must produce byte-identical tar archives.
     let reference = dir.path().join("out_l1.tar");
-    compress(&src, &reference, "input.txt", Algorithm::Tar, 1).unwrap();
+    compress(
+        &src,
+        &reference,
+        "input.txt",
+        Algorithm::Tar,
+        1,
+        Verify::Index,
+    )
+    .unwrap();
     let reference_bytes = std::fs::read(&reference).unwrap();
 
     for level in 2..=5 {
         let archive = dir.path().join(format!("out_l{level}.tar"));
-        compress(&src, &archive, "input.txt", Algorithm::Tar, level).unwrap();
+        compress(
+            &src,
+            &archive,
+            "input.txt",
+            Algorithm::Tar,
+            level,
+            Verify::Index,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(&archive).unwrap(),
             reference_bytes,
@@ -276,9 +330,23 @@ fn tar_level_is_ignored() {
 
 #[test]
 fn tar_out_of_range_level_is_still_rejected() {
-    let result = compress(Path::new("/x"), Path::new("/y"), "f", Algorithm::Tar, 0);
+    let result = compress(
+        Path::new("/x"),
+        Path::new("/y"),
+        "f",
+        Algorithm::Tar,
+        0,
+        Verify::Index,
+    );
     assert!(matches!(result, Err(CompressionError::InvalidLevel(0))));
-    let result = compress(Path::new("/x"), Path::new("/y"), "f", Algorithm::Tar, 6);
+    let result = compress(
+        Path::new("/x"),
+        Path::new("/y"),
+        "f",
+        Algorithm::Tar,
+        6,
+        Verify::Index,
+    );
     assert!(matches!(result, Err(CompressionError::InvalidLevel(6))));
 }
 
@@ -303,6 +371,7 @@ fn compress_nonexistent_source_errors() {
         "ghost.txt",
         Algorithm::Zip,
         1,
+        Verify::Index,
     );
     assert!(result.is_err());
 }
@@ -337,7 +406,7 @@ fn compress_dir_dispatches_tar() {
     std::fs::write(root.join("a.txt"), b"alpha").unwrap();
 
     let archive = dir.path().join("data.tar");
-    compress_dir(&root, &archive, Algorithm::Tar, 1).unwrap();
+    compress_dir(&root, &archive, Algorithm::Tar, 1, Verify::Index).unwrap();
 
     let out = dir.path().join("out");
     let files = extract(&archive, &out).unwrap();
@@ -353,7 +422,7 @@ fn compress_dir_dispatches_zip() {
     std::fs::write(root.join("a.txt"), b"alpha").unwrap();
 
     let archive = dir.path().join("data.zip");
-    compress_dir(&root, &archive, Algorithm::Zip, 3).unwrap();
+    compress_dir(&root, &archive, Algorithm::Zip, 3, Verify::Index).unwrap();
 
     let out = dir.path().join("out");
     let files = extract(&archive, &out).unwrap();
@@ -369,7 +438,7 @@ fn compress_dir_dispatches_7z() {
     std::fs::write(root.join("a.txt"), b"alpha").unwrap();
 
     let archive = dir.path().join("data.7z");
-    compress_dir(&root, &archive, Algorithm::SevenZ, 3).unwrap();
+    compress_dir(&root, &archive, Algorithm::SevenZ, 3, Verify::Index).unwrap();
 
     let out = dir.path().join("out");
     let files = extract(&archive, &out).unwrap();
@@ -385,11 +454,11 @@ fn compress_dir_invalid_level_is_rejected() {
 
     let archive = dir.path().join("data.tar");
     assert!(matches!(
-        compress_dir(&root, &archive, Algorithm::Tar, 0),
+        compress_dir(&root, &archive, Algorithm::Tar, 0, Verify::Index),
         Err(CompressionError::InvalidLevel(0))
     ));
     assert!(matches!(
-        compress_dir(&root, &archive, Algorithm::Tar, 6),
+        compress_dir(&root, &archive, Algorithm::Tar, 6, Verify::Index),
         Err(CompressionError::InvalidLevel(6))
     ));
 }

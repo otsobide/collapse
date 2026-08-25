@@ -569,6 +569,10 @@ details[open].about > summary { border-bottom: 1px solid var(--border); }
             <span class="flabel">level</span>
             <input type="number" id="flow-level">
           </label>
+          <label class="field">
+            <span class="flabel">verify</span>
+            <select id="flow-verify"></select>
+          </label>
         </div>
         <div class="actions">
           <button type="button" class="primary" id="flow-run">Run the flow</button>
@@ -1680,20 +1684,29 @@ details[open].about > summary { border-bottom: 1px solid var(--border); }
     // instead of keeping a second hardcoded copy of the contract.
     var algorithmParam = null;
     var levelParam = null;
+    var verifyParam = null;
     compressOp.params.forEach(function (param) {
       if (param.name === 'algorithm') algorithmParam = param;
       if (param.name === 'level') levelParam = param;
+      if (param.name === 'verify') verifyParam = param;
     });
 
-    var algorithmSchema = (algorithmParam && algorithmParam.schema) || {};
-    var choices = Array.isArray(algorithmSchema.enum) ? algorithmSchema.enum : ['zip'];
-    var algorithmSelect = clear(byId('flow-algorithm'));
-    choices.forEach(function (value) {
-      algorithmSelect.appendChild(el('option', { value: String(value), text: String(value) }));
-    });
-    if (algorithmSchema.default !== undefined) {
-      algorithmSelect.value = String(algorithmSchema.default);
+    /** Fill a <select> from an enum schema, honouring its documented default. */
+    function fillChoices(id, schema, fallback) {
+      var values = Array.isArray(schema.enum) ? schema.enum : fallback;
+      var select = clear(byId(id));
+      values.forEach(function (value) {
+        select.appendChild(el('option', { value: String(value), text: String(value) }));
+      });
+      if (schema.default !== undefined) select.value = String(schema.default);
+      return select;
     }
+
+    var algorithmSchema = (algorithmParam && algorithmParam.schema) || {};
+    var algorithmSelect = fillChoices('flow-algorithm', algorithmSchema, ['zip']);
+
+    var verifySchema = (verifyParam && verifyParam.schema) || {};
+    var verifySelect = fillChoices('flow-verify', verifySchema, ['index']);
 
     var levelSchema = (levelParam && levelParam.schema) || {};
     var levelInput = byId('flow-level');
@@ -1734,6 +1747,7 @@ details[open].about > summary { border-bottom: 1px solid var(--border); }
         name: nameInput.value || file.name,
         algorithm: algorithmSelect.value,
         level: levelInput.value,
+        verify: verifySelect.value,
         isCancelled: function () { return cancelled; }
       }).then(function () {
         runButton.disabled = false;
@@ -1759,7 +1773,8 @@ details[open].about > summary { border-bottom: 1px solid var(--border); }
     var uploadUrl = buildUrl(FLOW_PATHS.compress, {}, [
       ['name', options.name],
       ['algorithm', options.algorithm],
-      ['level', options.level]
+      ['level', options.level],
+      ['verify', options.verify]
     ]);
 
     return callApi('POST', uploadUrl, options.file, 'application/octet-stream')

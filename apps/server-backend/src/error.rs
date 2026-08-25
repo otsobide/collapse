@@ -3,6 +3,8 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::json;
 
+use collapse_core::CompressionError;
+
 /// Application-level errors, mapped to HTTP responses with a JSON
 /// `{"detail": "..."}` body (the shape clients parse for error messages).
 #[derive(Debug)]
@@ -46,6 +48,28 @@ impl From<crate::registry::RegistryError> for ApiError {
             tracing::error!(job = %job_id, "{err}");
         }
         ApiError::Internal(err.to_string())
+    }
+}
+
+/// The `error_message` a failed job carries, given what the engine returned.
+///
+/// Clients (the CLI, the web app, `curl`) print this verbatim, so it is written
+/// for a person, and it is a `Display` rather than a `Debug` dump for the same
+/// reason.
+///
+/// Only a verification failure is rewritten, and only because the engine's own
+/// message names the file it read back, which here is a path inside the job's
+/// staging directory: a location the client has never heard of, cannot reach,
+/// and should not be told about. The archive's own name is the same fact said
+/// in the client's vocabulary. Every other error already reads as a sentence
+/// about something the client did (an unreadable upload, a tar that is not a
+/// tar), so it is passed through untouched.
+pub fn failure_message(archive_name: &str, error: &CompressionError) -> String {
+    match error {
+        CompressionError::VerificationFailed { reason, .. } => format!(
+            "{archive_name} was compressed but did not check out, so it was discarded: {reason}"
+        ),
+        other => other.to_string(),
     }
 }
 
