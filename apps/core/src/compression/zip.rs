@@ -5,7 +5,7 @@ use std::path::Path;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use super::{CompressionError, Verify};
+use super::{CompressionError, NamePlan, Verify};
 
 /// API level (1–5) → Deflate compresslevel (1–9).
 const ZIP_LEVELS: [i64; 5] = [1, 3, 5, 7, 9];
@@ -129,7 +129,34 @@ pub(crate) fn read_zip_entries(
     Ok(names)
 }
 
+/// The names a ZIP holds, in the order its entries are stored, reading the
+/// central directory and nothing else.
+///
+/// Kept apart from [`read_zip_entries`] because the two answer different
+/// questions and their failures read differently: that one is verifying an
+/// archive this process just wrote, this one is looking at a file someone
+/// handed us, so its error is the one extraction would give.
+pub(crate) fn list_zip_entries(archive: &Path) -> Result<Vec<String>, CompressionError> {
+    let file = File::open(archive)?;
+    let zip = zip::ZipArchive::new(file).map_err(|e| CompressionError::Failed(e.to_string()))?;
+    Ok((0..zip.len())
+        .filter_map(|i| zip.name_for_index(i).map(str::to_string))
+        .collect())
+}
+
 pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
+    extract_zip_planned(archive, output_dir, &NamePlan::identity())
+}
+
+/// [`extract_zip`], writing each entry under the name `plan` gives it.
+///
+/// An entry the plan says nothing about keeps the name the archive spells,
+/// which is what makes the plain [`extract_zip`] the same function.
+pub(crate) fn extract_zip_planned(
+    archive: &Path,
+    output_dir: &Path,
+    plan: &NamePlan,
+) -> Result<Vec<String>, CompressionError> {
     let file = File::open(archive)?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| CompressionError::Failed(e.to_string()))?;
@@ -154,17 +181,21 @@ pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Com
         let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
             CompressionError::Failed(format!("Path traversal detected in archive entry: {name}"))
         })?;
+        // The plan is built from the same names, and every path in it is made
+        // of the entry's own `Normal` components, so it can only ever rename
+        // inside the output directory.
+        let rel = plan.written_as(&name).map_or(rel, Path::to_path_buf);
         let dest = canonical_output.join(&rel);
 
         if entry.is_dir() {
-            fs::create_dir_all(&dest)?;
+            fs::create_dir_all(&dest).map_err(|e| super::entry_error(&name, &dest, e))?;
         } else {
             if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
+                fs::create_dir_all(parent).map_err(|e| super::entry_error(&name, &dest, e))?;
             }
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;
-            fs::write(&dest, &buf)?;
+            fs::write(&dest, &buf).map_err(|e| super::entry_error(&name, &dest, e))?;
             extracted.push(rel.to_string_lossy().to_string());
         }
     }

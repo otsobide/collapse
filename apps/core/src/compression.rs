@@ -1,4 +1,5 @@
 mod algorithm;
+mod names;
 mod sevenz;
 mod tar;
 mod verify;
@@ -6,15 +7,20 @@ mod walk;
 mod zip;
 
 pub use self::algorithm::Algorithm;
+pub use self::names::{
+    CharacterFault, NameError, NameProblem, NameReport, NameRules, OffendingCharacter,
+    Substitutions, UnwritableEntry,
+};
 pub use self::sevenz::{compress_7z, compress_7z_dir, extract_7z};
 pub use self::tar::{compress_tar, compress_tar_dir, extract_tar};
 pub use self::verify::{verify_archive, Verify};
 pub use self::zip::{compress_zip, compress_zip_dir, extract_zip};
 
-pub(crate) use self::sevenz::read_7z_entries;
-pub(crate) use self::tar::read_tar_entries;
+pub(crate) use self::names::{plan_names, NamePlan};
+pub(crate) use self::sevenz::{list_7z_entries, read_7z_entries};
+pub(crate) use self::tar::{list_tar_entries, read_tar_entries};
 pub(crate) use self::walk::walk_tree;
-pub(crate) use self::zip::read_zip_entries;
+pub(crate) use self::zip::{list_zip_entries, read_zip_entries};
 
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -64,6 +70,39 @@ pub enum CompressionError {
     /// rather than a file it could not read.
     #[error("Verification of {} failed: {reason}", archive.display())]
     VerificationFailed { archive: PathBuf, reason: String },
+
+    /// One entry could not be written, naming which one and where it was
+    /// going.
+    ///
+    /// [`Self::Io`] carries the operating system's sentence and nothing else,
+    /// so a read-only output directory, a full disk and a name whose parent is
+    /// already a file were all reported as the same blank message with no clue
+    /// which of an archive's entries was at fault (issue #64).
+    #[error("cannot write entry {entry:?} to {}: {source}", destination.display())]
+    Entry {
+        entry: String,
+        destination: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// An entry name this filesystem cannot hold, or an answer that does not
+    /// resolve one.
+    #[error(transparent)]
+    Name(#[from] NameError),
+}
+
+/// Attach the entry and the destination to an IO failure at a write site.
+pub(crate) fn entry_error(
+    entry: &str,
+    destination: &Path,
+    source: std::io::Error,
+) -> CompressionError {
+    CompressionError::Entry {
+        entry: entry.to_string(),
+        destination: destination.to_path_buf(),
+        source,
+    }
 }
 
 /// Serial number for staged file names, so two compressions running inside one
@@ -264,19 +303,142 @@ pub fn compress_dir(
     staged.commit(output)
 }
 
+/// How to extract, beyond where to put it.
+///
+/// A separate type rather than more arguments on [`extract`], and
+/// [`extract_with`] rather than a replacement for it: every existing caller
+/// (the CLI, the server, the desktop, this crate's own tests) has no
+/// substitutions to offer and should not have to say so, and the next knob
+/// extraction grows should not add a third function.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct ExtractOptions {
+    rules: NameRules,
+    replacements: Substitutions,
+}
+
+impl ExtractOptions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Judge entry names by these rules instead of the host's. Mostly for
+    /// tests, which is the whole reason the rules are data: this is what lets a
+    /// Mac extract an archive the way Windows would.
+    pub fn with_rules(mut self, rules: NameRules) -> Self {
+        self.rules = rules;
+        self
+    }
+
+    /// The caller's answers for the characters the host cannot write.
+    pub fn with_replacements(mut self, replacements: Substitutions) -> Self {
+        self.replacements = replacements;
+        self
+    }
+
+    pub fn rules(&self) -> NameRules {
+        self.rules
+    }
+
+    pub fn replacements(&self) -> &Substitutions {
+        &self.replacements
+    }
+}
+
+/// Which algorithm reads this archive, by file extension (not by magic bytes).
+fn algorithm_of(archive: &Path) -> Result<Algorithm, CompressionError> {
+    let ext = archive.extension().and_then(|e| e.to_str()).unwrap_or("");
+    Algorithm::from_extension(ext)
+        .ok_or_else(|| CompressionError::Failed(format!("Unknown archive extension: .{ext}")))
+}
+
+/// The entry names an archive holds, without extracting anything.
+fn list_entries(archive: &Path, algorithm: Algorithm) -> Result<Vec<String>, CompressionError> {
+    match algorithm {
+        Algorithm::SevenZ => list_7z_entries(archive),
+        Algorithm::Tar => list_tar_entries(archive),
+        Algorithm::Zip => list_zip_entries(archive),
+    }
+}
+
+/// What an archive holds that this machine cannot write as ordinary files.
+///
+/// Reads the listing and nothing else: no entry is decompressed and nothing is
+/// created, so a front end can ask this before it asks the user anything. Feed
+/// the answers back through [`ExtractOptions::with_replacements`].
+///
+/// An empty report ([`NameReport::is_empty`]) means extraction has no naming
+/// question to ask, which on Unix is nearly always the case.
+pub fn unwritable_names(archive: &Path) -> Result<NameReport, CompressionError> {
+    unwritable_names_with(archive, NameRules::host())
+}
+
+/// [`unwritable_names`] against a chosen set of rules, so a Mac can be asked
+/// what a Windows machine would refuse.
+pub fn unwritable_names_with(
+    archive: &Path,
+    rules: NameRules,
+) -> Result<NameReport, CompressionError> {
+    let algorithm = algorithm_of(archive)?;
+    let names = list_entries(archive, algorithm)?;
+    Ok(NameReport::of(&names, rules))
+}
+
 /// Extract an archive into `output_dir`.
 ///
-/// Returns the list of extracted file paths (relative to `output_dir`).
+/// Returns the list of extracted file paths (relative to `output_dir`), which
+/// are the names **as written**: an entry the host had to be given a different
+/// name for is reported under the name that is on disk, never under the
+/// archive's, or a front end would list files nobody can find.
+///
 /// The algorithm is detected from the archive file extension.
 pub fn extract(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
-    let ext = archive.extension().and_then(|e| e.to_str()).unwrap_or("");
+    extract_with(archive, output_dir, &ExtractOptions::default())
+}
 
-    let algorithm = Algorithm::from_extension(ext)
-        .ok_or_else(|| CompressionError::Failed(format!("Unknown archive extension: .{ext}")))?;
+/// [`extract`], with the caller's answers for the entry names this machine
+/// cannot write.
+///
+/// Naming is settled over the whole listing before the first byte is written,
+/// so the two answers nothing can recover from (a character with no
+/// replacement, and two entries that would land on one name) leave the output
+/// directory as they found it.
+pub fn extract_with(
+    archive: &Path,
+    output_dir: &Path,
+    options: &ExtractOptions,
+) -> Result<Vec<String>, CompressionError> {
+    let algorithm = algorithm_of(archive)?;
+    // Before the archive is even opened: an answer that is itself unwritable is
+    // wrong whether or not any entry needs it.
+    options.rules().check_replacements(options.replacements())?;
+    let plan = plan_for(archive, algorithm, options)?;
 
     match algorithm {
-        Algorithm::SevenZ => extract_7z(archive, output_dir),
-        Algorithm::Tar => extract_tar(archive, output_dir),
-        Algorithm::Zip => extract_zip(archive, output_dir),
+        Algorithm::SevenZ => self::sevenz::extract_7z_planned(archive, output_dir, &plan),
+        Algorithm::Tar => self::tar::extract_tar_planned(archive, output_dir, &plan),
+        Algorithm::Zip => self::zip::extract_zip_planned(archive, output_dir, &plan),
     }
+}
+
+/// Work out what every entry will be called, from the listing.
+///
+/// A listing that cannot be read is deliberately **not** an error here: the
+/// extractor is about to open the same archive and fail on it in its own
+/// vocabulary, which is the message this layer would otherwise replace with a
+/// worse one. Only a readable listing produces a plan.
+///
+/// It costs one listing per extraction, paid even when nothing needs renaming,
+/// because the only way to know that is to read the names. For zip and 7z that
+/// is a header read; for tar it is a second walk over the headers, seeking past
+/// each member rather than reading it.
+fn plan_for(
+    archive: &Path,
+    algorithm: Algorithm,
+    options: &ExtractOptions,
+) -> Result<NamePlan, CompressionError> {
+    let Ok(names) = list_entries(archive, algorithm) else {
+        return Ok(NamePlan::identity());
+    };
+    Ok(plan_names(&names, options.rules(), options.replacements())?)
 }

@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use tar::{Archive, Builder, EntryType};
 
-use super::{CompressionError, Verify};
+use super::{CompressionError, NamePlan, Verify};
 
 /// tar is an archive container without compression, so there is no level.
 pub fn compress_tar(source: &Path, output: &Path, arcname: &str) -> Result<(), CompressionError> {
@@ -104,7 +104,58 @@ pub(crate) fn read_tar_entries(
     Ok(names)
 }
 
+/// The names a tar holds that extraction would write, walking the headers and
+/// skipping the data.
+///
+/// Filtered the same way [`extract_tar`] filters, so a caller asking what an
+/// archive contains is never told about an entry that would be skipped. It
+/// seeks past each member rather than reading it, which is what keeps a listing
+/// cheap on a large archive; [`read_tar_entries`] deliberately does not, since
+/// reading every byte is half of what verification is for.
+pub(crate) fn list_tar_entries(archive: &Path) -> Result<Vec<String>, CompressionError> {
+    let file = File::open(archive)?;
+    let mut ar = Archive::new(file);
+    let entries = ar
+        .entries_with_seek()
+        .map_err(|e| CompressionError::Failed(e.to_string()))?;
+
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| CompressionError::Failed(e.to_string()))?;
+        let entry_type = entry.header().entry_type();
+        if entry_type != EntryType::Regular && entry_type != EntryType::Directory {
+            continue;
+        }
+        names.push(
+            entry
+                .path()
+                .map_err(|e| CompressionError::Failed(e.to_string()))?
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+    Ok(names)
+}
+
 pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
+    extract_tar_planned(archive, output_dir, &NamePlan::identity())
+}
+
+/// [`extract_tar`], writing each entry under the name `plan` gives it.
+///
+/// Two write paths, and the split is deliberate. `unpack_in` derives the
+/// destination from the entry's own name, so it cannot write a renamed entry at
+/// all; but it is also the traversal guard tar has always used, and the
+/// canonicalizing containment check inside it is what stops a write from
+/// following a symlink that was already sitting in the output directory. So an
+/// entry whose name is unchanged still goes through it, exactly as before, and
+/// only a renamed one is unpacked to an explicit destination, with the same
+/// containment check made here.
+pub(crate) fn extract_tar_planned(
+    archive: &Path,
+    output_dir: &Path,
+    plan: &NamePlan,
+) -> Result<Vec<String>, CompressionError> {
     fs::create_dir_all(output_dir)?;
     let canonical_output = output_dir.canonicalize()?;
 
@@ -125,35 +176,81 @@ pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Com
 
         // Only ever materialize regular files and directories. Symlinks,
         // hardlinks and special nodes are skipped so extraction never plants
-        // an outbound link in the output tree — the same "no links" guarantee
-        // zip/7z give (they write link entries as regular files).
+        // an outbound link in the output tree, the same "no links" guarantee
+        // zip/7z give (they write link entries as regular files). Checked
+        // before anything else about the name, so an entry that is not going to
+        // be written is not judged either.
         let entry_type = entry.header().entry_type();
         if entry_type != EntryType::Regular && entry_type != EntryType::Directory {
             continue;
         }
 
-        // unpack_in refuses entries whose path would escape the output dir.
-        let unpacked = entry
-            .unpack_in(&canonical_output)
-            .map_err(|e| CompressionError::Failed(e.to_string()))?;
-        if !unpacked {
-            return Err(CompressionError::Failed(format!(
-                "Path traversal detected in archive entry: {name}"
-            )));
+        // The path unpack_in would write to: its `Normal` components, with a
+        // root or a drive stripped. `..` is refused here rather than left to
+        // unpack_in's `Ok(false)`, because the renamed branch below never calls
+        // unpack_in and would otherwise have no guard at all.
+        let natural = normal_path(&name).ok_or_else(|| {
+            CompressionError::Failed(format!("Path traversal detected in archive entry: {name}"))
+        })?;
+        if natural.as_os_str().is_empty() {
+            // Nothing but `.` or a root: unpack_in treats it as an empty name
+            // and writes nothing, and neither do we.
+            continue;
         }
 
-        if entry_type == EntryType::Regular {
-            // The traversal guard is unpack_in itself (it refuses `..` and
-            // strips root/cur-dir before writing). Report the path it actually
-            // wrote by keeping only the normal components, relative to output_dir.
-            let written: PathBuf = Path::new(&name)
-                .components()
-                .filter(|c| matches!(c, Component::Normal(_)))
-                .collect();
-            if !written.as_os_str().is_empty() {
-                extracted.push(written.to_string_lossy().to_string());
+        match plan.written_as(&name) {
+            None => {
+                let unpacked = entry
+                    .unpack_in(&canonical_output)
+                    .map_err(|e| CompressionError::Failed(e.to_string()))?;
+                if !unpacked {
+                    return Err(CompressionError::Failed(format!(
+                        "Path traversal detected in archive entry: {name}"
+                    )));
+                }
+                if entry_type == EntryType::Regular {
+                    extracted.push(natural.to_string_lossy().to_string());
+                }
+            }
+            Some(rel) => {
+                let dest = canonical_output.join(rel);
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent).map_err(|e| super::entry_error(&name, &dest, e))?;
+                    // What unpack_in's `validate_inside_dst` does: resolve the
+                    // directory being written into and refuse one that turned
+                    // out to be somewhere else.
+                    let resolved = parent
+                        .canonicalize()
+                        .map_err(|e| super::entry_error(&name, &dest, e))?;
+                    if !resolved.starts_with(&canonical_output) {
+                        return Err(CompressionError::Failed(format!(
+                            "Path traversal detected in archive entry: {name}"
+                        )));
+                    }
+                }
+                entry
+                    .unpack(&dest)
+                    .map_err(|e| super::entry_error(&name, &dest, e))?;
+                if entry_type == EntryType::Regular {
+                    extracted.push(rel.to_string_lossy().to_string());
+                }
             }
         }
     }
     Ok(extracted)
+}
+
+/// An entry's path reduced to the components tar would write: `Normal` ones
+/// only, a root or drive prefix dropped, `.` dropped, and `None` for any `..`,
+/// which is the traversal `unpack_in` refuses.
+fn normal_path(name: &str) -> Option<PathBuf> {
+    let mut safe = PathBuf::new();
+    for component in Path::new(name).components() {
+        match component {
+            Component::Normal(part) => safe.push(part),
+            Component::ParentDir => return None,
+            Component::CurDir | Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+    Some(safe)
 }

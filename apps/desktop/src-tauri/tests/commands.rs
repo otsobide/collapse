@@ -3,16 +3,19 @@
 //!
 //! A `#[tauri::command]` is an ordinary function, so these drive the real
 //! commands in-process and assert what lands on disk. Nothing here starts a
-//! server; the remote branch of `compress_path` is `tests/remote.rs`'s job.
+//! server; the remote branch of `compress_path` is `tests/remote.rs`'s job,
+//! and `extract_archive`'s other half, the archive holding a name this host
+//! cannot write, is `tests/names.rs`'s.
 //!
 //! Every command reports failure as a plain `String` (the backend errors are
 //! stringified with `.to_string()`, and `Algorithm`'s own `FromStr` already
 //! yields one), so the assertions match on the message, not on a variant.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use collapse_desktop::commands::{compress_path, extract_archive, is_directory};
+use collapse_desktop::commands::{compress_path, extract_archive, is_directory, Extraction};
 use tempfile::TempDir;
 
 /// The three formats the UI offers. The wire spelling doubles as the archive
@@ -92,11 +95,21 @@ fn compress_local_with(
     )
 }
 
+/// Extract with no answers, which is every archive in this file: none of them
+/// carries a name this host cannot write, so `Extraction` can only be the
+/// `Extracted` arm and the naming question is `tests/names.rs`'s subject.
 fn extract_to(archive: &Path, output_dir: &Path) -> Result<Vec<String>, String> {
-    extract_archive(
+    match extract_archive(
         archive.to_string_lossy().into_owned(),
         output_dir.to_string_lossy().into_owned(),
-    )
+        BTreeMap::new(),
+    )? {
+        Extraction::Extracted { files } => Ok(files),
+        Extraction::NameProblem { message } => panic!(
+            "{} holds a name this host cannot write, which no fixture here intends: {message}",
+            archive.display()
+        ),
+    }
 }
 
 /// Normalize and sort an extracted listing so the expectations read the same

@@ -188,8 +188,8 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (519 Rust tests + 83 Vitest cases)
-make test/rust         # only the Rust tests that need no Node toolchain (422)
+make test              # run every suite (578 Rust tests + 112 Vitest cases)
+make test/rust         # only the Rust tests that need no Node toolchain (463)
 ```
 
 `make test` includes the desktop app's own Rust suite, which compiles Tauri, so

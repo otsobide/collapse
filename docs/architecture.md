@@ -72,6 +72,30 @@ below.
 | `compression/zip.rs` | ZIP backend: `compress_zip`, `compress_zip_dir`, `extract_zip`. |
 | `compression/tar.rs` | tar backend: `compress_tar`, `compress_tar_dir`, `extract_tar`. |
 
+### `src/compression/names.rs` — what this filesystem will not write
+
+Extraction only: names produced when compressing come from the local
+filesystem and are legal there by construction.
+
+`NameRules` is **data, not `cfg`**. `NameRules::windows()` can be asked for on
+any platform, so every Windows rule is tested from a Mac, and only
+`NameRules::host()` is chosen by the compiler. A rule reachable solely under
+`#[cfg(windows)]` is a rule this repository cannot test.
+
+It answers with structure rather than a string, because a front end has to
+render it: each offending character (and whether the host **rejects** it or
+**reinterprets** it, which is the difference between a colon failing and a
+colon quietly becoming an NTFS stream), a trailing dot or space, and a reserved
+device name. Only the first is a question for the user; the other two are
+adjustments that need explaining, not answering.
+
+`unwritable_names` inspects a listing without extracting, and `extract_with`
+takes the answers. Replacements are applied **before** the structural
+adjustments, or `CO?1` answered with `M` would be left as the device `COM1`.
+An answer that is itself unwritable, carries a path separator, or empties a
+component is refused, and a collision is refused naming both entries rather
+than silently renaming one.
+
 ### `src/paths.rs` — the guards both front ends share
 
 Not part of compressing anything, but it lives here because both front ends

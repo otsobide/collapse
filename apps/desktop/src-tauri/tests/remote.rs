@@ -16,11 +16,12 @@
 //! tests that have to rule out a local fallback assert on that log. It is the
 //! one piece of evidence such a fallback cannot fake.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use collapse_core::compression::compress_tar_dir;
-use collapse_desktop::commands::{check_server, compress_path, extract_archive};
+use collapse_desktop::commands::{check_server, compress_path, extract_archive, Extraction};
 
 // ------------------------------------------------------------------ harness --
 
@@ -219,8 +220,14 @@ fn compress_locally(source: &Path, output: &Path, format: &str, level: u32) -> S
 /// The normalized name still reads the file, because `Path::join` accepts a
 /// forward slash on Windows too.
 fn extracted(archive: &Path, into: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut files: Vec<String> = extract_archive(text(archive), text(into))
-        .expect("the archive extracts cleanly")
+    // No answers to give: these archives are built from real files on this
+    // machine, so every name in them is one this machine can write.
+    let outcome = extract_archive(text(archive), text(into), BTreeMap::new())
+        .expect("the archive extracts cleanly");
+    let Extraction::Extracted { files } = outcome else {
+        panic!("a locally built archive asked a naming question: {outcome:?}");
+    };
+    let mut files: Vec<String> = files
         .into_iter()
         .map(|name| name.replace('\\', "/"))
         .collect();
