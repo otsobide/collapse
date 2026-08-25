@@ -9,8 +9,9 @@ use std::path::Path;
 
 use collapse_core::compression::{
     compress_7z_dir, compress_tar_dir, compress_zip_dir, extract_7z, extract_tar, extract_zip,
+    NameRules, Substitutions,
 };
-use collapse_core::{extract, Algorithm, Verify};
+use collapse_core::{extract, extract_with, Algorithm, ExtractOptions, Verify};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 use tar::{Builder, EntryType, Header};
 use zip::write::SimpleFileOptions;
@@ -565,6 +566,99 @@ fn sevenz_rejects_malicious_entry_after_benign_ones() {
     }
     let out = dir.path().join("out");
     assert_contained(extract_7z(&archive, &out), &dir.path().join("escape.txt"));
+}
+
+// -- entry names Windows accepts and reads as something other than a file --
+
+/// Names whose colon Win32 reads as alternate data stream syntax rather than as
+/// part of a file name: the first attaches a payload to a file an archive can
+/// extract legitimately alongside it (`Zone.Identifier` among the streams it
+/// could overwrite), the second attaches one to the output directory itself.
+///
+/// Both are ordinary, if odd, file names on Unix, so the assertions split by
+/// platform: refusing them there would be a bug of its own.
+const STREAM_SHAPED_NAMES: [&str; 2] = ["notes.txt:hidden", ":hidden"];
+
+#[test]
+fn no_format_writes_an_entry_name_with_a_colon_as_a_stream() {
+    for (ext, build) in [
+        ("zip", malicious_zip as fn(&Path, &str)),
+        ("7z", malicious_7z),
+        ("tar", malicious_tar),
+    ] {
+        for name in STREAM_SHAPED_NAMES {
+            let dir = tempfile::TempDir::new().unwrap();
+            let archive = dir.path().join(format!("stream.{ext}"));
+            build(&archive, name);
+            let out = dir.path().join("out");
+
+            let result = extract(&archive, &out);
+
+            if cfg!(windows) {
+                // The host would take this name and write the bytes somewhere
+                // no listing shows, so extraction stops and says which entry
+                // and which character (issue #63). Nothing is written at all:
+                // the naming pass runs before the output directory exists.
+                let message = match result {
+                    Err(err) => err.to_string(),
+                    Ok(files) => panic!("{ext}/{name}: must be refused, wrote {files:?}"),
+                };
+                assert!(message.contains(name), "{ext}/{name}: {message}");
+                assert!(message.contains(':'), "{ext}/{name}: {message}");
+                assert!(
+                    !out.exists() || std::fs::read_dir(&out).unwrap().next().is_none(),
+                    "{ext}/{name}: something was written before the refusal"
+                );
+            } else {
+                // One contained file, named exactly as the archive spells it.
+                let files =
+                    result.unwrap_or_else(|e| panic!("{ext}/{name}: a legal Unix name, got {e}"));
+                assert_eq!(listing(files), vec![name.to_string()], "{ext}/{name}");
+                assert!(out.join(name).is_file(), "{ext}/{name}");
+            }
+            // Whatever the platform made of it, nothing landed beside `out`,
+            // and in particular no carrier file appeared next to the archive.
+            assert!(
+                !dir.path().join("notes.txt").exists(),
+                "{ext}/{name}: a file was written outside the output directory"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_replacement_cannot_carry_an_entry_out_of_the_output_directory() {
+    // The answer the user gives is put inside a name that containment has
+    // already cleared, so an unchecked replacement is a traversal by the back
+    // door: `?` answered with `../..` would write above the output directory
+    // with nothing left to notice it.
+    for (ext, build) in [
+        ("zip", malicious_zip as fn(&Path, &str)),
+        ("7z", malicious_7z),
+        ("tar", malicious_tar),
+    ] {
+        for replacement in ["../../escape", "/escape", r"..\..\escape"] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let archive = dir.path().join(format!("q.{ext}"));
+            build(&archive, "sub/a?b.txt");
+            let out = dir.path().join("out");
+
+            let options = ExtractOptions::new()
+                .with_rules(NameRules::windows())
+                .with_replacements(Substitutions::new().with('?', replacement));
+            let result = extract_with(&archive, &out, &options);
+
+            assert!(
+                result.is_err(),
+                "{ext}: {replacement:?} was accepted as a replacement"
+            );
+            assert!(
+                !dir.path().join("escape").exists()
+                    && !dir.path().join("..").join("escape").exists(),
+                "{ext}: {replacement:?} wrote outside the output directory"
+            );
+        }
+    }
 }
 
 // -- compression: archiving a directory must never follow a symlink out of

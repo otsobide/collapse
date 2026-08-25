@@ -5,7 +5,7 @@ use std::path::Path;
 use sevenz_rust2::lzma::LZMA2Options;
 use sevenz_rust2::{SevenZArchiveEntry, SevenZMethod, SevenZMethodConfiguration, SevenZWriter};
 
-use super::{CompressionError, Verify};
+use super::{CompressionError, NamePlan, Verify};
 
 /// API level (1–5) → LZMA2 preset (1–9).
 const SEVENZ_PRESETS: [u32; 5] = [1, 3, 5, 7, 9];
@@ -240,39 +240,83 @@ pub fn compress_7z_dir(
     Ok(())
 }
 
+/// The names a 7z holds, decoding its header and no entry.
+///
+/// The one format where reading a listing to plan names and reading one to
+/// verify an archive are the same operation with the same error vocabulary
+/// (zip and tar each need their own; see their `list_*` functions), so this is
+/// [`read_7z_entries`] at [`Verify::Index`] rather than a second copy of it.
+pub(crate) fn list_7z_entries(archive: &Path) -> Result<Vec<String>, CompressionError> {
+    read_7z_entries(archive, Verify::Index)
+}
+
 pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
+    extract_7z_planned(archive, output_dir, &NamePlan::identity())
+}
+
+/// [`extract_7z`], writing each entry under the name `plan` gives it.
+pub(crate) fn extract_7z_planned(
+    archive: &Path,
+    output_dir: &Path,
+    plan: &NamePlan,
+) -> Result<Vec<String>, CompressionError> {
     fs::create_dir_all(output_dir)?;
     let canonical_output = output_dir.canonicalize()?;
 
     let file = std::fs::File::open(archive)?;
 
+    // A write failure has to come back with the entry that caused it, and the
+    // callback can only fail with the dependency's own error type, whose
+    // variants have no room for that. So the real error is set aside here and
+    // the callback returns a placeholder that never reaches a user: it is
+    // replaced below, before the dependency's own error is even looked at.
+    let mut write_failure: Option<CompressionError> = None;
+
     // Validate each entry name and write it ourselves, so a malicious name is
     // rejected *before* any bytes reach disk. (`decompress` writes first and
     // asks questions later, which lets `..` entries escape output_dir.)
     let mut extracted = Vec::new();
-    sevenz_rust2::decompress_with_extract_fn(file, &canonical_output, |entry, reader, _dest| {
-        let name = entry.name().to_string();
-        let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
-            sevenz_rust2::Error::other(format!("Path traversal detected in archive entry: {name}"))
-        })?;
-        let dest = canonical_output.join(&rel);
+    let outcome = sevenz_rust2::decompress_with_extract_fn(
+        file,
+        &canonical_output,
+        |entry, reader, _dest| {
+            let name = entry.name().to_string();
+            let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
+                sevenz_rust2::Error::other(format!(
+                    "Path traversal detected in archive entry: {name}"
+                ))
+            })?;
+            // See `extract_zip_planned`: a planned path is built from this
+            // entry's own `Normal` components, so it stays inside the output.
+            let rel = plan.written_as(&name).map_or(rel, Path::to_path_buf);
+            let dest = canonical_output.join(&rel);
 
-        if entry.is_directory() {
-            fs::create_dir_all(&dest).map_err(sevenz_rust2::Error::io)?;
-        } else {
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).map_err(sevenz_rust2::Error::io)?;
+            let mut failed = |e: std::io::Error| {
+                write_failure = Some(super::entry_error(&name, &dest, e));
+                sevenz_rust2::Error::other("the entry could not be written")
+            };
+
+            if entry.is_directory() {
+                fs::create_dir_all(&dest).map_err(&mut failed)?;
+            } else {
+                if let Some(parent) = dest.parent() {
+                    fs::create_dir_all(parent).map_err(&mut failed)?;
+                }
+                let mut buf = Vec::new();
+                reader
+                    .read_to_end(&mut buf)
+                    .map_err(sevenz_rust2::Error::io)?;
+                fs::write(&dest, &buf).map_err(&mut failed)?;
+                extracted.push(rel.to_string_lossy().to_string());
             }
-            let mut buf = Vec::new();
-            reader
-                .read_to_end(&mut buf)
-                .map_err(sevenz_rust2::Error::io)?;
-            fs::write(&dest, &buf).map_err(sevenz_rust2::Error::io)?;
-            extracted.push(rel.to_string_lossy().to_string());
-        }
-        Ok(true)
-    })
-    .map_err(from_sevenz)?;
+            Ok(true)
+        },
+    );
+
+    if let Some(failure) = write_failure {
+        return Err(failure);
+    }
+    outcome.map_err(from_sevenz)?;
 
     Ok(extracted)
 }
