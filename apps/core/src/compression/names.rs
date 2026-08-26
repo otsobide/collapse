@@ -27,19 +27,25 @@
 //! `NUL`), and the superscript digits `¹²³` count as digits in `COM#`/`LPT#`.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use thiserror::Error;
 
-/// Characters Win32 refuses in a file name outright, minus the two separators.
+/// Characters Win32 refuses in a file name outright, minus the one separator.
 ///
-/// `/` and `\` are on the documented list as well, and are deliberately absent
-/// here: a [`NameRules`] judges one *component* of a path, and splitting a name
-/// into components is the caller's job (extraction does it while checking for
-/// traversal). Reporting a separator as an offending character would ask the
-/// user to replace something that is not in any name we ever check.
-const WINDOWS_REJECTED: &[char] = &['<', '>', '"', '|', '?', '*'];
+/// `/` is on the documented list as well and is deliberately absent here: it is
+/// the separator **the archive formats define** (ZIP APPNOTE 4.4.17.1, and tar
+/// by convention), so [`entry_components`] has already split on it and no
+/// component reaching a [`NameRules`] can contain one. Reporting it would ask
+/// the user to replace something that is not in any name we ever check.
+///
+/// `\` is a different case and belongs here. It is *not* an archive separator,
+/// so it arrives as an ordinary character inside a component, and Windows
+/// genuinely cannot hold it: there it is a path separator, which is precisely
+/// why the component cannot carry one. Unix can, and does (see [`UNIX_REJECTED`]),
+/// which is the whole reason this is a rule and not a constant.
+const WINDOWS_REJECTED: &[char] = &['<', '>', '"', '|', '?', '*', '\\'];
 
 /// The colon is not refused by Win32, it is *honoured*: `notes.txt:hidden` names
 /// the `hidden` alternate data stream of `notes.txt`, so the write succeeds, the
@@ -182,12 +188,13 @@ impl NameRules {
     /// [`Self::problems`] over every component of an entry name, deduplicated:
     /// a `?` in two components is one question, not two.
     ///
-    /// Components that are not `Normal` (a root, a drive, `.`, `..`) are
-    /// skipped. They are containment's business, not this module's, and
-    /// extraction settles them before it gets here.
+    /// Split on `/` by [`entry_components`], so the answer does not depend on
+    /// which machine is asking. Empty components, `.` and `..` are skipped:
+    /// they are containment's business, not this module's, and extraction
+    /// settles them before it gets here.
     pub fn entry_problems(&self, name: &str) -> Vec<NameProblem> {
         let mut problems: Vec<NameProblem> = Vec::new();
-        for component in normal_components(name) {
+        for component in entry_components(name) {
             for problem in self.problems(component) {
                 if !problems.contains(&problem) {
                     problems.push(problem);
@@ -249,11 +256,22 @@ impl NameRules {
         // `..`, which would climb out of the output directory, and an empty
         // answer can leave nothing at all. A caller cannot reach the write path
         // without coming through here.
+        //
+        // `/` is checked structurally because it is the archive separator and so
+        // is in no ruleset; a component holding one would silently become two.
+        // A backslash is deliberately **not** checked here any more. It used to
+        // be, on the premise that a separator could only appear because a
+        // replacement put it there, and that premise was wrong twice over:
+        // `check_replacement` already refuses both separators before either is
+        // pushed, so the test could not fire for its stated reason, and on Unix
+        // a backslash is an ordinary, legal character, so the only thing it ever
+        // caught was a name the host could hold perfectly well. Windows cannot,
+        // and says so through `can_write` below, because the backslash is in
+        // WINDOWS_REJECTED where it belongs.
         let unnameable = written.is_empty()
             || written == "."
             || written == ".."
             || written.contains('/')
-            || written.contains('\\')
             || !self.can_write(&written);
         if unnameable {
             return Err(NameError::Unnameable {
@@ -267,7 +285,7 @@ impl NameRules {
 
     /// [`Self::rewrite`] over a whole entry name, rebuilt as a relative path.
     ///
-    /// **Not a traversal guard**: components that are not `Normal` are dropped,
+    /// **Not a traversal guard**: `.`, `..` and empty components are dropped,
     /// exactly as `unpack_in` drops a root and as `sanitize_entry_path` reduces
     /// a name to what is left. Callers check containment first; all three
     /// extractors in this crate do.
@@ -277,7 +295,7 @@ impl NameRules {
         replacements: &Substitutions,
     ) -> Result<PathBuf, NameError> {
         let mut written = PathBuf::new();
-        for component in normal_components(name) {
+        for component in entry_components(name) {
             written.push(
                 self.rewrite(component, replacements)
                     .map_err(|e| e.in_entry(name))?,
@@ -715,14 +733,37 @@ pub(crate) fn plan_names<S: AsRef<str>>(
 /// The relative path an extractor derives from an entry name with no rules
 /// applied: its `Normal` components and nothing else.
 fn natural_path(name: &str) -> PathBuf {
-    normal_components(name).collect()
+    entry_components(name).collect()
 }
 
-fn normal_components(name: &str) -> impl Iterator<Item = &str> {
-    Path::new(name).components().filter_map(|c| match c {
-        // A component of a `&str` path is always valid UTF-8, so `to_str` never
-        // drops one here.
-        Component::Normal(part) => part.to_str(),
-        _ => None,
-    })
+/// Split an archive entry name into its components, the same way on every host.
+///
+/// **The separator is `/`, always.** An archive entry name is not a host path:
+/// ZIP mandates the forward slash (APPNOTE 4.4.17.1) and tar has used it since
+/// v7, so an entry means the same thing whatever machine reads it, and this
+/// module has to agree with that rather than with the local convention.
+///
+/// It used to be `Path::new(name).components()`, and that was wrong in both
+/// directions at once, because `std::path` is `#[cfg]`-dependent while
+/// [`NameRules`] is data:
+///
+/// * on Windows, `\` is a separator, so `dir\file.txt` split into two
+///   components; on Unix it is an ordinary character, so the same entry was one
+///   component that [`NameRules::rewrite`] then refused, and a legal Unix file
+///   name became an archive this crate could build but not extract;
+/// * on Windows, a leading `a:` parses as a drive prefix, and a prefix is not a
+///   `Normal` component, so it was silently *discarded*: `a:b/c.txt` was judged,
+///   reported and written as `b/c.txt`. That hole was in the colon handling that
+///   issue #63 exists for, on the only platform issue #63 is about.
+///
+/// Splitting here instead means `NameRules::windows()` answers the same question
+/// on a Mac as on Windows, which is the property the whole design rests on.
+///
+/// Empty components, `.` and `..` are skipped, exactly as the `Component` filter
+/// skipped everything that was not `Normal`. **This is not a traversal guard**:
+/// containment is [`super::sanitize_entry_path`]'s job and it rejects, rather
+/// than skips, the same input.
+fn entry_components(name: &str) -> impl Iterator<Item = &str> {
+    name.split('/')
+        .filter(|part| !part.is_empty() && *part != "." && *part != "..")
 }
