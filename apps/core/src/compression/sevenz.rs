@@ -286,27 +286,37 @@ pub(crate) fn extract_7z_planned(
                     "Path traversal detected in archive entry: {name}"
                 ))
             })?;
-            // See `extract_zip_planned`: a planned path is built from this
-            // entry's own `Normal` components, so it stays inside the output.
+            // See `extract_zip_planned`: the plan renames inside the output,
+            // and `ensure_inside` below is the backstop.
             let rel = plan.written_as(&name).map_or(rel, Path::to_path_buf);
             let dest = canonical_output.join(&rel);
 
-            let mut failed = |e: std::io::Error| {
-                write_failure = Some(super::entry_error(&name, &dest, e));
+            // The callback can only fail with sevenz's own error type, so the
+            // real one is stashed for the caller and a placeholder returned.
+            let mut stash = |e: CompressionError| {
+                write_failure = Some(e);
                 sevenz_rust2::Error::other("the entry could not be written")
             };
 
             if entry.is_directory() {
-                fs::create_dir_all(&dest).map_err(&mut failed)?;
+                fs::create_dir_all(&dest)
+                    .map_err(|e| super::entry_error(&name, &dest, e))
+                    .and_then(|()| super::ensure_inside(&canonical_output, &dest, &name))
+                    .map_err(&mut stash)?;
             } else {
                 if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent).map_err(&mut failed)?;
+                    fs::create_dir_all(parent)
+                        .map_err(|e| super::entry_error(&name, &dest, e))
+                        .and_then(|()| super::ensure_inside(&canonical_output, parent, &name))
+                        .map_err(&mut stash)?;
                 }
                 let mut buf = Vec::new();
                 reader
                     .read_to_end(&mut buf)
                     .map_err(sevenz_rust2::Error::io)?;
-                fs::write(&dest, &buf).map_err(&mut failed)?;
+                fs::write(&dest, &buf)
+                    .map_err(|e| super::entry_error(&name, &dest, e))
+                    .map_err(&mut stash)?;
                 extracted.push(rel.to_string_lossy().to_string());
             }
             Ok(true)

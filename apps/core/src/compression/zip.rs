@@ -181,17 +181,21 @@ pub(crate) fn extract_zip_planned(
         let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
             CompressionError::Failed(format!("Path traversal detected in archive entry: {name}"))
         })?;
-        // The plan is built from the same names, and every path in it is made
-        // of the entry's own `Normal` components, so it can only ever rename
-        // inside the output directory.
+        // The plan is built from the same name, one component at a time, so it
+        // can only rename inside the output directory. `ensure_inside` below is
+        // the backstop for the cases a lexical rule cannot reach: a caller that
+        // judged the name under another host's rules, and a symlink already
+        // sitting in the output.
         let rel = plan.written_as(&name).map_or(rel, Path::to_path_buf);
         let dest = canonical_output.join(&rel);
 
         if entry.is_dir() {
             fs::create_dir_all(&dest).map_err(|e| super::entry_error(&name, &dest, e))?;
+            super::ensure_inside(&canonical_output, &dest, &name)?;
         } else {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).map_err(|e| super::entry_error(&name, &dest, e))?;
+                super::ensure_inside(&canonical_output, parent, &name)?;
             }
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf)?;

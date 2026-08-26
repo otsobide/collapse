@@ -265,8 +265,11 @@ fn a_failing_entry_names_itself_in_the_error() {
         message.contains("x/y.txt"),
         "the entry that could not be written is named: {message}"
     );
+    // See the twin in apps/core/tests/names.rs: on Windows the message is built
+    // from a canonicalized root, so compare against what was actually resolved.
+    let resolved = out.canonicalize().unwrap_or_else(|_| out.clone());
     assert!(
-        message.contains(&out.display().to_string()),
+        message.contains(&resolved.display().to_string()),
         "and where it was going: {message}"
     );
 }

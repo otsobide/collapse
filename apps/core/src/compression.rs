@@ -37,7 +37,24 @@ pub(crate) fn sanitize_entry_path(name: &str) -> Option<PathBuf> {
     let mut safe = PathBuf::new();
     for component in Path::new(name).components() {
         match component {
-            Component::Normal(part) => safe.push(part),
+            Component::Normal(part) => {
+                // `PathBuf::push` **replaces** what it holds when handed a path
+                // carrying a prefix, and Windows reads any `x:` at the start of
+                // a component as a drive. A prefix is only parsed at the head of
+                // a whole path, so `docs/c:evil.txt` offers no `Prefix` component
+                // for the arm below to reject, yet pushing its second component
+                // discards `docs` and leaves `c:evil.txt`: a drive-relative path
+                // that resolves against the current directory of C:, not the
+                // output directory. Re-parsing each part and demanding it still
+                // be exactly one `Normal` component is what closes that, and it
+                // leaves Unix (where the same string is an ordinary file name)
+                // untouched.
+                let mut parts = Path::new(part).components();
+                match (parts.next(), parts.next()) {
+                    (Some(Component::Normal(only)), None) if only == part => safe.push(only),
+                    _ => return None,
+                }
+            }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
         }
@@ -90,6 +107,35 @@ pub enum CompressionError {
     /// resolve one.
     #[error(transparent)]
     Name(#[from] NameError),
+}
+
+/// Refuse a destination that resolved to somewhere outside the output directory.
+///
+/// A lexical check on an entry name cannot see two things: a component the
+/// host's path parser reads differently from the way the name was judged, and a
+/// symlink that was already sitting in the output directory before extraction
+/// began. Resolving the directory that was just created and requiring it to
+/// still be inside covers both, and it is what tar's `unpack_in` has always
+/// done through `validate_inside_dst`. zip and 7z had no equivalent at all: they
+/// joined a sanitized path and wrote.
+///
+/// `output` must already be canonical, and `resolved` must exist, so call this
+/// after the parent directory has been created and before anything is written
+/// into it.
+pub(crate) fn ensure_inside(
+    output: &Path,
+    resolved: &Path,
+    entry: &str,
+) -> Result<(), CompressionError> {
+    let real = resolved
+        .canonicalize()
+        .map_err(|e| entry_error(entry, resolved, e))?;
+    if !real.starts_with(output) {
+        return Err(CompressionError::Failed(format!(
+            "Path traversal detected in archive entry: {entry}"
+        )));
+    }
+    Ok(())
 }
 
 /// Attach the entry and the destination to an IO failure at a write site.
