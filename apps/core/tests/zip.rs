@@ -82,6 +82,30 @@ fn all_levels_produce_valid_zip() {
     }
 }
 
+/// `compress_zip` used to call `File::create(output)` before opening the
+/// source, so a source that could not be read left a zero-byte `.zip` sitting
+/// where the archive should have been: a file the same CLI then refused to
+/// extract, and one that a `--force` guard would later see as an archive worth
+/// asking about. Reordering the two is what removed it.
+///
+/// Reinstate the old order and this fails on `!archive.exists()`.
+#[test]
+fn a_source_that_cannot_be_read_leaves_no_stub_archive() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("out.zip");
+
+    let err = compress_zip(&dir.path().join("ghost.txt"), &archive, "ghost.txt", 1).unwrap_err();
+
+    assert!(
+        matches!(err, collapse_core::CompressionError::Io(ref io) if io.kind() == std::io::ErrorKind::NotFound),
+        "expected a NotFound Io, got {err:?}"
+    );
+    assert!(
+        !archive.exists(),
+        "a zero-byte archive was left at the output path"
+    );
+}
+
 // -- extract_zip tests --
 
 #[test]

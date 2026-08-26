@@ -19,11 +19,11 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use collapse_core::Algorithm;
 
-use crate::models::{Envelope, Job, JobStatus};
+use crate::models::{Envelope, Job, JobStatus, Verify};
 
 /// Stamped in `PRAGMA user_version`. Bump it when the schema changes, and add
 /// the migration that takes the previous version there.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// File name of the database inside the registry directory.
 pub const DATABASE_FILE: &str = "jobs.db";
@@ -141,9 +141,9 @@ impl Registry {
         let now = now();
         self.connection.lock().unwrap().execute(
             "INSERT OR REPLACE INTO jobs
-                 (job_id, name, archive_name, algorithm, level, envelope,
+                 (job_id, name, archive_name, algorithm, level, envelope, verify,
                   status, error_message, created_at, updated_at, server_version)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)",
             params![
                 job.job_id,
                 job.name,
@@ -151,6 +151,7 @@ impl Registry {
                 job.algorithm.to_string(),
                 job.level,
                 job.envelope.to_string(),
+                job.verify.to_string(),
                 job.status.to_string(),
                 job.error_message,
                 now,
@@ -167,7 +168,7 @@ impl Registry {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT job_id, name, archive_name, algorithm, level, envelope,
+                "SELECT job_id, name, archive_name, algorithm, level, envelope, verify,
                         status, error_message, server_version
                  FROM jobs WHERE job_id = ?1",
                 params![job_id],
@@ -289,6 +290,7 @@ fn migrate(connection: &Connection) -> Result<()> {
                  algorithm      TEXT NOT NULL,
                  level          INTEGER NOT NULL,
                  envelope       TEXT NOT NULL,
+                 verify         TEXT NOT NULL DEFAULT 'index',
                  status         TEXT NOT NULL,
                  error_message  TEXT,
                  created_at     INTEGER NOT NULL,
@@ -297,10 +299,28 @@ fn migrate(connection: &Connection) -> Result<()> {
              );
              CREATE INDEX IF NOT EXISTS jobs_status ON jobs (status);",
         )?;
-    } else if version < 2 {
-        // 1 -> 2: rows record the build that wrote them, so a value this
-        // build cannot read can say where it came from.
-        connection.execute_batch("ALTER TABLE jobs ADD COLUMN server_version TEXT;")?;
+    } else {
+        // One `if` per step, applied in order, so a database three versions
+        // behind is walked all the way forward rather than only one hop.
+        if version < 2 {
+            // 1 -> 2: rows record the build that wrote them, so a value this
+            // build cannot read can say where it came from.
+            connection.execute_batch("ALTER TABLE jobs ADD COLUMN server_version TEXT;")?;
+        }
+        if version < 3 {
+            // 2 -> 3: how deeply to check the finished archive is the client's
+            // choice per job, and the worker is handed nothing but a job id, so
+            // the choice has to be in the row.
+            //
+            // Existing rows read `index`, the floor. It is not a guess about
+            // what the older build did (it verified nothing at all): the value
+            // is only ever read for a job the worker still has to run, and the
+            // startup reconciliation fails every job left queued or
+            // compressing, so no migrated row ever reaches the worker.
+            connection.execute_batch(
+                "ALTER TABLE jobs ADD COLUMN verify TEXT NOT NULL DEFAULT 'index';",
+            )?;
+        }
     }
 
     connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -333,6 +353,7 @@ struct RawJob {
     algorithm: String,
     level: u32,
     envelope: String,
+    verify: String,
     status: String,
     error_message: Option<String>,
     server_version: Option<String>,
@@ -361,6 +382,10 @@ impl RawJob {
             .envelope
             .parse::<Envelope>()
             .map_err(|_| unreadable("envelope", &self.envelope))?;
+        let verify = self
+            .verify
+            .parse::<Verify>()
+            .map_err(|_| unreadable("verify", &self.verify))?;
         let status = self
             .status
             .parse::<JobStatus>()
@@ -373,6 +398,7 @@ impl RawJob {
             algorithm,
             level: self.level,
             envelope,
+            verify,
             status,
             error_message: self.error_message,
         })
@@ -387,8 +413,9 @@ fn raw_from_row(row: &Row<'_>) -> rusqlite::Result<RawJob> {
         algorithm: row.get(3)?,
         level: row.get(4)?,
         envelope: row.get(5)?,
-        status: row.get(6)?,
-        error_message: row.get(7)?,
-        server_version: row.get(8)?,
+        verify: row.get(6)?,
+        status: row.get(7)?,
+        error_message: row.get(8)?,
+        server_version: row.get(9)?,
     })
 }

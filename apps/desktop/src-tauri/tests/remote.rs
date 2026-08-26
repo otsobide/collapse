@@ -16,11 +16,12 @@
 //! tests that have to rule out a local fallback assert on that log. It is the
 //! one piece of evidence such a fallback cannot fake.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use collapse_core::compression::compress_tar_dir;
-use collapse_desktop::commands::{check_server, compress_path, extract_archive};
+use collapse_desktop::commands::{check_server, compress_path, extract_archive, Extraction};
 
 // ------------------------------------------------------------------ harness --
 
@@ -160,11 +161,21 @@ fn compress_request(server: &Server) -> String {
 /// without any HTTP exchange.
 const UNREACHABLE: &str = "http://127.0.0.1:9";
 
+/// `RemoteError::BlankServer` rendered, which is what `App.vue` shows. The
+/// whole sentence, because the value of moving this answer into
+/// `collapse-remote` is that the CLI prints the identical one
+/// (`apps/cli/tests/remote.rs` and `tests/commands.rs` spell out the same
+/// literal): a front-end that started decorating it would drift again, and no
+/// `contains` check could tell.
+const BLANK_ADDRESS: &str =
+    "the server address is blank: it needs a URL, for example http://localhost:8000";
+
 fn text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// `compress_path` with a server, spelled the way the webview spells it.
+/// `compress_path` with a server, spelled the way the webview spells it: the
+/// Verify box is disabled for a remote destination, so `verify` arrives false.
 fn compress_remotely(
     server: &str,
     source: &Path,
@@ -179,6 +190,7 @@ fn compress_remotely(
         level,
         Some(server.to_string()),
         false,
+        false,
     )
 }
 
@@ -191,6 +203,7 @@ fn compress_locally(source: &Path, output: &Path, format: &str, level: u32) -> S
         format.to_string(),
         level,
         None,
+        false,
         false,
     )
     .expect("the local compression succeeds")
@@ -207,8 +220,14 @@ fn compress_locally(source: &Path, output: &Path, format: &str, level: u32) -> S
 /// The normalized name still reads the file, because `Path::join` accepts a
 /// forward slash on Windows too.
 fn extracted(archive: &Path, into: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut files: Vec<String> = extract_archive(text(archive), text(into))
-        .expect("the archive extracts cleanly")
+    // No answers to give: these archives are built from real files on this
+    // machine, so every name in them is one this machine can write.
+    let outcome = extract_archive(text(archive), text(into), BTreeMap::new())
+        .expect("the archive extracts cleanly");
+    let Extraction::Extracted { files } = outcome else {
+        panic!("a locally built archive asked a naming question: {outcome:?}");
+    };
+    let mut files: Vec<String> = files
         .into_iter()
         .map(|name| name.replace('\\', "/"))
         .collect();
@@ -415,6 +434,109 @@ fn a_file_named_like_a_tarball_is_compressed_as_a_file() {
         vec![("photos.tar".to_string(), original)],
         "the tarball must come back as one stored file, not as its contents"
     );
+}
+
+// ------------------------------------------------------- where the work goes --
+
+/// The dispatch itself, all three readings of `server` in one place against
+/// one server. Since the blank-address fix (issue #65) `Some(_)` means remote
+/// whatever the string holds, where the app used to filter `""` out and
+/// compress locally, and dropping that filter could just as easily have
+/// broken the two cases nobody was looking at: a real address must still
+/// cross the wire, and `None` must still not.
+///
+/// The request log is the only referee available. A remote archive is
+/// indistinguishable from a local one by design (this file's header says why),
+/// so no file on disk can say where it was built; what a misrouted call
+/// changes is how many uploads the server saw. `compress_request` fails on
+/// none (a real address gone local) and on two (a `None`, or a blank, gone
+/// remote).
+#[test]
+fn the_server_argument_alone_decides_where_the_work_happens() {
+    let server = start_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"one source, three destinations").unwrap();
+
+    let remote_archive = dir.path().join("remote.zip");
+    compress_remotely(&server.url, &source, &remote_archive, "zip", 3)
+        .expect("a real address compresses on the server");
+
+    let local_archive = dir.path().join("local.zip");
+    compress_locally(&source, &local_archive, "zip", 3);
+
+    let blank_archive = dir.path().join("blank.zip");
+    let error = compress_path(
+        text(&source),
+        text(&blank_archive),
+        "zip".to_string(),
+        3,
+        Some("   ".to_string()),
+        false,
+        false,
+    )
+    .expect_err("a blank address is not a server");
+    assert_eq!(error, BLANK_ADDRESS);
+    assert!(
+        !blank_archive.exists(),
+        "the blank address fell back to compressing locally"
+    );
+
+    let request = compress_request(&server);
+    assert!(
+        request.contains("name=notes.txt") && request.contains("envelope=none"),
+        "the one upload is the one the real address asked for: {request}"
+    );
+
+    // Both archives that were produced hold the same thing, which is what
+    // makes "where" the only difference between the two calls.
+    assert_eq!(
+        extracted(&remote_archive, &dir.path().join("r")),
+        extracted(&local_archive, &dir.path().join("l"))
+    );
+}
+
+/// Asking for the contents check while the work goes to a server is answered
+/// with the archive, not with a refusal.
+///
+/// The UI cannot produce this (the box is disabled and sends false whenever a
+/// server is chosen), so this pins the decision behind that: the flag describes
+/// a check on an archive this app built, and the archive arrives from elsewhere
+/// with no list of expected entries to check it against. Nothing about the
+/// request is harmful, so refusing it would cost the user their compression for
+/// a box the app itself let them tick.
+#[test]
+fn asking_to_check_contents_is_ignored_rather_than_refused_by_a_server_run() {
+    let server = shared_server();
+    let dir = tempfile::TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    let body = b"the checking happens over there, if at all".to_vec();
+    std::fs::write(&source, &body).unwrap();
+
+    let asked = dir.path().join("asked.zip");
+    compress_path(
+        text(&source),
+        text(&asked),
+        "zip".to_string(),
+        3,
+        Some(server.to_string()),
+        false,
+        true,
+    )
+    .expect("a check this side cannot make is not a reason to refuse the compression");
+
+    // And it holds what the same call without the tick holds: the flag reaches
+    // no part of the remote path, so it can change nothing about the result.
+    // (Contents rather than bytes: zip stamps a modification time, so two runs
+    // a second apart differ as files while holding the same archive.)
+    let plain = dir.path().join("plain.zip");
+    compress_remotely(server, &source, &plain, "zip", 3).expect("the server compresses");
+    let asked_entries = extracted(&asked, &dir.path().join("asked-out"));
+    assert_eq!(
+        asked_entries,
+        extracted(&plain, &dir.path().join("plain-out"))
+    );
+    assert_eq!(asked_entries, vec![("notes.txt".to_string(), body)]);
 }
 
 // ---------------------------------------------------------------- failures --
@@ -729,6 +851,23 @@ fn check_server_reports_an_unreachable_address() {
         reason.contains("/health"),
         "the failure happened probing /health: {reason}"
     );
+}
+
+/// A blank address never leaves the machine: the probe says the address is
+/// the problem instead of reporting a server with no name as unreachable.
+/// `sources.js` refuses a blank before the sheet can send one, so reaching
+/// this means a stale stored value, and "cannot reach" would point the user
+/// at the network for it (issue #65).
+#[test]
+fn check_server_rejects_a_blank_address() {
+    for blank in ["", "   ", "\t"] {
+        let error = check_server(blank.to_string()).expect_err("a blank address is not a server");
+        // The whole message: the probe hands the settings sheet whatever
+        // `collapse-remote` said, and equality is what keeps this app from
+        // wrapping it into a sentence of its own. (A fragment check would
+        // still pass if it did.)
+        assert_eq!(error, BLANK_ADDRESS, "{blank:?}");
+    }
 }
 
 /// A URL no HTTP client can even parse is still just a failed probe: the

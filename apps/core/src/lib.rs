@@ -4,4 +4,8 @@ pub mod compression;
 // what let them drift apart, and the drift cost the CLI its data-loss guard.
 pub mod paths;
 
-pub use compression::{compress, compress_dir, extract, Algorithm, CompressionError};
+pub use compression::{
+    compress, compress_dir, extract, extract_with, unwritable_names, unwritable_names_with,
+    Algorithm, CharacterFault, CompressionError, ExtractOptions, NameError, NameProblem,
+    NameReport, NameRules, OffendingCharacter, Substitutions, UnwritableEntry, Verify,
+};

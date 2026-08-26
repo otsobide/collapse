@@ -9,7 +9,7 @@ use uuid::Uuid;
 use collapse_core::Algorithm;
 
 use crate::error::ApiError;
-use crate::models::{Envelope, Job, JobStatus};
+use crate::models::{Envelope, Job, JobStatus, Verify};
 use crate::validate::{header_safe, is_bare_file_name};
 use crate::AppState;
 
@@ -27,6 +27,9 @@ pub(crate) struct CompressParams {
     /// How to read the body: `none` (a plain file, the default) or `tar`
     /// (a tar holding one directory, to unpack and compress as a tree).
     envelope: Option<String>,
+    /// How deeply to check the finished archive: `index` (the default) or
+    /// `contents`, which decompresses every entry and roughly doubles the work.
+    verify: Option<String>,
 }
 
 fn job_or_404(state: &AppState, job_id: &str) -> Result<Job, ApiError> {
@@ -84,6 +87,13 @@ pub(crate) async fn compress_create(
         None => Envelope::None,
     };
 
+    // Off by default: the listing is always read back, and paying twice for the
+    // contents is the caller's decision, not one made on their behalf.
+    let verify = match params.verify.as_deref() {
+        Some(text) => text.parse::<Verify>().map_err(ApiError::BadRequest)?,
+        None => Verify::Index,
+    };
+
     let job_id = Uuid::new_v4().simple().to_string();
 
     // Persist the upload before registering the job, so a job never exists
@@ -101,11 +111,12 @@ pub(crate) async fn compress_create(
         algorithm = %algorithm,
         level,
         envelope = %envelope,
+        verify = %verify,
         bytes = body.len(),
         "queued"
     );
 
-    let job = Job::new(job_id.clone(), name, algorithm, level, envelope);
+    let job = Job::new(job_id.clone(), name, algorithm, level, envelope, verify);
     state.registry.add(&job)?;
     state
         .queue_tx
@@ -194,9 +205,22 @@ pub(crate) async fn delete_job(
 
     let storage = state.storage.clone();
     let delete_id = job_id.clone();
-    let deleted = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
+    let removal = tokio::task::spawn_blocking(move || storage.delete_job(&delete_id))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // A removal that failed is reported, not refused: the caller asked for
+    // this job to go, and the answer already says whether its files went with
+    // it. The reaper makes the opposite call (it keeps the row and retries)
+    // because it has nobody to tell; here the reason goes to the log and the
+    // outcome goes back on the wire.
+    let deleted = match removal {
+        Ok(deleted) => deleted,
+        Err(e) => {
+            tracing::warn!(job = %job_id, error = %e, "cannot remove the staged files");
+            false
+        }
+    };
     state.registry.forget(&job_id)?;
     tracing::info!(job = %job_id, files_removed = deleted, "deleted");
 

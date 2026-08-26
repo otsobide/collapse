@@ -378,6 +378,116 @@ async fn a_tar_envelope_holding_another_directory_fails_the_job() {
     assert!(done["error_message"].as_str().unwrap().contains("photos"));
 }
 
+// ---------------------------------------------------------------------------
+// POST /compress?verify= : how deeply the archive is checked
+// ---------------------------------------------------------------------------
+
+/// The deeper check costs roughly a second compression's worth of work, so a
+/// client that says nothing must not be signed up for it.
+#[tokio::test]
+async fn compress_checks_the_index_only_unless_asked_for_more() {
+    let (router, _storage) = app();
+    let job = body_json(post_compress(&router, "name=a.txt", b"body").await).await;
+
+    assert_eq!(job["verify"], "index");
+}
+
+/// The worker is handed a job id and nothing else, so what the client asked for
+/// only survives the hop through the registry row. Reading it back off a job
+/// that has *finished* is what proves it made the round trip: the 202 body
+/// alone is just the handler echoing its own parse.
+#[tokio::test]
+async fn the_depth_asked_for_reaches_the_finished_job() {
+    let (router, _storage) = app();
+    let accepted = post_compress(&router, "name=a.txt&verify=contents", b"body").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+
+    let job = body_json(accepted).await;
+    assert_eq!(job["verify"], "contents", "the handler parsed it");
+    let job_id = job["job_id"].as_str().unwrap().to_string();
+
+    let done = wait_for_job(&router, &job_id).await;
+    assert_eq!(done["status"], "completed", "job failed: {done}");
+    assert_eq!(
+        done["verify"], "contents",
+        "and the row the worker read still says so"
+    );
+}
+
+/// The archive is checked before it is moved into place, so checking it harder
+/// must not change what a client ends up with. A reader left half-consumed, or
+/// one that truncated the file it read, would show up here and nowhere else.
+#[tokio::test]
+async fn checking_the_contents_yields_the_very_same_archive() {
+    let (router, _storage) = app();
+    let (_dir, tar) = tar_envelope(|root| {
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"first").unwrap();
+        std::fs::write(root.join("sub/b.txt"), b"second").unwrap();
+    });
+
+    let expected = vec![
+        ("photos/a.txt".to_string(), b"first".to_vec()),
+        ("photos/sub/b.txt".to_string(), b"second".to_vec()),
+    ];
+
+    // Every format, because what "checking the contents" reads differs in each:
+    // zip and 7z decode entries and compare a stored CRC, tar walks members.
+    for (algorithm, extension) in [("zip", "zip"), ("7z", "7z"), ("tar", "tar")] {
+        let response = compress_and_download(
+            &router,
+            &format!("name=photos&algorithm={algorithm}&envelope=tar&verify=contents"),
+            &tar,
+        )
+        .await;
+
+        assert_eq!(
+            extract_archive(&body_bytes(response).await, extension),
+            expected,
+            "{algorithm} at verify=contents"
+        );
+    }
+}
+
+/// Rejected the way an out-of-range `level` is, rather than falling back to the
+/// default: a client that asked for the deeper check and silently did not get
+/// it has been told its archive was checked more thoroughly than it was.
+#[tokio::test]
+async fn compress_rejects_an_unknown_verification_depth() {
+    let (router, _storage) = app();
+
+    // `true` is the likely guess, the parameter being described as off by
+    // default; `full` is the likely misremembering of `contents`.
+    for value in ["true", "full", ""] {
+        let response = post_compress(&router, &format!("name=a.txt&verify={value}"), b"x").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "verify={value:?} was accepted"
+        );
+
+        let detail = error_detail(response).await;
+        assert!(detail.contains("verify"), "names the parameter: {detail}");
+        assert!(detail.contains("contents"), "names the choices: {detail}");
+    }
+}
+
+/// And nothing is staged for a request that never became a job, so a client
+/// hammering a typo cannot fill the disk.
+#[tokio::test]
+async fn a_rejected_verification_depth_stages_nothing() {
+    let (router, storage) = app();
+    let response = post_compress(&router, "name=a.txt&verify=full", b"x").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let jobs = storage.path().join(JOBS_DIR);
+    assert_eq!(
+        std::fs::read_dir(&jobs).unwrap().count(),
+        0,
+        "the staging area is untouched"
+    );
+}
+
 #[tokio::test]
 async fn download_can_be_repeated_until_deleted() {
     let (router, _storage) = app();
@@ -432,6 +542,110 @@ async fn delete_removes_the_job_and_its_files() {
     )
     .await;
     assert_eq!(download.status(), StatusCode::NOT_FOUND);
+}
+
+/// A completed job, staged and finished, ready to be deleted.
+async fn completed_job(router: &Router) -> String {
+    let accepted = post_compress(router, "name=a.txt", b"delete me after").await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(wait_for_job(router, &job_id).await["status"], "completed");
+    job_id
+}
+
+/// Make a job's staging directory refuse to give up what is inside it, the
+/// way a volume gone read-only does. Answers whether the obstruction took: as
+/// root it does not, since mode bits are not enforced there, and a test that
+/// went on to assert a failed removal would be asserting the opposite of what
+/// it means.
+#[cfg(unix)]
+fn obstruct(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Unlinking an entry needs write permission on the directory holding it,
+    // so a probe that lands is proof the mode bits are not being enforced.
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        std::fs::remove_file(&probe).unwrap();
+        release(dir);
+        return false;
+    }
+    true
+}
+
+/// Undo [`obstruct`], so the TempDir can be cleaned up afterwards. Called
+/// before the assertions, never after: a panic in between would leave the
+/// directory behind for good.
+#[cfg(unix)]
+fn release(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[tokio::test]
+#[cfg(unix)]
+async fn delete_answers_that_the_files_stayed_when_they_could_not_be_removed() {
+    // The handler reads the removal's outcome now instead of taking it as
+    // done, and it makes the opposite call to the reaper: the row goes
+    // regardless, because the caller asked for the job to go and is being
+    // told, in the same answer, that its files did not. `deleted` was `true`
+    // for this case before the outcome was carried out of `delete_job`, which
+    // told the client its disk was freed when it was not.
+    let (router, storage) = app();
+    let job_id = completed_job(&router).await;
+    let job_dir = storage.path().join(JOBS_DIR).join(&job_id);
+    if !obstruct(&job_dir) {
+        return;
+    }
+
+    let response = request(&router, Method::DELETE, &format!("/jobs/{job_id}"), b"").await;
+    let status = response.status();
+    let json = body_json(response).await;
+    // The row is dropped even so, so the job is gone from every endpoint.
+    let after = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+    let after_status = after.status();
+    let leftovers: Vec<String> = std::fs::read_dir(&job_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    release(&job_dir);
+
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a failed removal is reported, not refused"
+    );
+    assert_eq!(json["job_id"], job_id);
+    assert_eq!(json["deleted"], false, "and reported honestly");
+    assert_eq!(after_status, StatusCode::NOT_FOUND);
+    assert!(
+        leftovers.iter().any(|name| name.starts_with("archive.")),
+        "the archive is still on the disk the client thinks it freed: {leftovers:?}"
+    );
+}
+
+#[tokio::test]
+async fn delete_answers_that_the_files_stayed_when_there_were_none() {
+    // The third answer arriving over the wire as the second one: `deleted`
+    // means "this request removed files", so a job whose directory is already
+    // gone gets `false` too. The distinction that matters is against the
+    // failure above, which must not read as a success, and it is the log line
+    // (not the response) that tells the two apart.
+    let (router, storage) = app();
+    let job_id = completed_job(&router).await;
+    std::fs::remove_dir_all(storage.path().join(JOBS_DIR).join(&job_id)).unwrap();
+
+    let response = request(&router, Method::DELETE, &format!("/jobs/{job_id}"), b"").await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["deleted"], false);
+    let after = request(&router, Method::GET, &format!("/jobs/{job_id}"), b"").await;
+    assert_eq!(after.status(), StatusCode::NOT_FOUND, "the row goes anyway");
 }
 
 // ---------------------------------------------------------------------------

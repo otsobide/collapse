@@ -9,8 +9,9 @@ use std::path::Path;
 
 use collapse_core::compression::{
     compress_7z_dir, compress_tar_dir, compress_zip_dir, extract_7z, extract_tar, extract_zip,
+    NameRules, Substitutions,
 };
-use collapse_core::{extract, Algorithm};
+use collapse_core::{extract, extract_with, Algorithm, ExtractOptions, Verify};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 use tar::{Builder, EntryType, Header};
 use zip::write::SimpleFileOptions;
@@ -364,7 +365,15 @@ fn benign_nested_names_still_extract() {
 
     for algo in [Algorithm::Zip, Algorithm::SevenZ, Algorithm::Tar] {
         let archive = dir.path().join(format!("ok.{}", algo.extension()));
-        collapse_core::compress(&src, &archive, "nested/dir/input.txt", algo, 1).unwrap();
+        collapse_core::compress(
+            &src,
+            &archive,
+            "nested/dir/input.txt",
+            algo,
+            1,
+            Verify::Index,
+        )
+        .unwrap();
 
         let out = dir.path().join(format!("out_{}", algo.extension()));
         let files = extract(&archive, &out).unwrap();
@@ -559,6 +568,99 @@ fn sevenz_rejects_malicious_entry_after_benign_ones() {
     assert_contained(extract_7z(&archive, &out), &dir.path().join("escape.txt"));
 }
 
+// -- entry names Windows accepts and reads as something other than a file --
+
+/// Names whose colon Win32 reads as alternate data stream syntax rather than as
+/// part of a file name: the first attaches a payload to a file an archive can
+/// extract legitimately alongside it (`Zone.Identifier` among the streams it
+/// could overwrite), the second attaches one to the output directory itself.
+///
+/// Both are ordinary, if odd, file names on Unix, so the assertions split by
+/// platform: refusing them there would be a bug of its own.
+const STREAM_SHAPED_NAMES: [&str; 2] = ["notes.txt:hidden", ":hidden"];
+
+#[test]
+fn no_format_writes_an_entry_name_with_a_colon_as_a_stream() {
+    for (ext, build) in [
+        ("zip", malicious_zip as fn(&Path, &str)),
+        ("7z", malicious_7z),
+        ("tar", malicious_tar),
+    ] {
+        for name in STREAM_SHAPED_NAMES {
+            let dir = tempfile::TempDir::new().unwrap();
+            let archive = dir.path().join(format!("stream.{ext}"));
+            build(&archive, name);
+            let out = dir.path().join("out");
+
+            let result = extract(&archive, &out);
+
+            if cfg!(windows) {
+                // The host would take this name and write the bytes somewhere
+                // no listing shows, so extraction stops and says which entry
+                // and which character (issue #63). Nothing is written at all:
+                // the naming pass runs before the output directory exists.
+                let message = match result {
+                    Err(err) => err.to_string(),
+                    Ok(files) => panic!("{ext}/{name}: must be refused, wrote {files:?}"),
+                };
+                assert!(message.contains(name), "{ext}/{name}: {message}");
+                assert!(message.contains(':'), "{ext}/{name}: {message}");
+                assert!(
+                    !out.exists() || std::fs::read_dir(&out).unwrap().next().is_none(),
+                    "{ext}/{name}: something was written before the refusal"
+                );
+            } else {
+                // One contained file, named exactly as the archive spells it.
+                let files =
+                    result.unwrap_or_else(|e| panic!("{ext}/{name}: a legal Unix name, got {e}"));
+                assert_eq!(listing(files), vec![name.to_string()], "{ext}/{name}");
+                assert!(out.join(name).is_file(), "{ext}/{name}");
+            }
+            // Whatever the platform made of it, nothing landed beside `out`,
+            // and in particular no carrier file appeared next to the archive.
+            assert!(
+                !dir.path().join("notes.txt").exists(),
+                "{ext}/{name}: a file was written outside the output directory"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_replacement_cannot_carry_an_entry_out_of_the_output_directory() {
+    // The answer the user gives is put inside a name that containment has
+    // already cleared, so an unchecked replacement is a traversal by the back
+    // door: `?` answered with `../..` would write above the output directory
+    // with nothing left to notice it.
+    for (ext, build) in [
+        ("zip", malicious_zip as fn(&Path, &str)),
+        ("7z", malicious_7z),
+        ("tar", malicious_tar),
+    ] {
+        for replacement in ["../../escape", "/escape", r"..\..\escape"] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let archive = dir.path().join(format!("q.{ext}"));
+            build(&archive, "sub/a?b.txt");
+            let out = dir.path().join("out");
+
+            let options = ExtractOptions::new()
+                .with_rules(NameRules::windows())
+                .with_replacements(Substitutions::new().with('?', replacement));
+            let result = extract_with(&archive, &out, &options);
+
+            assert!(
+                result.is_err(),
+                "{ext}: {replacement:?} was accepted as a replacement"
+            );
+            assert!(
+                !dir.path().join("escape").exists()
+                    && !dir.path().join("..").join("escape").exists(),
+                "{ext}: {replacement:?} wrote outside the output directory"
+            );
+        }
+    }
+}
+
 // -- compression: archiving a directory must never follow a symlink out of
 //    the tree (all three formats skip symlinks) --
 
@@ -594,5 +696,106 @@ fn compress_dir_skips_symlinks_for_every_format() {
             out.join("photos/leak.txt").symlink_metadata().is_err(),
             "{ext}: the symlink leaked into the archive"
         );
+    }
+}
+
+// -- writing through something already in the output directory --
+
+/// A symlink the extractor did not create, sitting in the output directory
+/// before extraction begins, is the one traversal a name-only guard cannot see.
+///
+/// It was reachable and silent: with `link` a symlink in the output directory,
+/// an archive holding `link/evil.txt` wrote straight through it and returned
+/// `Ok`. tar was immune, because `unpack_in` resolves the directory it is about
+/// to write into; zip and 7z joined a sanitized name and wrote. Extracting into
+/// a directory that already holds a symlink is ordinary, and this predates the
+/// naming work rather than arriving with it.
+#[cfg(unix)]
+#[test]
+fn no_format_writes_through_a_symlink_already_in_the_output() {
+    for ext in ["zip", "7z", "tar"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("link")).unwrap();
+
+        let archive = dir.path().join(format!("a.{ext}"));
+        match ext {
+            "zip" => malicious_zip(&archive, "link/evil.txt"),
+            "7z" => malicious_7z(&archive, "link/evil.txt"),
+            _ => malicious_tar(&archive, "link/evil.txt"),
+        }
+
+        let escaped = outside.join("evil.txt");
+        assert_contained(extract(&archive, &out), &escaped);
+    }
+}
+
+/// The same guard, reached through the naming layer rather than around it: a
+/// planned rename must not be able to land outside either.
+#[cfg(unix)]
+#[test]
+fn a_renamed_entry_cannot_be_written_through_such_a_symlink() {
+    for ext in ["zip", "7z", "tar"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::os::unix::fs::symlink(&outside, out.join("link")).unwrap();
+
+        let archive = dir.path().join(format!("a.{ext}"));
+        match ext {
+            "zip" => malicious_zip(&archive, "link/ev?l.txt"),
+            "7z" => malicious_7z(&archive, "link/ev?l.txt"),
+            _ => malicious_tar(&archive, "link/ev?l.txt"),
+        }
+
+        // Windows rules make the `?` a question, so this entry is renamed and
+        // takes the planned write path rather than the untouched one.
+        let options = ExtractOptions::new()
+            .with_rules(NameRules::windows())
+            .with_replacements(Substitutions::new().with('?', "i"));
+        let escaped = outside.join("evil.txt");
+        assert_contained(extract_with(&archive, &out, &options), &escaped);
+    }
+}
+
+/// `PathBuf::push` replaces what it holds when handed a path carrying a prefix,
+/// and Windows reads `c:` at the head of a component as a drive. Prefixes are
+/// parsed only at the head of a whole path, so a colon in a *later* component
+/// gives `sanitize_entry_path` nothing to reject while still clearing the
+/// buffer it is building, which would drop `docs` and leave a drive-relative
+/// path resolving against the current directory of C:.
+///
+/// On Unix a colon is an ordinary character and this is simply a nested file,
+/// which is the half this can assert here. Either way the bytes must land under
+/// the output directory and nowhere else.
+#[test]
+fn a_colon_in_a_later_component_cannot_clear_the_path_being_built() {
+    for ext in ["zip", "7z", "tar"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let out = dir.path().join("out");
+        let archive = dir.path().join(format!("a.{ext}"));
+        match ext {
+            "zip" => malicious_zip(&archive, "docs/c:evil.txt"),
+            "7z" => malicious_7z(&archive, "docs/c:evil.txt"),
+            _ => malicious_tar(&archive, "docs/c:evil.txt"),
+        }
+
+        match extract(&archive, &out) {
+            // Unix: written, and written inside.
+            Ok(files) => {
+                assert_eq!(listing(files), vec!["docs/c:evil.txt"], "{ext}");
+                assert!(out.join("docs").join("c:evil.txt").exists(), "{ext}");
+            }
+            // Windows: refused, and nothing written anywhere.
+            Err(_) => assert!(
+                !out.join("c:evil.txt").exists(),
+                "{ext}: a drive-relative path was written"
+            ),
+        }
     }
 }

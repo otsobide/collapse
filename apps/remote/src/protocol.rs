@@ -7,8 +7,32 @@ use crate::RemoteError;
 
 /// Normalize the user-supplied server URL into a base the endpoints are
 /// joined onto, so `http://host:8000/` does not yield `//compress`.
-pub fn base_url(server: &str) -> &str {
-    server.trim_end_matches('/')
+///
+/// An address that is empty, or nothing but whitespace, is refused here
+/// instead of being sent. This is the one place that answer is written, so
+/// the front-ends cannot disagree about it the way they used to: the desktop
+/// read `""` as "compress locally" and `"   "` as a server, the CLI read both
+/// as a server.
+///
+/// Refused rather than read as "compress locally" on purpose. A blank cannot
+/// come from the desktop's own UI (`sources.js` normalizes an address to
+/// `null` or a real URL), so it means a stale stored value or a caller's bug;
+/// on the CLI it means a flag someone typed wrong. Quietly compressing
+/// locally would hide both.
+pub fn base_url(server: &str) -> Result<&str, RemoteError> {
+    // Normalize first, then decide. Asking `is_empty` of the trimmed input but
+    // returning the untrimmed one let two shapes through that are not
+    // addresses: `"///"` is not blank, so it passed, and then lost its slashes
+    // and reached the caller as an empty base, producing the very "cannot reach
+    // the server at : ..." this function exists to prevent; and a trailing
+    // space defeated the slash trim, so `"http://host:8000/ "` kept the
+    // separator. One rule covers both: an address made of nothing but
+    // whitespace and slashes is not an address.
+    let base = server.trim().trim_end_matches('/');
+    if base.is_empty() {
+        return Err(RemoteError::BlankServer);
+    }
+    Ok(base)
 }
 
 /// The `job_id` out of the 202 body.

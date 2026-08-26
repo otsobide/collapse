@@ -53,8 +53,10 @@ echo "docs page: $(wc -c < "${WORK}/docs.html" | tr -d ' ') bytes, no external r
 
 step "Running a real compression through the API"
 python3 -c "open('${WORK}/sample.txt','w').write('collapse in a container\n'*500)"
+# verify=contents on purpose: the deepest thing the server can be asked to do
+# to an archive before handing it over, so a smoke run exercises it too.
 JOB_JSON="$(curl -fsS -X POST --data-binary "@${WORK}/sample.txt" \
-  "${BASE}/compress?name=sample.txt&algorithm=zip&level=3")"
+  "${BASE}/compress?name=sample.txt&algorithm=zip&level=3&verify=contents")"
 JOB_ID="$(printf '%s' "$JOB_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')"
 echo "queued job $JOB_ID"
 

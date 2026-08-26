@@ -3,21 +3,32 @@
 //!
 //! A `#[tauri::command]` is an ordinary function, so these drive the real
 //! commands in-process and assert what lands on disk. Nothing here starts a
-//! server; the remote branch of `compress_path` is `tests/remote.rs`'s job.
+//! server; the remote branch of `compress_path` is `tests/remote.rs`'s job,
+//! and `extract_archive`'s other half, the archive holding a name this host
+//! cannot write, is `tests/names.rs`'s.
 //!
 //! Every command reports failure as a plain `String` (the backend errors are
 //! stringified with `.to_string()`, and `Algorithm`'s own `FromStr` already
 //! yields one), so the assertions match on the message, not on a variant.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use collapse_desktop::commands::{compress_path, extract_archive, is_directory};
+use collapse_desktop::commands::{compress_path, extract_archive, is_directory, Extraction};
 use tempfile::TempDir;
 
 /// The three formats the UI offers. The wire spelling doubles as the archive
 /// extension for all of them, which is why one array serves both roles.
 const FORMATS: [&str; 3] = ["zip", "7z", "tar"];
+
+/// `RemoteError::BlankServer` rendered, which is the string `App.vue` puts in
+/// its error banner. Spelled out whole so the tests below compare the sentence
+/// a user reads, not a fragment of it: `apps/cli/tests/remote.rs` spells out
+/// the same literal, and the two saying different things is the drift the
+/// shared crate exists to prevent (issue #65).
+const BLANK_ADDRESS: &str =
+    "the server address is blank: it needs a URL, for example http://localhost:8000";
 
 /// Names a real user produces and a tidy-ASCII test suite never would: a
 /// space, an accent, a `#`, a `%`, a leading dash (which a shell would read as
@@ -39,7 +50,7 @@ fn compress_local(
     format: &str,
     level: u32,
 ) -> Result<String, String> {
-    compress_local_with(source, output, format, level, false)
+    compress_local_with(source, output, format, level, false, false)
 }
 
 /// The same call with the caller reporting that the user agreed to replace
@@ -51,7 +62,18 @@ fn compress_local_overwriting(
     format: &str,
     level: u32,
 ) -> Result<String, String> {
-    compress_local_with(source, output, format, level, true)
+    compress_local_with(source, output, format, level, true, false)
+}
+
+/// The same call with the Verify box ticked, which asks for the deeper of the
+/// two checks: every entry decompressed rather than the listing alone.
+fn compress_local_checking_contents(
+    source: &Path,
+    output: &Path,
+    format: &str,
+    level: u32,
+) -> Result<String, String> {
+    compress_local_with(source, output, format, level, false, true)
 }
 
 fn compress_local_with(
@@ -60,6 +82,7 @@ fn compress_local_with(
     format: &str,
     level: u32,
     overwrite: bool,
+    verify: bool,
 ) -> Result<String, String> {
     compress_path(
         source.to_string_lossy().into_owned(),
@@ -68,14 +91,25 @@ fn compress_local_with(
         level,
         None,
         overwrite,
+        verify,
     )
 }
 
+/// Extract with no answers, which is every archive in this file: none of them
+/// carries a name this host cannot write, so `Extraction` can only be the
+/// `Extracted` arm and the naming question is `tests/names.rs`'s subject.
 fn extract_to(archive: &Path, output_dir: &Path) -> Result<Vec<String>, String> {
-    extract_archive(
+    match extract_archive(
         archive.to_string_lossy().into_owned(),
         output_dir.to_string_lossy().into_owned(),
-    )
+        BTreeMap::new(),
+    )? {
+        Extraction::Extracted { files } => Ok(files),
+        Extraction::NameProblem { message } => panic!(
+            "{} holds a name this host cannot write, which no fixture here intends: {message}",
+            archive.display()
+        ),
+    }
 }
 
 /// Normalize and sort an extracted listing so the expectations read the same
@@ -484,6 +518,131 @@ fn the_level_reaches_the_backend_because_one_and_five_compress_differently() {
     );
 }
 
+// ------------------------------------------------------------- verification --
+
+/// Every file an archive holds, with its bytes, so two runs can be compared by
+/// what they really contain rather than by the size of the file they produced.
+fn contents_of(archive: &Path, into: &Path) -> Vec<(String, Vec<u8>)> {
+    listing(extract_to(archive, into).expect("the archive extracts cleanly"))
+        .into_iter()
+        .map(|name| {
+            let bytes = fs::read(into.join(&name)).expect("an extracted file is readable");
+            (name, bytes)
+        })
+        .collect()
+}
+
+/// The Verify checkbox, both ways, for both source shapes and every format.
+///
+/// What this can prove from out here: ticking it is accepted rather than
+/// refused, the archive it produces holds exactly what the unticked run's does,
+/// and the staging the check runs on top of leaves nothing behind. What it
+/// cannot prove is that `true` reaches core as the deeper depth: a compression
+/// that succeeds looks identical at both depths by construction, since the
+/// check only reads, and telling them apart needs an archive whose listing is
+/// right and whose entry data is corrupt, which this command cannot be made to
+/// produce. Core's own suite owns that half; here the parameter is held in
+/// place by these three claims plus the frozen signature in tests/ipc.rs.
+#[test]
+fn checking_contents_is_accepted_and_yields_the_same_archive() {
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let file = dir.path().join("notes.txt");
+        fs::write(&file, prose(20_000)).unwrap();
+        let tree = make_tree(dir.path());
+
+        for (shape, source) in [("file", &file), ("tree", &tree)] {
+            let mut by_depth = Vec::new();
+            for (depth, checked) in [("listing", false), ("contents", true)] {
+                // A folder of its own for the archive, so "what is beside it"
+                // has exactly one right answer: nothing else writes here.
+                let destination = dir.path().join(format!("{format}-{shape}-{depth}"));
+                fs::create_dir(&destination).unwrap();
+                let archive = destination.join(format!("out.{format}"));
+
+                let call = if checked {
+                    compress_local_checking_contents(source, &archive, format, 3)
+                } else {
+                    compress_local(source, &archive, format, 3)
+                };
+                call.unwrap_or_else(|e| panic!("{format} {shape}, {depth} check: {e}"));
+
+                // The archive is built in a temporary beside the destination
+                // and renamed in, so one that outlived the run shows up here.
+                let mut beside: Vec<String> = fs::read_dir(&destination)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                    .collect();
+                beside.sort();
+                assert_eq!(
+                    beside,
+                    vec![format!("out.{format}")],
+                    "{format} {shape}, {depth} check: something was left beside the archive"
+                );
+
+                by_depth.push(contents_of(
+                    &archive,
+                    &dir.path().join(format!("{format}-{shape}-{depth}-out")),
+                ));
+            }
+
+            assert_eq!(
+                by_depth[0], by_depth[1],
+                "{format} {shape}: checking the contents changed what the archive holds"
+            );
+            assert!(
+                !by_depth[0].is_empty(),
+                "{format} {shape}: the comparison above passed on two empty archives"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_data_loss_guards_hold_whatever_the_verify_box_says() {
+    // Checking happens after an archive exists; the guards happen before
+    // anything is read or written. Ticking the box must not reorder that, or
+    // the app would destroy a source and then carefully verify the archive it
+    // made out of it.
+    for format in FORMATS {
+        let dir = TempDir::new().unwrap();
+        let source = dir.path().join("notes.txt");
+        fs::write(&source, b"irreplaceable").unwrap();
+
+        let err = compress_local_checking_contents(&source, &source, format, 3).unwrap_err();
+
+        assert_eq!(
+            err, "The output is the same file as the source.",
+            "{format}"
+        );
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            b"irreplaceable",
+            "{format}: the source was modified"
+        );
+    }
+
+    // The other irreversible one, with consent given as well, since that is
+    // the combination the containment guard exists to refuse.
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("photos");
+    fs::create_dir_all(&root).unwrap();
+    let victim = root.join("a.txt");
+    fs::write(&victim, b"irreplaceable member").unwrap();
+
+    let err = compress_local_with(&root, &victim, "zip", 3, true, true).unwrap_err();
+
+    assert_eq!(
+        err,
+        format!(
+            "The output is inside the folder being compressed: {}. \
+             It would be destroyed instead of archived. Choose a location outside it.",
+            victim.display()
+        )
+    );
+    assert_eq!(fs::read(&victim).unwrap(), b"irreplaceable member");
+}
+
 #[test]
 #[cfg(unix)]
 fn a_symlinked_directory_is_archived_under_the_links_own_name() {
@@ -516,50 +675,16 @@ fn a_symlinked_directory_is_archived_under_the_links_own_name() {
     );
 }
 
-#[test]
-fn an_empty_server_string_is_treated_as_local() {
-    // The dispatcher filters the empty string out before choosing the remote
-    // branch. If that filter went missing this would try to reach a server at
-    // "" and fail, with nothing listening anywhere.
-    let dir = TempDir::new().unwrap();
-    let source = dir.path().join("notes.txt");
-    fs::write(&source, b"local please").unwrap();
-    let output = dir.path().join("out.zip");
-
-    let returned = compress_path(
-        source.to_string_lossy().into_owned(),
-        output.to_string_lossy().into_owned(),
-        "zip".to_string(),
-        3,
-        Some(String::new()),
-        false,
-    )
-    .expect("an empty server string must compress locally");
-
-    assert_eq!(returned, output.to_string_lossy());
-
-    // The same archive the `None` path produces, proven by opening it: "did not
-    // error" would also be satisfied by an empty archive of the wrong source.
-    let out_dir = dir.path().join("extracted");
-    assert_eq!(
-        extract_to(&output, &out_dir).unwrap(),
-        vec!["notes.txt".to_string()]
-    );
-    assert_eq!(
-        fs::read(out_dir.join("notes.txt")).unwrap(),
-        b"local please"
-    );
-}
-
-#[test]
-fn a_whitespace_only_server_string_takes_the_remote_branch() {
-    // KNOWN DEFECT, pinned rather than endorsed. The dispatcher filters on
-    // `!s.is_empty()`, not on a trim, so a server string of blanks is treated
-    // as a real destination: the compression leaves the machine (or tries to)
-    // instead of running locally. A stale or half-cleared localStorage entry in
-    // the settings sheet is enough to produce one. If the filter ever learns to
-    // trim, this test should be rewritten to assert the local result, not
-    // deleted.
+/// Drive `compress_path` with a blank `server` and assert the single answer
+/// both spellings of blank now get: the address is named as the mistake,
+/// nothing is written, and the source is untouched.
+///
+/// The wording belongs to `collapse-remote`, which is where the decision now
+/// lives, and `apps/cli/tests/remote.rs` asserts the very same message. That
+/// is the point of the fix: the two front-ends used to answer this
+/// differently (issue #65), and the shared crate is what stops them drifting
+/// again. "This computer" is `None`, covered by every local test above.
+fn expect_blank_server_refusal(blank: &str) {
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"should have stayed here").unwrap();
@@ -570,22 +695,83 @@ fn a_whitespace_only_server_string_takes_the_remote_branch() {
         output.to_string_lossy().into_owned(),
         "zip".to_string(),
         3,
-        Some("   ".to_string()),
+        Some(blank.to_string()),
+        false,
         false,
     )
-    .expect_err("blanks are not a reachable server");
+    .expect_err("a blank address is not a server");
 
-    // The wording is the remote client's, which is the proof the branch was
-    // taken: no local error can mention a server.
-    assert!(
-        error.starts_with("cannot reach the server at"),
-        "the remote branch must be what failed: {error}"
-    );
+    // The whole message rather than fragments of it. The command stringifies
+    // whatever `collapse-remote` returned, so equality is what pins that this
+    // app adds nothing of its own to the sentence the CLI also prints; three
+    // `contains` checks would all still pass if it started prefixing them.
+    // ("cannot reach the server at    " named a server with no name and blamed
+    // the network for what is a bad setting.)
+    assert_eq!(error, BLANK_ADDRESS, "{blank:?}");
+
+    // An archive on disk is what a silent local fallback looks like, and its
+    // absence is the only thing that tells the two readings apart.
     assert!(
         !output.exists(),
-        "nothing was compressed locally, so no archive may exist"
+        "{blank:?} was compressed locally instead of being reported"
     );
     assert_eq!(fs::read(&source).unwrap(), b"should have stayed here");
+}
+
+/// Was `an_empty_server_string_is_treated_as_local`, which pinned the
+/// dispatcher's `!s.is_empty()` filter turning `""` into a local compression.
+/// Nothing sends `""`: `App.vue` sends `null` for this computer, so an empty
+/// string means a stale stored value or a caller's bug, and compressing
+/// locally hid it. It is now refused, the same as on the CLI.
+#[test]
+fn an_empty_server_string_is_refused_not_compressed_locally() {
+    expect_blank_server_refusal("");
+}
+
+/// Was `a_whitespace_only_server_string_takes_the_remote_branch`, the KNOWN
+/// DEFECT this replaces: the old filter tested emptiness rather than trimming,
+/// so a run of blanks was a real destination and the compression tried to
+/// leave the machine. It is refused before any request now, with the same
+/// message `""` gets, so the two spellings can no longer mean two things.
+#[test]
+fn a_whitespace_only_server_string_is_refused_not_sent() {
+    for blank in ["   ", "\t", "\n"] {
+        expect_blank_server_refusal(blank);
+    }
+}
+
+/// The dispatch's other arm, and the one the old filter cost the most. With
+/// `Some("")` read as "compress locally", pointing the app at a folder built
+/// a complete archive of the tree on the very machine the user had told it
+/// not to use, and nothing said so. A file cannot show that: it takes a
+/// different route into `collapse-remote` (its own bytes, where a folder
+/// travels as a tar envelope), so both arms have to be pinned.
+#[test]
+fn a_blank_server_string_is_refused_for_a_directory_too() {
+    for blank in ["", "   "] {
+        let dir = TempDir::new().unwrap();
+        let tree = make_tree(dir.path());
+        let output = dir.path().join("out.zip");
+
+        let error = compress_path(
+            tree.to_string_lossy().into_owned(),
+            output.to_string_lossy().into_owned(),
+            "zip".to_string(),
+            3,
+            Some(blank.to_string()),
+            false,
+            false,
+        )
+        .expect_err("a blank address is not a server");
+
+        assert_eq!(error, BLANK_ADDRESS, "{blank:?}");
+        assert!(
+            !output.exists(),
+            "{blank:?} archived the whole tree locally instead of reporting the address"
+        );
+        // And the tree it would have archived is still there to archive.
+        assert_eq!(fs::read(tree.join("a.txt")).unwrap(), b"top level");
+    }
 }
 
 // ----------------------------------------------------------- compress guards --
@@ -702,10 +888,10 @@ fn a_level_out_of_range_is_refused_for_a_directory_too() {
 #[test]
 fn an_output_inside_a_missing_directory_fails_instead_of_panicking() {
     // The command does not create the parent directory of its output, so the
-    // failure comes from the backend. The two spellings below are the real
-    // messages a user would see; they differ because zip and tar reach it
-    // through `File::create` (surfacing as `CompressionError::Io`) while the
-    // 7z writer stringifies its own error into `Failed`.
+    // failure comes from the backend, and the message below is the real one a
+    // user would see. All three formats now spell it the same way: 7z used to
+    // answer with a `Debug` dump of its dependency's error, absolute output
+    // path included, until core learned to map that error (issue #66).
     for format in FORMATS {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("notes.txt");
@@ -715,20 +901,16 @@ fn an_output_inside_a_missing_directory_fails_instead_of_panicking() {
 
         let err = compress_local(&source, &output, format, 3).unwrap_err();
 
-        if format == "7z" {
-            assert!(err.starts_with("Compression failed:"), "{format}: {err}");
-            assert!(
-                err.contains("NotFound") && err.contains("out.7z"),
-                "the message must name the path it could not write: {err}"
-            );
-        } else {
-            assert!(err.starts_with("IO error:"), "{format}: {err}");
-            #[cfg(unix)]
-            assert_eq!(
-                err, "IO error: No such file or directory (os error 2)",
-                "{format}"
-            );
-        }
+        assert!(err.starts_with("IO error:"), "{format}: {err}");
+        #[cfg(unix)]
+        assert_eq!(
+            err, "IO error: No such file or directory (os error 2)",
+            "{format}"
+        );
+        assert!(
+            !err.contains(&format!("out.{format}")),
+            "{format}: the message names the path the user picked: {err}"
+        );
         assert!(!output.exists(), "{format}: an archive appeared anyway");
     }
 }
@@ -974,35 +1156,58 @@ fn an_existing_output_is_replaced_when_the_caller_says_the_user_agreed() {
 }
 
 #[test]
-fn replacing_an_output_writes_through_a_hardlink_to_it() {
-    // KNOWN LIMITATION, pinned rather than endorsed. The archive is not written
-    // to a temporary file and renamed into place, so replacing an output that
-    // happens to be a hardlink writes through the shared inode and takes the
-    // other name down with it. Unlinking first would fix this and cost more
-    // than it is worth: nothing is written until the archive is fully in hand,
-    // which is what lets a failed run leave the previous archive untouched (see
-    // the truncated-download tests in tests/remote.rs). Writing to a temporary
-    // file and renaming would buy both, and is the real fix if this ever bites.
+fn replacing_an_output_no_longer_writes_through_a_hardlink_to_it() {
+    // This was a KNOWN LIMITATION and is now the opposite assertion. The
+    // archive used to be written straight to the output path, so replacing an
+    // output that happened to be a hardlink wrote through the shared inode and
+    // took the other name down with it: someone else's copy of an old archive
+    // silently became this one. Core now writes to a temporary beside the
+    // destination and renames it in, and a rename replaces the *name*, so the
+    // other name keeps the file it always had.
     //
-    // Not `cfg(unix)`: nothing here is Unix-only, and NTFS hardlinks share
-    // their data the same way, so the limitation is shipped on every platform
-    // and is pinned on every platform.
+    // Not `cfg(unix)`: NTFS hardlinks share their data the same way, so this is
+    // a property of every platform the app ships to.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
     let output = dir.path().join("out.zip");
-    fs::write(&output, b"an older archive the user agreed to replace").unwrap();
+    let previous = b"an older archive the user agreed to replace";
+    fs::write(&output, previous).unwrap();
     let bystander = dir.path().join("someone-elses-copy.zip");
     fs::hard_link(&output, &bystander).unwrap();
 
     compress_local_overwriting(&source, &output, "zip", 3).expect("the user agreed");
 
-    assert_ne!(
+    assert_eq!(
         fs::read(&bystander).unwrap(),
-        b"an older archive the user agreed to replace",
-        "the hardlink kept its content, so the write stopped going through the \
-         inode: update this test"
+        previous,
+        "the write went through the shared inode and destroyed a file nobody \
+         named in the dialog"
     );
+    // And the file the user did name really was replaced, so this is not a
+    // refusal dressed up as a fix.
+    let out_dir = dir.path().join("extracted");
+    assert_eq!(
+        listing(extract_to(&output, &out_dir).unwrap()),
+        vec!["notes.txt".to_string()]
+    );
+    assert_eq!(fs::read(out_dir.join("notes.txt")).unwrap(), b"hello");
+    // The two names are now two files, which is what a rename into place means
+    // and what a write-through would have avoided.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            fs::metadata(&bystander).unwrap().nlink(),
+            1,
+            "the archive still shares an inode with the bystander"
+        );
+        assert_ne!(
+            fs::metadata(&output).unwrap().ino(),
+            fs::metadata(&bystander).unwrap().ino(),
+            "both names still point at one file"
+        );
+    }
 }
 
 #[test]
@@ -1032,7 +1237,7 @@ fn an_output_landing_on_a_member_of_the_source_tree_is_refused_even_with_consent
 
     for format in FORMATS {
         for consented in [false, true] {
-            let err = compress_local_with(&root, &victim, format, 3, consented).unwrap_err();
+            let err = compress_local_with(&root, &victim, format, 3, consented, false).unwrap_err();
             assert_eq!(err, expected, "{format}, overwrite={consented}");
             assert_eq!(
                 fs::read(&victim).unwrap(),
@@ -1124,7 +1329,7 @@ fn an_output_hardlinked_to_a_member_of_the_source_tree_is_refused_even_with_cons
     );
 
     for consented in [false, true] {
-        let err = compress_local_with(&root, &alias, "zip", 3, consented).unwrap_err();
+        let err = compress_local_with(&root, &alias, "zip", 3, consented, false).unwrap_err();
         assert_eq!(err, expected, "overwrite={consented}");
         assert_eq!(
             fs::read(&member).unwrap(),
@@ -1245,11 +1450,11 @@ fn extracting_an_unknown_extension_is_refused() {
 }
 
 #[test]
-fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
-    // KNOWN LIMITATION, pinned rather than endorsed: collapse-core matches the
-    // extension against literal lowercase strings without lowercasing the
-    // input, so a perfectly good zip named `.ZIP` is unreadable. If the match
-    // is ever made case-insensitive, this test should be updated, not deleted.
+fn an_uppercase_extension_extracts_like_any_other() {
+    // The extension is a file name, not a wire value, and Windows and macOS
+    // fold case in the filesystem, so a perfectly good zip called `.ZIP` used
+    // to be refused as an unknown format for the spelling of its name alone.
+    // This is where a user met that: whatever the open dialog handed back.
     let dir = TempDir::new().unwrap();
     let source = dir.path().join("notes.txt");
     fs::write(&source, b"hello").unwrap();
@@ -1257,17 +1462,40 @@ fn an_uppercase_extension_is_rejected_even_for_a_valid_archive() {
     compress_local(&source, &lower, "zip", 3).unwrap();
 
     // A distinct base name, so this still works on a case-insensitive volume.
-    let upper = dir.path().join("LOUD.ZIP");
-    fs::copy(&lower, &upper).unwrap();
+    for shouted in ["LOUD.ZIP", "Mixed.Zip", "SEVEN.7Z", "BALL.TAR"] {
+        let renamed = dir.path().join(shouted);
+        fs::copy(&lower, &renamed).unwrap();
+        let out = dir.path().join(format!("out_{shouted}"));
 
-    let err = extract_to(&upper, &dir.path().join("out")).unwrap_err();
+        // .7Z and .TAR are the wrong format for these bytes, so they must fail
+        // on the CONTENT, not on the name: the point is that the extension was
+        // understood and the archive opened, which is the opposite of what a
+        // rejected name looks like.
+        let outcome = extract_to(&renamed, &out);
+        match shouted {
+            "LOUD.ZIP" | "Mixed.Zip" => assert_eq!(
+                outcome.unwrap(),
+                vec!["notes.txt".to_string()],
+                "{shouted} is a zip and should read as one"
+            ),
+            _ => {
+                let err = outcome.expect_err("zip bytes are not a 7z or a tar");
+                assert!(
+                    !err.contains("Unknown archive extension"),
+                    "{shouted}: the name was understood, so the complaint must be \
+                     about the bytes, got {err}"
+                );
+            }
+        }
+    }
 
-    assert_eq!(err, "Compression failed: Unknown archive extension: .ZIP");
-    // The same bytes under a lowercase name extract fine, which is what makes
-    // the failure above a naming quirk rather than a corrupt archive.
+    // An extension that is not one of ours is still refused, whatever its case:
+    // this made the match lenient about spelling, not about formats.
+    let foreign = dir.path().join("photos.RAR");
+    fs::copy(&lower, &foreign).unwrap();
     assert_eq!(
-        extract_to(&lower, &dir.path().join("out_lower")).unwrap(),
-        vec!["notes.txt".to_string()]
+        extract_to(&foreign, &dir.path().join("out_rar")).unwrap_err(),
+        "Compression failed: Unknown archive extension: .RAR"
     );
 }
 
@@ -1277,8 +1505,8 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
     // show something a person can act on, and the process must survive. The
     // three messages below are the real ones, and they are pinned by their
     // recognizable half so a zip/7z/tar version bump does not rewrite the test
-    // while a change of *variant* (an `IO error:` prefix, or the extension
-    // error, meaning the dispatch went wrong) still fails it.
+    // while the extension error (meaning the dispatch went wrong before the
+    // archive was ever read) still fails it.
     for format in FORMATS {
         let dir = TempDir::new().unwrap();
         let source = dir.path().join("notes.txt");
@@ -1292,24 +1520,31 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
         let out_dir = dir.path().join("extracted");
         let err = extract_to(&archive, &out_dir).unwrap_err();
 
-        assert!(err.starts_with("Compression failed:"), "{format}: {err}");
         assert!(
             !err.contains("Unknown archive extension"),
             "{format}: the extension dispatch failed before the archive was even read: {err}"
         );
+        // No backend may answer with a struct dump, whatever its variant.
+        assert!(
+            !err.contains("Error {") && !err.contains("kind:"),
+            "{format}: this is a Debug dump, not a sentence: {err}"
+        );
         match format {
             // "Compression failed: invalid Zip archive: Could not find EOCD"
             "zip" => {
+                assert!(err.starts_with("Compression failed:"), "{format}: {err}");
                 assert!(err.contains("Zip"), "{err}");
                 assert!(
                     !out_dir.exists(),
                     "zip refuses the archive before creating the output directory"
                 );
             }
-            // "Compression failed: Io(Error { kind: UnexpectedEof, message:
-            //  \"failed to fill whole buffer\" }, \"\")"
+            // The short read reaches core as its dependency's `Io` variant, so
+            // core unwraps it to `CompressionError::Io` (issue #66). It used to
+            // read `Compression failed: Io(Error { kind: UnexpectedEof,
+            // message: "failed to fill whole buffer" }, "")`.
             "7z" => {
-                assert!(err.contains("UnexpectedEof"), "{err}");
+                assert_eq!(err, "IO error: failed to fill whole buffer");
                 let leftovers: Vec<PathBuf> = fs::read_dir(&out_dir)
                     .map(|entries| entries.map(|e| e.unwrap().path()).collect())
                     .unwrap_or_default();
@@ -1317,6 +1552,7 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
             }
             // "Compression failed: failed to unpack `<output dir>/notes.txt`"
             _ => {
+                assert!(err.starts_with("Compression failed:"), "{format}: {err}");
                 assert!(err.contains("failed to unpack"), "{err}");
                 assert!(
                     err.contains("notes.txt"),

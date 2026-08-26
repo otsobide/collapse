@@ -6,9 +6,10 @@ use tokio::sync::mpsc;
 use std::path::Path;
 
 use collapse_core::compression::extract_tar;
-use collapse_core::{compress, compress_dir, Algorithm};
+use collapse_core::{compress, compress_dir};
 
-use crate::models::{Envelope, JobStatus};
+use crate::error::failure_message;
+use crate::models::{Envelope, Job, JobStatus};
 use crate::registry::Registry;
 use crate::storage::{single_root_dir, Storage};
 
@@ -55,6 +56,7 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
         name = %job.name,
         algorithm = %job.algorithm,
         level = job.level,
+        verify = %job.verify,
         "compressing"
     );
     let started = Instant::now();
@@ -62,16 +64,23 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
     let input = storage.input_path(job_id);
     let output = storage.output_path(job_id, job.algorithm);
     let tree = storage.tree_path(job_id);
-    let name = job.name.clone();
     let algorithm = job.algorithm;
-    let level = job.level;
-    let envelope = job.envelope;
 
-    let result = tokio::task::spawn_blocking(move || match envelope {
-        Envelope::None => {
-            compress(&input, &output, &name, algorithm, level).map_err(|e| e.to_string())
-        }
-        Envelope::Tar => unwrap_and_compress(&input, &tree, &name, &output, algorithm, level),
+    // The whole job crosses to the blocking thread rather than a field at a
+    // time. It is already this task's own copy (the registry hands out
+    // snapshots), and it keeps both arms from growing an argument every time
+    // the model does.
+    let result = tokio::task::spawn_blocking(move || match job.envelope {
+        Envelope::None => compress(
+            &input,
+            &output,
+            &job.name,
+            job.algorithm,
+            job.level,
+            job.verify.into(),
+        )
+        .map_err(|e| failure_message(&job.archive_name, &e)),
+        Envelope::Tar => unwrap_and_compress(&input, &tree, &output, &job),
     })
     .await;
 
@@ -103,15 +112,9 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
 /// Extraction goes through the engine's tar backend, which refuses entries
 /// that would escape the output directory and materializes no links, so a
 /// hostile tar cannot reach outside the job's own staging area.
-fn unwrap_and_compress(
-    input: &Path,
-    tree: &Path,
-    name: &str,
-    output: &Path,
-    algorithm: Algorithm,
-    level: u32,
-) -> Result<(), String> {
+fn unwrap_and_compress(input: &Path, tree: &Path, output: &Path, job: &Job) -> Result<(), String> {
     extract_tar(input, tree).map_err(|e| e.to_string())?;
-    let root = single_root_dir(tree, name)?;
-    compress_dir(&root, output, algorithm, level).map_err(|e| e.to_string())
+    let root = single_root_dir(tree, &job.name)?;
+    compress_dir(&root, output, job.algorithm, job.level, job.verify.into())
+        .map_err(|e| failure_message(&job.archive_name, &e))
 }

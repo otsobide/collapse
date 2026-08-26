@@ -8,6 +8,34 @@ fn storage() -> (Storage, tempfile::TempDir) {
     (Storage::new(base.path().to_path_buf()), base)
 }
 
+/// Make a directory refuse to give up what is inside it, the way a volume
+/// gone read-only does. Answers whether the obstruction took: as root it does
+/// not, since mode bits are not enforced there, and a test that went on to
+/// assert a failure would be asserting the opposite of what it means.
+#[cfg(unix)]
+fn obstruct(dir: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    // Unlinking an entry needs write permission on the directory holding it,
+    // so a probe that lands is proof the mode bits are not being enforced.
+    let probe = dir.join("probe");
+    if std::fs::write(&probe, b"").is_ok() {
+        std::fs::remove_file(&probe).unwrap();
+        release(dir);
+        return false;
+    }
+    true
+}
+
+/// Undo [`obstruct`], so the temp directory can be cleaned up afterwards.
+#[cfg(unix)]
+fn release(dir: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
 // -------------------------------------------------------------------- paths --
 
 /// The upload is staged under a name this server chose, never the one the
@@ -103,15 +131,68 @@ fn delete_job_removes_the_input_and_the_archive() {
     storage.save_input("job1", b"payload").unwrap();
     std::fs::write(storage.output_path("job1", Algorithm::Zip), b"archive").unwrap();
 
-    assert!(storage.delete_job("job1"));
+    assert!(storage.delete_job("job1").unwrap());
 
     assert!(!base.path().join("job1").exists());
 }
 
+/// Nothing to remove is not a failure: the caller has to be able to tell it
+/// from a removal that could not happen, or it treats a job whose files were
+/// never staged as a job it must keep retrying.
 #[test]
-fn delete_job_returns_false_for_an_unknown_job() {
+fn delete_job_reports_nothing_to_remove_for_an_unknown_job() {
     let (storage, _base) = storage();
-    assert!(!storage.delete_job("ghost"));
+    assert!(!storage.delete_job("ghost").unwrap());
+}
+
+/// And the third answer, the one a bare boolean could not give: the removal
+/// was attempted, it failed, and the error says why.
+#[test]
+#[cfg(unix)]
+// Unix only for the obstruction, which is mode bits. Windows reaches the same
+// arm when another process holds a file in the directory open, which is not
+// something a test can arrange portably.
+fn delete_job_reports_why_a_removal_failed() {
+    let (storage, base) = storage();
+    storage.save_input("job1", b"payload").unwrap();
+    let job_dir = base.path().join("job1");
+    if !obstruct(&job_dir) {
+        return;
+    }
+
+    let error = storage.delete_job("job1").unwrap_err();
+    release(&job_dir);
+
+    assert_eq!(
+        error.kind(),
+        std::io::ErrorKind::PermissionDenied,
+        "the reason travels out, it is not flattened into a no: {error}"
+    );
+}
+
+/// A name in the staging area that is not a directory is a failure too, not
+/// "nothing to remove". Only `NotFound` may read as nothing to remove: the
+/// callers use that answer to conclude the job's disk is free and drop its
+/// row, and something sitting under a job's name that this server cannot
+/// remove is exactly the state they must keep retrying instead.
+#[test]
+fn delete_job_does_not_report_something_it_cannot_remove_as_absent() {
+    let (storage, base) = storage();
+    std::fs::write(base.path().join("job1"), b"not a directory").unwrap();
+
+    let error = storage
+        .delete_job("job1")
+        .expect_err("a file where a job directory belongs cannot be removed as one");
+
+    assert_ne!(
+        error.kind(),
+        std::io::ErrorKind::NotFound,
+        "which is the one kind that means there was nothing there: {error}"
+    );
+    assert!(
+        base.path().join("job1").is_file(),
+        "and it is still there, which is what the error is for"
+    );
 }
 
 #[test]
@@ -120,7 +201,7 @@ fn delete_job_leaves_other_jobs_alone() {
     storage.save_input("job1", b"first").unwrap();
     storage.save_input("job2", b"second").unwrap();
 
-    storage.delete_job("job1");
+    storage.delete_job("job1").unwrap();
 
     assert!(!storage.input_path("job1").exists());
     assert_eq!(
@@ -195,6 +276,6 @@ fn delete_job_is_not_idempotent_about_its_answer() {
     let (storage, _base) = storage();
     storage.save_input("job1", b"payload").unwrap();
 
-    assert!(storage.delete_job("job1"));
-    assert!(!storage.delete_job("job1"));
+    assert!(storage.delete_job("job1").unwrap());
+    assert!(!storage.delete_job("job1").unwrap());
 }

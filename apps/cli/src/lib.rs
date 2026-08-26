@@ -2,11 +2,15 @@
 //! an archive, on top of `collapse-core` — or, with `--server`, through a
 //! remote collapse-server-backend instance.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use collapse_core::paths::{inside, same_file};
-use collapse_core::{compress, compress_dir, extract, Algorithm};
+use collapse_core::{
+    compress, compress_dir, extract, unwritable_names_with, Algorithm, CharacterFault, NameProblem,
+    NameReport, NameRules, Substitutions, Verify,
+};
 use thiserror::Error;
 
 /// Compress and extract files and folders.
@@ -40,6 +44,12 @@ pub enum Command {
         /// Overwrite the output archive if it already exists.
         #[arg(long)]
         force: bool,
+
+        /// Read every entry back, not just the archive's listing: about twice
+        /// the work, and it checks the per-entry checksums zip and 7z store
+        /// (tar stores none).
+        #[arg(long)]
+        verify: bool,
 
         /// Compress on a remote Collapse server instead of locally
         /// (e.g. http://localhost:8000).
@@ -83,21 +93,67 @@ impl From<Format> for Algorithm {
 pub enum Outcome {
     Compressed {
         output: PathBuf,
+        /// How thoroughly the archive was checked before it landed at
+        /// `output`, or `None` when this side checked nothing at all.
+        ///
+        /// `None` is the remote path: the archive arrives already finished and
+        /// the list of entries to hold it against is the server's, not ours.
+        /// Reporting a depth there would claim a check that never ran, and the
+        /// whole point of the check is that a user can trust it.
+        checked: Option<Verify>,
     },
     Extracted {
         output_dir: PathBuf,
+        /// The names as written, which is what the engine returns.
         files: Vec<String>,
+        /// Entries whose name this machine could not hold as the archive
+        /// spells it, and the name they were written under instead.
+        ///
+        /// Only the adjustments that need no answer land here (a trailing dot
+        /// or space to drop, a device name to suffix); anything needing a
+        /// replacement stopped the run before it started. Reported rather than
+        /// left to be noticed, because a rename the user did not ask for is
+        /// the kind of thing they should hear about from us and not from a
+        /// missing file later.
+        ///
+        /// Always empty on Unix, where the one character no name can hold is a
+        /// NUL, and that is a question rather than an adjustment.
+        adjusted: Vec<Adjustment>,
     },
+}
+
+/// An entry the host could not name as the archive spells it, and what it is
+/// called on disk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Adjustment {
+    /// The name the archive spells.
+    pub entry: String,
+    /// The name on disk, relative to the output directory.
+    pub written: String,
 }
 
 impl Outcome {
     /// Print a human-readable summary to stdout.
     pub fn report(&self) {
         match self {
-            Outcome::Compressed { output } => {
+            // Only the deeper check is mentioned, because it is the only one
+            // the user asked for and paid for. The listing check runs on every
+            // local compression, so announcing it would be noise on every
+            // single run.
+            Outcome::Compressed {
+                output,
+                checked: Some(Verify::Contents),
+            } => {
+                println!("Created {} (contents verified)", output.display());
+            }
+            Outcome::Compressed { output, .. } => {
                 println!("Created {}", output.display());
             }
-            Outcome::Extracted { output_dir, files } => {
+            Outcome::Extracted {
+                output_dir,
+                files,
+                adjusted,
+            } => {
                 println!(
                     "Extracted {} file(s) into {}",
                     files.len(),
@@ -105,6 +161,17 @@ impl Outcome {
                 );
                 for file in files {
                     println!("  {file}");
+                }
+                if !adjusted.is_empty() {
+                    println!(
+                        "{} name(s) this system cannot write were adjusted:",
+                        adjusted.len()
+                    );
+                    for change in adjusted {
+                        // Quoted, because the difference between the two names
+                        // can be a trailing space, which is invisible unquoted.
+                        println!("  {:?} was written as {:?}", change.entry, change.written);
+                    }
                 }
             }
         }
@@ -131,6 +198,27 @@ pub enum CliError {
     #[error("invalid path: {}", .0.display())]
     InvalidPath(PathBuf),
 
+    /// `--verify` asks for work that happens where the archive is built, and
+    /// with `--server` that is the other end of the wire.
+    ///
+    /// Refused rather than ignored: a flag that asks for a stronger guarantee
+    /// is the last one to silently do nothing. It is also not something this
+    /// side can make up for by checking the download, because for a directory
+    /// it has no list of entries to hold the archive against.
+    #[error("--verify cannot be used with --server: the archive is built on the server, which this build has no way to ask for that check (compress locally to use --verify)")]
+    RemoteVerifyUnsupported,
+
+    /// The archive holds entry names this machine cannot write, and at least
+    /// one of them needs an answer nobody can be asked for here.
+    ///
+    /// The whole message is built by [`unwritable_entries_message`]: it is the
+    /// only thing a user gets, so it is worth more than a sentence.
+    #[error("{}", unwritable_entries_message(.archive, .report))]
+    UnwritableEntries {
+        archive: PathBuf,
+        report: NameReport,
+    },
+
     #[error(transparent)]
     Remote(#[from] collapse_remote::RemoteError),
 
@@ -150,8 +238,9 @@ pub fn run(cli: Cli) -> Result<Outcome, CliError> {
             level,
             output,
             force,
+            verify,
             server,
-        } => run_compress(path, format, level, output, force, server),
+        } => run_compress(path, format, level, output, force, verify, server),
         Command::Extract { archive, output } => run_extract(archive, output),
     }
 }
@@ -162,8 +251,17 @@ fn run_compress(
     level: u32,
     output: Option<PathBuf>,
     force: bool,
+    verify: bool,
     server: Option<String>,
 ) -> Result<Outcome, CliError> {
+    // First, ahead of the filesystem: this one is a mistake in the command
+    // itself, decidable from the arguments alone. Reporting "output already
+    // exists" first would send the user off to add --force and meet this on
+    // the next run.
+    if verify && server.is_some() {
+        return Err(CliError::RemoteVerifyUnsupported);
+    }
+
     // Canonicalize so `.`/`..`/trailing slashes resolve to a real path with a
     // usable file name (and to detect an output that aliases the source).
     let source = source
@@ -208,25 +306,39 @@ fn run_compress(
         return Err(CliError::UnsupportedSource(source));
     }
 
-    match server.as_deref() {
+    // Every local compression is checked; --verify only says how deeply. The
+    // depth is bound once and then both handed to the engine and reported, so
+    // the Outcome cannot end up naming a check that did not happen.
+    let depth = if verify {
+        Verify::Contents
+    } else {
+        Verify::Index
+    };
+
+    let checked = match server.as_deref() {
         // Remote handles both shapes: a file goes as-is, a directory travels
         // as a tar envelope the server unwraps.
         Some(server) => {
             let archive = collapse_remote::compress_path(server, &source, algorithm, level)?;
             std::fs::write(&output, archive)?;
+            None
         }
-        None if source.is_dir() => compress_dir(&source, &output, algorithm, level)?,
+        None if source.is_dir() => {
+            compress_dir(&source, &output, algorithm, level, depth)?;
+            Some(depth)
+        }
         None => {
             let arcname = source
                 .file_name()
                 .ok_or_else(|| CliError::InvalidPath(source.clone()))?
                 .to_string_lossy()
                 .into_owned();
-            compress(&source, &output, &arcname, algorithm, level)?;
+            compress(&source, &output, &arcname, algorithm, level, depth)?;
+            Some(depth)
         }
-    }
+    };
 
-    Ok(Outcome::Compressed { output })
+    Ok(Outcome::Compressed { output, checked })
 }
 
 /// Resolve the archive format: explicit `--format`, else the output file's
@@ -246,8 +358,173 @@ fn run_extract(archive: PathBuf, output_dir: PathBuf) -> Result<Outcome, CliErro
     if !archive.exists() {
         return Err(CliError::NotFound(archive));
     }
+
+    // What this machine cannot name, read from the archive's listing before
+    // anything is created. The rules are the host's, because the question is
+    // what this filesystem can hold and not what would travel elsewhere: on
+    // Unix almost every name is fine, and on Windows an ordinary tarball built
+    // on Linux can be full of names it will not take. Bound once and used for
+    // both the report and the adjustments, so the two cannot disagree about
+    // which machine they are talking about.
+    let rules = NameRules::host();
+    // A listing this build cannot read is deliberately not this check's
+    // business. Extraction is about to open the same archive and fail on it in
+    // its own vocabulary ("Unknown archive extension", "invalid Zip archive"),
+    // which is the message this pass would otherwise replace with a worse one
+    // about names. Core skips its own planning pass for the same reason.
+    let report = unwritable_names_with(&archive, rules).unwrap_or_default();
+
+    // Refused only when a character needs a replacement, which is a question,
+    // and a question needs someone to ask. The other two problems (a trailing
+    // dot or space, a reserved device name) have one correct answer that needs
+    // nobody: refusing those would leave a Windows user with no way to extract
+    // an archive whose only fault is a file called `aux.log`, while the
+    // desktop app would open it without a word.
+    if !report.characters.is_empty() {
+        return Err(CliError::UnwritableEntries { archive, report });
+    }
+    // Worked out before extracting, from the same listing and the same rules
+    // the engine will use, so what is reported is what lands on disk.
+    let adjusted = adjustments(&report, rules);
+
     let files = extract(&archive, &output_dir)?;
-    Ok(Outcome::Extracted { output_dir, files })
+    Ok(Outcome::Extracted {
+        output_dir,
+        files,
+        adjusted,
+    })
+}
+
+/// The name each unwritable entry ends up with, for the entries whose problems
+/// are settled without asking anyone.
+///
+/// Entries needing a replacement are absent, and that is the mechanism rather
+/// than a filter: with no substitution to apply, `rewrite_entry` refuses them,
+/// and those are exactly the ones [`run_extract`] has already refused to
+/// proceed with. Asking the engine (instead of reimplementing "drop the
+/// trailing dot, suffix the device") is what keeps this from drifting away
+/// from the name actually written.
+pub fn adjustments(report: &NameReport, rules: NameRules) -> Vec<Adjustment> {
+    let no_answers = Substitutions::new();
+    report
+        .entries
+        .iter()
+        .filter_map(|unwritable| {
+            let written = rules.rewrite_entry(&unwritable.entry, &no_answers).ok()?;
+            Some(Adjustment {
+                entry: unwritable.entry.clone(),
+                written: written.to_string_lossy().into_owned(),
+            })
+        })
+        .collect()
+}
+
+/// Why an archive was refused, which entries are at fault, what is wrong with
+/// each, and what would let the user get their files.
+///
+/// Public and pure so it can be read back on any machine: a [`NameReport`] is
+/// data, and `NameReport::of(names, NameRules::windows())` builds the Windows
+/// one from a Mac. This message is the entire feature on the command line, and
+/// a message only Windows can produce is a message nobody here would ever read
+/// before a user does.
+pub fn unwritable_entries_message(archive: &Path, report: &NameReport) -> String {
+    let mut message = String::new();
+    let count = report.entries.len();
+    let plural = if count == 1 { "name" } else { "names" };
+    // `write!` into a String cannot fail, so the results are dropped rather
+    // than dressed up as an error this function has no way to return.
+    let _ = write!(
+        message,
+        "cannot extract {}: {count} entry {plural} cannot be written on this system",
+        archive.display()
+    );
+
+    for unwritable in &report.entries {
+        // Quoted, because a name whose fault is a trailing space says nothing
+        // at all unquoted.
+        let _ = write!(message, "\n  {:?}", unwritable.entry);
+        for problem in &unwritable.problems {
+            let _ = write!(message, "\n    {}", explain(problem));
+        }
+    }
+
+    let _ = write!(message, "\nNothing was extracted.");
+    if !report.characters.is_empty() {
+        let (needed, them) = if report.characters.len() == 1 {
+            ("a replacement for", "it")
+        } else {
+            ("replacements for", "them")
+        };
+        let _ = write!(
+            message,
+            " Going ahead needs {needed} {}, and this command cannot ask for {them} mid-run \
+             without becoming interactive: the Collapse desktop app asks once per character, \
+             checks the answer is writable too, and extracts with it.",
+            listed(report)
+        );
+    }
+    if report
+        .entries
+        .iter()
+        .any(|e| e.problems.iter().any(|p| p.replaceable().is_none()))
+    {
+        let _ = write!(
+            message,
+            " The names above with nothing to replace are adjusted for you once it can go ahead."
+        );
+    }
+    message
+}
+
+/// One line for one problem, about the machine in front of the user ("here")
+/// rather than about filesystems in general, because that is what the rules
+/// are: what this host can hold, not what is portable.
+fn explain(problem: &NameProblem) -> String {
+    match problem {
+        NameProblem::Character {
+            character,
+            fault: CharacterFault::Rejected,
+        } => format!("{character:?} cannot appear in a file name here"),
+        // The loud/silent split is the whole difference between issues #64 and
+        // #63, and it is what the user needs to hear: one is a name the system
+        // refuses, the other is a name it accepts and reads as something else.
+        NameProblem::Character {
+            character,
+            fault: CharacterFault::Reinterpreted,
+        } => format!(
+            "{character:?} is not read as part of a name here: the entry would be attached to \
+             another file as hidden data instead of becoming a file, with no error"
+        ),
+        NameProblem::TrailingCharacters { removed } => format!(
+            "the name ends in {removed:?}, which this system does not keep, so it would be dropped"
+        ),
+        NameProblem::ReservedDevice { device } => format!(
+            "{device:?} names a device rather than a file, in every directory, so it would be \
+             written under an adjusted name"
+        ),
+    }
+}
+
+/// The characters holding the archive up, with how much of it each holds up:
+/// `'?' (2 entries) and ':' (1 entry)`.
+fn listed(report: &NameReport) -> String {
+    let parts: Vec<String> = report
+        .characters
+        .iter()
+        .map(|offender| {
+            let unit = if offender.entries == 1 {
+                "entry"
+            } else {
+                "entries"
+            };
+            format!("{:?} ({} {unit})", offender.character, offender.entries)
+        })
+        .collect();
+    match parts.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// Derive the default archive path: `<source>.<ext>` next to the source.

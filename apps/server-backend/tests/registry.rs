@@ -6,7 +6,7 @@
 //! file and a second `open` standing in for a restart.
 
 use collapse_core::Algorithm;
-use collapse_server_backend::models::{Envelope, Job, JobStatus};
+use collapse_server_backend::models::{Envelope, Job, JobStatus, Verify};
 use collapse_server_backend::registry::{now_unix, Registry, DATABASE_FILE, SCHEMA_VERSION};
 use tempfile::TempDir;
 
@@ -17,6 +17,7 @@ fn job(id: &str) -> Job {
         Algorithm::Zip,
         3,
         Envelope::None,
+        Verify::Index,
     )
 }
 
@@ -59,6 +60,7 @@ fn every_field_survives_the_round_trip() {
         Algorithm::SevenZ,
         5,
         Envelope::Tar,
+        Verify::Contents,
     );
     original.status = JobStatus::Failed;
     original.error_message = Some("boom".to_string());
@@ -71,6 +73,11 @@ fn every_field_survives_the_round_trip() {
     assert_eq!(stored.algorithm, original.algorithm);
     assert_eq!(stored.level, original.level);
     assert_eq!(stored.envelope, original.envelope);
+    // The worker is handed a job id and nothing else, so this column is the
+    // only way the depth a client asked for reaches the compression. Drop it
+    // from the INSERT or the SELECT and every job silently checks at the floor.
+    assert_eq!(stored.verify, original.verify);
+    assert_eq!(stored.verify, Verify::Contents);
     assert_eq!(stored.status, original.status);
     assert_eq!(stored.error_message, original.error_message);
 }
@@ -282,6 +289,25 @@ fn a_failure_message_survives_reopening() {
     assert_eq!(stored.error_message.as_deref(), Some("disk full"));
 }
 
+/// The depth is chosen once, on the upload, and read back by a worker that may
+/// belong to a different process: a queued job whose server was restarted is
+/// the case where nothing but the row remembers what the client asked for.
+#[test]
+fn the_verification_depth_survives_reopening() {
+    let dir = TempDir::new().unwrap();
+    {
+        let registry = reopen(&dir);
+        let mut deep = job("j1");
+        deep.verify = Verify::Contents;
+        registry.add(&deep).unwrap();
+    }
+
+    assert_eq!(
+        reopen(&dir).get("j1").unwrap().unwrap().verify,
+        Verify::Contents
+    );
+}
+
 #[test]
 fn a_removed_job_stays_removed() {
     let dir = TempDir::new().unwrap();
@@ -485,49 +511,137 @@ fn a_registry_from_a_newer_schema_is_refused() {
     );
 }
 
+/// Read `PRAGMA user_version` off the file, the way the next process would.
+fn stamped_version(dir: &TempDir) -> i64 {
+    rusqlite::Connection::open(dir.path().join(DATABASE_FILE))
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap()
+}
+
+/// Build a database at an older schema by hand, the way an older build left
+/// it: `columns` is the table as that version spelled it, `values` one row.
+fn plant_schema(dir: &TempDir, version: i64, columns: &str, values: &str) {
+    let connection = rusqlite::Connection::open(dir.path().join(DATABASE_FILE)).unwrap();
+    connection
+        .execute_batch(&format!(
+            "CREATE TABLE jobs ({columns});
+             INSERT INTO jobs VALUES ({values});"
+        ))
+        .unwrap();
+    connection
+        .pragma_update(None, "user_version", version)
+        .unwrap();
+}
+
+/// Version 2's table: `server_version`, but no `verify`.
+const SCHEMA_2_COLUMNS: &str = "job_id         TEXT PRIMARY KEY,
+     name           TEXT NOT NULL,
+     archive_name   TEXT NOT NULL,
+     algorithm      TEXT NOT NULL,
+     level          INTEGER NOT NULL,
+     envelope       TEXT NOT NULL,
+     status         TEXT NOT NULL,
+     error_message  TEXT,
+     created_at     INTEGER NOT NULL,
+     updated_at     INTEGER NOT NULL,
+     server_version TEXT";
+
 #[test]
 fn a_registry_from_the_previous_schema_is_migrated() {
-    // Version 1 had no server_version column. Opening it must add the column
-    // and keep the rows, not start over.
+    // Version 2 had no `verify` column, so a store written by the build before
+    // this one has to gain it and keep its rows, not start over: a server that
+    // dropped a released version's jobs on upgrade would lose archives clients
+    // had already been promised.
     let dir = TempDir::new().unwrap();
-    {
-        let connection = rusqlite::Connection::open(dir.path().join(DATABASE_FILE)).unwrap();
-        connection
-            .execute_batch(
-                "CREATE TABLE jobs (
-                     job_id        TEXT PRIMARY KEY,
-                     name          TEXT NOT NULL,
-                     archive_name  TEXT NOT NULL,
-                     algorithm     TEXT NOT NULL,
-                     level         INTEGER NOT NULL,
-                     envelope      TEXT NOT NULL,
-                     status        TEXT NOT NULL,
-                     error_message TEXT,
-                     created_at    INTEGER NOT NULL,
-                     updated_at    INTEGER NOT NULL
-                 );
-                 INSERT INTO jobs VALUES
-                     ('old', 'notes.txt', 'notes.txt.zip', 'zip', 3, 'none',
-                      'completed', NULL, 0, 0);",
-            )
-            .unwrap();
-        connection.pragma_update(None, "user_version", 1).unwrap();
-    }
+    plant_schema(
+        &dir,
+        2,
+        SCHEMA_2_COLUMNS,
+        "'old', 'notes.txt', 'notes.txt.zip', 'zip', 3, 'none',
+         'completed', NULL, 0, 0, '0.7.0'",
+    );
 
     let registry = Registry::open(dir.path()).expect("the older schema is migrated, not refused");
 
     let job = registry.get("old").unwrap().expect("the job survives");
     assert_eq!(job.archive_name, "notes.txt.zip");
-    assert_eq!(
-        registry.get("old").unwrap().unwrap().status,
-        JobStatus::Completed
+    assert_eq!(job.status, JobStatus::Completed);
+    // The column's default. Not a claim about what that build did (it verified
+    // nothing at all), just the floor: the value only matters to a job the
+    // worker still has to run, and the startup reconciliation fails every one
+    // of those, so no migrated row ever reaches the worker.
+    assert_eq!(job.verify, Verify::Index);
+
+    assert_eq!(stamped_version(&dir), SCHEMA_VERSION);
+}
+
+#[test]
+fn a_registry_several_schemas_behind_is_walked_all_the_way_forward() {
+    // Version 1 had neither `server_version` nor `verify`, so opening it has to
+    // apply both steps in order. Written as `else if` the migration would take
+    // one hop per open, leaving a database that is stamped current and missing
+    // a column, which fails on the first read instead of at startup.
+    let dir = TempDir::new().unwrap();
+    plant_schema(
+        &dir,
+        1,
+        "job_id        TEXT PRIMARY KEY,
+         name          TEXT NOT NULL,
+         archive_name  TEXT NOT NULL,
+         algorithm     TEXT NOT NULL,
+         level         INTEGER NOT NULL,
+         envelope      TEXT NOT NULL,
+         status        TEXT NOT NULL,
+         error_message TEXT,
+         created_at    INTEGER NOT NULL,
+         updated_at    INTEGER NOT NULL",
+        "'old', 'notes.txt', 'notes.txt.zip', 'zip', 3, 'none',
+         'completed', NULL, 0, 0",
     );
 
-    let version: i64 = rusqlite::Connection::open(dir.path().join(DATABASE_FILE))
+    let registry = Registry::open(dir.path()).expect("two steps behind is still migrated");
+
+    let stored = registry.get("old").unwrap().expect("the job survives");
+    assert_eq!(stored.archive_name, "notes.txt.zip");
+    assert_eq!(stored.status, JobStatus::Completed);
+    assert_eq!(stored.verify, Verify::Index);
+    assert_eq!(stamped_version(&dir), SCHEMA_VERSION);
+
+    // And the row it wrote before the upgrade is not the only one that works:
+    // the migrated table takes new jobs at the current schema too.
+    let mut fresh = job("new");
+    fresh.verify = Verify::Contents;
+    registry.add(&fresh).unwrap();
+    assert_eq!(
+        registry.get("new").unwrap().unwrap().verify,
+        Verify::Contents
+    );
+}
+
+/// The mirror image, at the depth the schema gate cannot see: `verify` is not a
+/// new column in a newer build, it is a new *value* in an existing one, so the
+/// version is unchanged and the surprise only surfaces on the read.
+#[test]
+fn a_verification_depth_this_build_does_not_know_is_reported_not_guessed() {
+    let dir = TempDir::new().unwrap();
+    drop(reopen(&dir));
+    rusqlite::Connection::open(dir.path().join(DATABASE_FILE))
         .unwrap()
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .execute(
+            "INSERT INTO jobs
+                 (job_id, name, archive_name, algorithm, level, envelope, verify,
+                  status, error_message, created_at, updated_at, server_version)
+             VALUES ('deep', 'notes.txt', 'notes.txt.zip', 'zip', 3, 'none',
+                     'paranoid', 'completed', NULL, 0, 0, '0.9.0')",
+            [],
+        )
         .unwrap();
-    assert_eq!(version, SCHEMA_VERSION);
+
+    let message = reopen(&dir).get("deep").unwrap_err().to_string();
+    assert!(message.contains("verify"), "names the field: {message}");
+    assert!(message.contains("paranoid"), "names the value: {message}");
+    assert!(message.contains("0.9.0"), "names the build: {message}");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 [package]
 name = "collapse-desktop"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 description = "Collapse — a small, fast file compressor"
 authors = ["cervantic"]
@@ -38,6 +38,11 @@ collapse-server-backend = { path = "../../server-backend" }
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "net"] }
 axum = "0.8"
+# tests/names.rs crafts an archive holding an entry name this host cannot
+# write, which no compression of a real directory could ever produce: the
+# filesystem would have refused the file first. Same version core already
+# builds with, so this adds nothing to the dependency tree.
+zip = "2"
 
 [profile.release]
 codegen-units = 1

@@ -65,10 +65,12 @@ pub(crate) struct AppState {
 /// - `GET /health` — liveness probe, returns `{"status":"ok"}`.
 /// - `GET /docs` — the interactive documentation page.
 /// - `GET /openapi.json` — the OpenAPI 3.1 description of this server.
-/// - `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]` — the
-///   body is the raw file content; answers `202 Accepted` with the queued
-///   job as JSON (`job_id`, `status`, `archive_name`, …) while a worker
-///   compresses in the background.
+/// - `POST /compress?name=<file>[&algorithm=7z|tar|zip][&level=1-5]`
+///   `[&envelope=none|tar][&verify=index|contents]`: the body is the raw file
+///   content; answers `202 Accepted` with the queued job as JSON (`job_id`,
+///   `status`, `archive_name`, …) while a worker compresses in the background.
+///   The finished archive is always read back before the job completes, and
+///   `verify=contents` decompresses every entry as well.
 /// - `GET /jobs/{job_id}` — the job's current state
 ///   (`queued` → `compressing` → `completed` | `failed`).
 /// - `GET /jobs/{job_id}/download` — the archive bytes once `completed`
@@ -187,11 +189,15 @@ fn start_reaper(registry: Arc<Registry>, storage: Arc<Storage>, ttl: Duration) {
             .await;
 
             match swept {
-                Ok(Ok(0)) => {}
-                Ok(Ok(jobs)) => tracing::info!(
-                    jobs,
+                Ok(Ok(report)) if report.is_quiet() => {}
+                // Both numbers, always: a pass that collected three jobs and
+                // could not remove a fourth has to say so, or the only trace
+                // of the leak is the per-job warning it is easy to miss.
+                Ok(Ok(report)) => tracing::info!(
+                    collected = report.collected,
+                    unremovable = report.unremovable,
                     ttl_minutes = ttl.as_secs() / 60,
-                    "reaped jobs nobody came back for"
+                    "swept the jobs nobody came back for"
                 ),
                 Ok(Err(e)) => tracing::error!(error = %e, "the reaper could not finish a pass"),
                 Err(e) => tracing::error!(error = %e, "the reaper task died"),

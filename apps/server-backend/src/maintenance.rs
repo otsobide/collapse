@@ -35,8 +35,26 @@ impl Reconciled {
 /// show `error_message` verbatim, so it is written for a person.
 pub const INTERRUPTED: &str = "The server restarted while this job was running.";
 
+/// What a sweep of expired jobs did. All zeroes is the normal case.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Reaped {
+    /// Jobs gone from both halves: the files removed (or already absent) and
+    /// the row forgotten.
+    pub collected: usize,
+    /// Jobs whose staged files could not be removed, so their rows were kept
+    /// for the next sweep to try again.
+    pub unremovable: usize,
+}
+
+impl Reaped {
+    /// Whether the pass had nothing to say, so an idle server stays quiet.
+    pub fn is_quiet(&self) -> bool {
+        *self == Reaped::default()
+    }
+}
+
 /// Delete finished jobs untouched since `deadline` (unix seconds), files and
-/// row together. Returns how many went.
+/// row together. Returns what went and what would not.
 ///
 /// This is the other half of the leak. Reconciling at startup catches what a
 /// restart stranded; this catches the client that uploaded, downloaded and
@@ -46,17 +64,47 @@ pub const INTERRUPTED: &str = "The server restarted while this job was running."
 /// Only finished jobs are considered, so nothing is pulled out from under the
 /// worker. A download refreshes the clock, so a client that keeps coming back
 /// for its archive keeps it; one that stops asking loses it.
-pub fn reap(registry: &Registry, storage: &Storage, deadline: i64) -> Result<usize, StartupError> {
-    let mut reaped = 0;
+pub fn reap(registry: &Registry, storage: &Storage, deadline: i64) -> Result<Reaped, StartupError> {
+    let mut report = Reaped::default();
     for job_id in registry.expired(deadline)? {
         // Files first: a row without files is harmless (the next startup drops
         // it), while files without a row would be invisible to everything but
         // the startup sweep.
-        storage.delete_job(&job_id);
-        registry.forget(&job_id)?;
-        reaped += 1;
+        match storage.delete_job(&job_id) {
+            // Nothing is staged for this job any more, whether this pass
+            // removed it or it was never there, so the row has nothing left to
+            // point at and both halves are done with the job.
+            Ok(_) => {
+                registry.forget(&job_id)?;
+                report.collected += 1;
+            }
+            // The row is kept so the next sweep retries the removal, rather
+            // than leaving files nothing claims: that is the one state neither
+            // this pass nor the API can see, and only a restart would clear.
+            //
+            // The cost is real and was weighed. A kept row also keeps the
+            // startup pass off the directory, since that pass only removes
+            // directories no row claims, so a failure that never clears (a
+            // volume gone read-only, a permission problem) leaks for as long
+            // as it lasts, and the expired job stays visible to the API with
+            // an archive a partial removal may already have eaten. It is
+            // accepted because the usual failure is transient, a file briefly
+            // held open by another process, and retrying every sweep heals it
+            // on its own. Loudly: the warning below and the `unremovable`
+            // count are all an operator gets, and the alternative (forgetting
+            // the row anyway) hides the job from every request while its bytes
+            // stay on the disk this pass exists to free.
+            Err(e) => {
+                tracing::warn!(
+                    job = %job_id,
+                    error = %e,
+                    "cannot remove the staged files, keeping the row for the next sweep"
+                );
+                report.unremovable += 1;
+            }
+        }
     }
-    Ok(reaped)
+    Ok(report)
 }
 
 /// Reconcile the registry against the staging directory. Call once at startup,
@@ -103,10 +151,14 @@ pub fn reconcile(registry: &Registry, storage: &Storage) -> Result<Reconciled, S
         // Counted only once it is really gone: a report that claims a cleanup
         // it did not do is worse than one that admits the problem, because it
         // reads as clean on every boot while the directory stays forever.
-        if storage.delete_job(&name) {
-            report.orphaned += 1;
-        } else {
-            tracing::warn!(entry = %name.to_string_lossy(), "cannot remove a staged directory no job claims");
+        match storage.delete_job(&name) {
+            // Gone either way. `Ok(false)` means it disappeared between being
+            // listed and being deleted, which nothing here does but a
+            // filesystem shared with something else might.
+            Ok(_) => report.orphaned += 1,
+            Err(e) => {
+                tracing::warn!(entry = %name.to_string_lossy(), error = %e, "cannot remove a staged directory no job claims")
+            }
         }
     }
 

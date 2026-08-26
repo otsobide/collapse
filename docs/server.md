@@ -206,7 +206,7 @@ it completes, and the job deleted afterwards.
 | Method and path | What it does |
 |---|---|
 | `GET /health` | Liveness probe: `{"status":"ok"}` |
-| `POST /compress?name=&algorithm=&level=&envelope=` | Upload raw bytes, get a queued job (202) |
+| `POST /compress?name=&algorithm=&level=&envelope=&verify=` | Upload raw bytes, get a queued job (202) |
 | `GET /jobs/{job_id}` | The job's current state |
 | `GET /jobs/{job_id}/download` | The archive bytes, once completed |
 | `DELETE /jobs/{job_id}` | Drop the job and its files |
@@ -221,6 +221,7 @@ Query parameters of `POST /compress`:
 | `algorithm` | no | `zip` | `zip`, `7z`, `tar` (`tar` only bundles, it does not compress) |
 | `level` | no | `3` | `1` to `5`. Out of range is a 400, never silently clamped. |
 | `envelope` | no | `none` | `none` for a plain file, `tar` for a directory: see below. |
+| `verify` | no | `index` | How deeply the archive is checked before the job completes: see below. |
 
 The body is the file's raw bytes. There is no multipart form.
 
@@ -240,6 +241,7 @@ curl -sS -X POST --data-binary @notes.txt \
   "algorithm": "zip",
   "level": 3,
   "envelope": "none",
+  "verify": "index",
   "status": "queued",
   "error_message": null
 }
@@ -280,13 +282,55 @@ Tar is the envelope because it does not compress. A zip or 7z envelope would
 let a small upload expand without bound on the server, which the upload cap
 could not contain.
 
+### Verifying the archive
+
+Every archive is read back before the job is called `completed`, and one that
+does not hold what it was meant to is **discarded**: the job goes to `failed`
+with a message saying which entries were missing, and there is nothing to
+download. Nothing partial is ever served.
+
+That check is not optional, because the failure it catches is invisible
+otherwise. zip and tar finalise as they close, so a compression that died
+partway through still leaves a *structurally valid* archive silently missing
+entries: it opens cleanly in any tool, and nothing in it says anything is
+absent.
+
+`verify` chooses how far the check goes:
+
+| Value | What it reads | Cost |
+|---|---|---|
+| `index` (default) | The archive's own listing, confirmed to name exactly the entries that were meant to go in. Nothing is decompressed. | Free |
+| `contents` | The listing, and then every entry decompressed into a sink so the format's own checksums fire. | Roughly a second compression |
+
+What `contents` buys depends on the format, and the difference is worth being
+precise about rather than implying all three are equal:
+
+- **zip** stores a CRC32 per entry, compared as the entry is read to its end.
+  A flipped bit in the data is caught.
+- **7z** stores a CRC per file and per pack stream, verified while decoding.
+  A flipped bit in the data is caught.
+- **tar** stores **no** checksum over an entry's data at all: its header
+  `cksum` field covers the 512 byte header and nothing else. Here `contents`
+  reads every entry through and confirms the archive is well formed and
+  complete, and that is the whole of it. A flipped bit inside a tar member is
+  not detectable from the archive, by this or by any other reader.
+
+```bash
+curl -sS -X POST --data-binary @photos.tar \
+  "http://localhost:8080/compress?name=photos&envelope=tar&verify=contents"
+```
+
+An unknown value is a 400, not a fallback to the default: a client told its
+archive was checked more thoroughly than it was is worse off than one told its
+request was wrong.
+
 ### Errors
 
 Errors are JSON, always shaped `{"detail": "..."}`:
 
 | Status | When |
 |---|---|
-| 400 | Bad `name`, unknown `algorithm` or `envelope`, `level` out of range, a tar envelope whose contents are not exactly one directory named `name` |
+| 400 | Bad `name`, unknown `algorithm`, `envelope` or `verify`, `level` out of range, a tar envelope whose contents are not exactly one directory named `name` |
 | 404 | No such job, or its archive is gone |
 | 409 | Downloading or deleting a job that is still queued or compressing, or downloading one that failed |
 | 413 | The upload is larger than `--max-upload-mb` |
@@ -361,9 +405,9 @@ docker logs -f collapse
 
 ```
 2026-08-17T18:56:48.325814Z  INFO collapse_server_backend: collapse-server-backend listening version="0.5.1" addr=0.0.0.0:8000 max_upload_mb=500 storage_dir=/var/lib/collapse
-2026-08-17T18:56:48.651681Z  INFO request{method=POST uri=/compress?name=notes.txt&algorithm=zip&level=5}: collapse_server_backend::routes: queued job=7b6015d0 name=notes.txt algorithm=zip level=5 envelope=none bytes=45000
+2026-08-17T18:56:48.651681Z  INFO request{method=POST uri=/compress?name=notes.txt&algorithm=zip&level=5}: collapse_server_backend::routes: queued job=7b6015d0 name=notes.txt algorithm=zip level=5 envelope=none verify=index bytes=45000
 2026-08-17T18:56:48.651818Z  INFO request{method=POST uri=/compress?name=notes.txt&algorithm=zip&level=5}: tower_http::trace::on_response: finished processing request latency=0 ms status=202
-2026-08-17T18:56:48.651887Z  INFO collapse_server_backend::queue: compressing job=7b6015d0 name=notes.txt algorithm=zip level=5
+2026-08-17T18:56:48.651887Z  INFO collapse_server_backend::queue: compressing job=7b6015d0 name=notes.txt algorithm=zip level=5 verify=index
 2026-08-17T18:56:48.653465Z  INFO collapse_server_backend::queue: completed job=7b6015d0 bytes=233 elapsed_ms=1
 2026-08-17T18:56:48.719158Z  INFO request{method=DELETE uri=/jobs/7b6015d0}: collapse_server_backend::routes: deleted job=7b6015d0 files_removed=true
 ```
@@ -445,8 +489,21 @@ the server sweeps: **a finished job nobody downloads again within
 together, and says so:
 
 ```
-INFO collapse_server_backend: reaped jobs nobody came back for jobs=3 ttl_minutes=60
+INFO collapse_server_backend: swept the jobs nobody came back for collected=3 unremovable=0 ttl_minutes=60
 ```
+
+`unremovable` is the honest half of that line: jobs whose files the server
+could not delete, usually because something else is holding them (a volume
+gone read-only, a scanner with a file open). Those keep their row, so the next
+sweep tries again and each attempt says why:
+
+```
+WARN collapse_server_backend: cannot remove the staged files, keeping the row for the next sweep job=1a6a95fa... error=Permission denied (os error 13)
+```
+
+A number that keeps climbing there is disk that is not coming back on its own,
+and the job it names is still listed by the API even though its window has
+passed.
 
 Three rules make that safe to leave running unattended:
 

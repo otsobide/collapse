@@ -66,11 +66,35 @@ below.
 | Module | Responsibility |
 |--------|----------------|
 | `compression.rs` | Public dispatchers (`compress`, `compress_dir`, `extract`), the `CompressionError` type, and the `sanitize_entry_path` path-traversal guard. |
-| `compression/algorithm.rs` | The `Algorithm` enum (`SevenZ`, `Tar`, `Zip`) and its `extension()` / `media_type()` / `from_extension()` / `FromStr` / `Display`. |
+| `compression/algorithm.rs` | The `Algorithm` enum (`SevenZ`, `Tar`, `Zip`) and its `extension()` / `media_type()` / `from_extension()` / `FromStr` / `Display`. Two parsers, deliberately different: `from_extension` reads a file name and is case insensitive, `FromStr` reads a wire value (the API's `algorithm=` and the CLI's `--format`) and is strict. |
 | `compression/walk.rs` | `walk_tree` — the shared, symlink-skipping directory walker that turns a folder into a deterministic list of entries. |
 | `compression/sevenz.rs` | 7z backend: `compress_7z`, `compress_7z_dir`, `extract_7z`. |
 | `compression/zip.rs` | ZIP backend: `compress_zip`, `compress_zip_dir`, `extract_zip`. |
 | `compression/tar.rs` | tar backend: `compress_tar`, `compress_tar_dir`, `extract_tar`. |
+
+### `src/compression/names.rs` — what this filesystem will not write
+
+Extraction only: names produced when compressing come from the local
+filesystem and are legal there by construction.
+
+`NameRules` is **data, not `cfg`**. `NameRules::windows()` can be asked for on
+any platform, so every Windows rule is tested from a Mac, and only
+`NameRules::host()` is chosen by the compiler. A rule reachable solely under
+`#[cfg(windows)]` is a rule this repository cannot test.
+
+It answers with structure rather than a string, because a front end has to
+render it: each offending character (and whether the host **rejects** it or
+**reinterprets** it, which is the difference between a colon failing and a
+colon quietly becoming an NTFS stream), a trailing dot or space, and a reserved
+device name. Only the first is a question for the user; the other two are
+adjustments that need explaining, not answering.
+
+`unwritable_names` inspects a listing without extracting, and `extract_with`
+takes the answers. Replacements are applied **before** the structural
+adjustments, or `CO?1` answered with `M` would be left as the device `COM1`.
+An answer that is itself unwritable, carries a path separator, or empties a
+component is refused, and a collision is refused naming both entries rather
+than silently renaming one.
 
 ### `src/paths.rs` — the guards both front ends share
 
@@ -197,6 +221,18 @@ JSON, and `progress_of`, which decides whether a status means keep polling,
 download, or give up), while the HTTP plumbing in `client.rs` stays private.
 Errors are a `RemoteError` of its own, so the crate does not depend on any
 front-end's error type; the CLI absorbs it into `CliError`.
+
+It also owns **what counts as an address at all**. `base_url` refuses one that
+is empty or nothing but whitespace (`RemoteError::BlankServer`), and both entry
+points, `compress_path` and `check_health`, go through it before any request,
+so no front-end decides that on its own. They used to, and disagreed: the
+desktop read `""` as "compress locally" and `"   "` as a real destination,
+while the CLI sent both over the wire and failed against a server with no name.
+A blank is **refused, not read as "compress locally"**: the desktop's UI never
+produces one (`sources.js` normalizes an address to `null` or a real URL), so
+it means a stale stored value or a mistyped `--server`, and compressing
+locally would hide both. Nothing else about the address is judged here;
+whatever else is wrong with it is the HTTP client's to report.
 
 ## collapse-server-backend — the compression server
 
@@ -359,6 +395,14 @@ or a file inside the folder being compressed, replaces an existing output only
 when `overwrite` says the user agreed to it in the save dialog, and hands the
 work to a remote server when one is chosen),
 `extract_archive`, and `check_server` (a health probe for the settings panel).
+
+All three of those carry `#[tauri::command(async)]`. A bare `#[tauri::command]`
+on a synchronous function runs the body on the thread handling the IPC message,
+so the window stops repainting until it returns: a compression froze it for its
+whole duration, and a mistyped server address froze it for the 30 seconds of
+ureq's connect timeout. `is_directory` is the exception, being a single `stat`.
+Nothing type-checks that distinction either, so `tests/ipc.rs` pins which
+commands must carry it and which must not.
 Remote work goes through [`collapse-remote`](#collapse-remote--the-client-for-a-remote-server)
 from Rust rather than the webview, so the app's CSP stays `default-src 'self'`. Every path is chosen through the native
 open/save dialogs, which is also what makes the app work under the macOS App

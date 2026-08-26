@@ -1,6 +1,6 @@
 [package]
 name = "collapse-cli"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -28,5 +28,10 @@ collapse-core = { path = "../core" }
 collapse-server-backend = { path = "../server-backend" }
 clap = { version = "4", features = ["derive"] }
 tempfile = "3"
+# tests/names.rs writes entry names no filesystem here would accept, which is
+# the only way to reach the refusal path on a machine that is not Windows.
+# Nothing that goes through core can spell such a name, since core takes its
+# names from files that exist.
+zip = "2"
 tokio = { version = "1", features = ["rt", "net"] }
 axum = "0.8"

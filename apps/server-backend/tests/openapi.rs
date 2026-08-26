@@ -181,6 +181,27 @@ async fn documented_envelopes_are_all_accepted() {
     }
 }
 
+#[tokio::test]
+async fn documented_verification_depths_are_all_accepted() {
+    let (router, _storage) = app();
+    let spec = spec(&router).await;
+
+    let depths = spec["components"]["schemas"]["Verify"]["enum"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(
+        !depths.is_empty(),
+        "the document lists no verification depths"
+    );
+
+    for depth in depths {
+        let value = depth.as_str().unwrap();
+        let job = queue(&router, &format!("name=a.txt&verify={value}")).await;
+        assert_eq!(job["verify"], value);
+    }
+}
+
 /// The documented defaults are what a caller relies on when omitting a
 /// parameter, so they have to match what the server actually does.
 #[tokio::test]
@@ -202,4 +223,29 @@ async fn documented_defaults_match_the_behaviour() {
     assert_eq!(job["algorithm"], documented("algorithm"));
     assert_eq!(job["level"], documented("level"));
     assert_eq!(job["envelope"], documented("envelope"));
+    assert_eq!(job["verify"], documented("verify"));
+}
+
+/// Every field the document says a `Job` always carries has to be in the JSON,
+/// or a generated client deserializing into a non-optional field breaks on the
+/// first response.
+#[tokio::test]
+async fn every_field_the_job_schema_requires_is_really_sent() {
+    let (router, _storage) = app();
+    let spec = spec(&router).await;
+
+    let required = spec["components"]["schemas"]["Job"]["required"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert!(!required.is_empty(), "the document requires no field");
+
+    let job = queue(&router, "name=a.txt").await;
+    for field in required {
+        let field = field.as_str().unwrap();
+        assert!(
+            job.get(field).is_some(),
+            "the document requires {field}, the server does not send it: {job}"
+        );
+    }
 }
