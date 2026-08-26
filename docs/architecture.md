@@ -218,7 +218,45 @@ crosses that boundary fine.
 The split inside mirrors the one the rest of the project uses for testability:
 `protocol.rs` is **public and pure** (URL normalization, reading the server's
 JSON, and `progress_of`, which decides whether a status means keep polling,
-download, or give up), while the HTTP plumbing in `client.rs` stays private.
+download, or give up), `waiting.rs` is the poll loop behind two one-method
+traits, while the HTTP plumbing in `client.rs` stays private.
+
+### Waiting, and the two limits that are not the same limit
+
+The client asks `GET /jobs/{id}` until the job settles. Two separate decisions
+live there and conflating them is the mistake to avoid.
+
+**How often to ask** is the backoff in `waiting.rs`: 10 ms, doubling to a
+200 ms ceiling. It used to be a flat 200 ms from the first wait, so a job the
+server had already finished still cost the caller 200 ms of sleeping (a five
+byte file measured 236 ms against 44 ms now). A long job is unaffected: it
+reaches the ceiling after 310 ms and stays there. It is not uniformly faster,
+and that is pinned rather than glossed over: a job finishing just after the
+ramp is asked again a whole ceiling later, worst case 110 ms, bounded by one
+`MAX_POLL_DELAY`.
+
+**When to give up** is `Timeouts`, and it bounds the *server's answers*, never
+the job. Compression is free to run for hours; what is not allowed is silence
+on an open socket. `connect` is 10 s, `read` and `write` 30 s, and they are
+deliberately generous so that hitting one is unambiguous evidence of a hang
+rather than of impatience. `read` and `write` are **per socket operation**, not
+per response, which was verified against ureq rather than assumed: a body
+dribbled out over 2.7 s in fast chunks passes a 1 s read timeout untouched, so
+a large upload or download that keeps moving never trips one. There is
+deliberately **no total deadline on the job**, and a test asserts a job cannot
+be cut short while the server keeps answering.
+
+That distinction is also what `RemoteError` now spells out. `Unreachable` means
+no socket could be opened (refused, connect timeout, DNS); `Unresponsive` means
+one was open and the far side went quiet, which is a server that is up and
+stuck rather than a wrong address, and its message says the job may still be
+running there. ureq separates the two for us (`ConnectionFailed`/`Dns` against
+`Io`), checked against the real crate.
+
+`Timeouts` is injectable through `compress_path_with` and `check_health_with`,
+following `collapse_core::extract_with`: the defaults are right for every
+front-end, and a suite cannot wait 30 seconds to prove what happens after 30
+seconds of silence.
 Errors are a `RemoteError` of its own, so the crate does not depend on any
 front-end's error type; the CLI absorbs it into `CliError`.
 

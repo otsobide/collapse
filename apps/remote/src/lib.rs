@@ -22,5 +22,8 @@ mod error;
 pub mod protocol;
 pub mod waiting;
 
-pub use client::{check_health, compress_path};
+pub use client::{
+    check_health, check_health_with, compress_path, compress_path_with, Timeouts,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
+};
 pub use error::RemoteError;
