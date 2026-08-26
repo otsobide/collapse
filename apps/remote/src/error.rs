@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use thiserror::Error;
 
 /// What can go wrong talking to a remote Collapse server.
@@ -18,6 +20,29 @@ pub enum RemoteError {
     /// No HTTP exchange happened: DNS, connection refused, timeout, TLS.
     #[error("cannot reach the server at {server}: {reason}")]
     Unreachable { server: String, reason: String },
+
+    /// A socket was open and the far side stopped answering on it.
+    ///
+    /// Kept apart from [`Self::Unreachable`] because the two call for different
+    /// things from whoever reads it: an address that cannot be reached is
+    /// usually wrong or the server is down, while a server that accepted the
+    /// connection and then went silent is running and stuck. The job may well
+    /// still exist on the far side.
+    ///
+    /// The limit this reports is on the **server's answers**, never on the
+    /// compression: a job is free to run for hours as long as each poll is
+    /// answered (see `Timeouts`).
+    #[error(
+        "the server at {server} accepted the connection and then stopped answering \
+         (nothing for {} seconds). The job may still be running there; the archive was not \
+         downloaded. Underlying error: {reason}",
+        after.as_secs()
+    )]
+    Unresponsive {
+        server: String,
+        after: Duration,
+        reason: String,
+    },
 
     /// The server answered with a 4xx/5xx. `message` is already rendered for
     /// a human (it prefers the server's JSON `detail` field).
