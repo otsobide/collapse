@@ -3,41 +3,7 @@
 //! from the HTTP plumbing so the test crate can exercise it without a server:
 //! source files here carry no inline `mod tests`.
 
-use std::time::Duration;
-
 use crate::RemoteError;
-
-/// How long to wait before the **first** re-poll of a job the server has not
-/// finished yet.
-///
-/// Short on purpose. Nearly every archive a person compresses is done in less
-/// time than a person notices, and the old schedule waited a flat 200 ms
-/// before asking a second time, so a five byte file took ~235 ms against ~23 ms
-/// locally with almost none of that spent compressing (issue #48). It is the
-/// client's own sleep that a small job is waiting out.
-///
-/// Not zero, and not one millisecond: the point is to stop making a finished
-/// job wait, not to spin on a server that is genuinely busy.
-pub const FIRST_POLL_DELAY: Duration = Duration::from_millis(10);
-
-/// The ceiling the wait grows to, and the interval a long job settles into.
-///
-/// Deliberately the old fixed interval, so nothing about a job that takes
-/// minutes changes: it reaches this after five polls and stays here.
-pub const MAX_POLL_DELAY: Duration = Duration::from_millis(200);
-
-/// The wait before the next poll, given the wait before the last one.
-///
-/// Doubles until it reaches [`MAX_POLL_DELAY`]. The schedule is therefore
-/// 10, 20, 40, 80, 160, 200, 200, ... which reaches the ceiling in 310 ms and
-/// costs a job of any real length about three extra requests over its whole
-/// life, against saving ~190 ms on every job that was already done.
-///
-/// A pure function rather than a counter inside the loop, so the schedule can
-/// be checked without a server and without waiting for it.
-pub fn next_delay(previous: Duration) -> Duration {
-    previous.saturating_mul(2).min(MAX_POLL_DELAY)
-}
 
 /// Normalize the user-supplied server URL into a base the endpoints are
 /// joined onto, so `http://host:8000/` does not yield `//compress`.

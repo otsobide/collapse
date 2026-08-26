@@ -11,6 +11,7 @@ use collapse_core::compression::compress_tar_dir;
 use collapse_core::Algorithm;
 
 use crate::protocol::{self, Progress};
+use crate::waiting::{self, Poller};
 use crate::RemoteError;
 
 /// Compress a file or a whole directory on a remote server and return the
@@ -127,28 +128,31 @@ fn create_job(
     parse_json(response)
 }
 
+/// Ask `GET /jobs/{id}` once. The loop that decides when to ask again lives in
+/// [`crate::waiting`]; this is only the half that needs a socket.
+struct HttpPoller<'a> {
+    base: &'a str,
+    job_id: &'a str,
+}
+
+impl Poller for HttpPoller<'_> {
+    fn poll(&self) -> Result<Progress, RemoteError> {
+        let response = ureq::get(&format!("{}/jobs/{}", self.base, self.job_id))
+            .call()
+            .map_err(|e| remote_error(self.base, e))?;
+        protocol::progress_of(&parse_json(response)?)
+    }
+}
+
 /// Poll `GET /jobs/{id}` until the job is ready (Ok) or gives up (Err).
 ///
-/// The wait between polls starts at [`protocol::FIRST_POLL_DELAY`] and doubles
-/// to [`protocol::MAX_POLL_DELAY`]. It used to be that ceiling from the first
-/// wait onwards, which meant a job the server had already finished still cost
-/// the caller 200 ms of this function sleeping (issue #48). The schedule
-/// itself lives in `protocol` so it can be checked without a server.
+/// The wait starts at [`waiting::FIRST_POLL_DELAY`] and doubles to
+/// [`waiting::MAX_POLL_DELAY`]. It used to be that ceiling from the first wait
+/// onwards, so a job the server had already finished still cost the caller
+/// 200 ms of sleeping (issue #48).
 fn wait_for_completion(base: &str, job_id: &str) -> Result<(), RemoteError> {
-    let mut delay = protocol::FIRST_POLL_DELAY;
-    loop {
-        let response = ureq::get(&format!("{base}/jobs/{job_id}"))
-            .call()
-            .map_err(|e| remote_error(base, e))?;
-
-        match protocol::progress_of(&parse_json(response)?)? {
-            Progress::Ready => return Ok(()),
-            Progress::Waiting => {
-                std::thread::sleep(delay);
-                delay = protocol::next_delay(delay);
-            }
-        }
-    }
+    let poller = HttpPoller { base, job_id };
+    waiting::wait_for(&waiting::RealSleeper, &poller).map(|_| ())
 }
 
 /// `GET /jobs/{id}/download`: the archive bytes.
