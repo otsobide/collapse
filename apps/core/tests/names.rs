@@ -849,9 +849,127 @@ fn a_failing_entry_names_itself_and_its_destination() {
             message.contains("a.txt/b.txt") || message.contains(r"a.txt\b.txt"),
             "{format}: the message must name the entry: {message}"
         );
+        // Windows renders this from a canonicalized root, which carries a `\\?\`
+        // verbatim prefix and expands any 8.3 short name on the way, so the
+        // message legitimately does not contain the path this test built. What
+        // it must contain is where extraction actually resolved to.
+        let resolved = out.canonicalize().unwrap_or_else(|_| out.clone());
         assert!(
-            message.contains(&out.display().to_string()),
+            message.contains(&resolved.display().to_string()),
             "{format}: the message must say where it was going: {message}"
+        );
+    }
+}
+
+// ------------------------------------- the seam: splitting is not the host's --
+
+/// An archive entry name is not a host path, and this is the test that says so.
+///
+/// It used to be split with `Path::new(name).components()`, and `std::path` is
+/// `#[cfg]`-dependent while `NameRules` is data, so the rules were portable and
+/// the splitting they ran over was not. Both directions were wrong at once, and
+/// neither was visible from a Mac:
+///
+/// * Windows parses a leading `a:` as a drive prefix, which is not a `Normal`
+///   component, so it was silently dropped and `a:b/c.txt` was judged, reported
+///   and written as `b/c.txt`. The colon that issue #63 is entirely about went
+///   unasked on the only platform issue #63 concerns.
+/// * Windows treats `\` as a separator and Unix does not, so one name split
+///   into a different number of components depending on who was reading.
+///
+/// ZIP mandates `/` (APPNOTE 4.4.17.1) and tar has used it since v7, so the
+/// component count is a property of the archive and must not move.
+#[test]
+fn an_entry_splits_the_same_way_on_every_host() {
+    // One component, whatever std would make of it. `\` is not a separator in
+    // an archive, and `a:` is not a drive.
+    for name in ["a:b", "C:x", r"dir\file.txt", r"\\server\share"] {
+        assert_eq!(
+            NameRules::unix()
+                .rewrite_entry(name, &Substitutions::new())
+                .ok(),
+            Some(PathBuf::from(name)),
+            "{name} must stay one component: Unix can hold every character in it"
+        );
+    }
+    // And the split happens exactly where the archive says it does.
+    assert_eq!(
+        NameRules::unix()
+            .rewrite_entry("a:b/c.txt", &Substitutions::new())
+            .unwrap(),
+        PathBuf::from("a:b").join("c.txt")
+    );
+}
+
+/// The Windows half of the same seam: the report must ask about a colon
+/// wherever it sits, including the leading component that used to vanish.
+///
+/// Note this one passed on Unix before the fix and failed only on Windows,
+/// since `a:b` was already a single component here. It is a pin, not a
+/// reproduction: what it stops is the answer diverging by host again.
+#[test]
+fn the_report_sees_a_colon_in_the_first_component_too() {
+    for name in ["a:b/c.txt", "C:/x/y", "deep/a:b.txt"] {
+        let problems = NameRules::windows().entry_problems(name);
+        assert_eq!(
+            problems,
+            vec![NameProblem::Character {
+                character: ':',
+                fault: CharacterFault::Reinterpreted,
+            }],
+            "{name}: the colon must be a question on every host"
+        );
+    }
+}
+
+/// A backslash is an ordinary character in an archive entry, so the two rulesets
+/// must disagree about it, and each must be right about its own filesystem.
+#[test]
+fn only_windows_refuses_a_backslash_inside_a_component() {
+    assert_eq!(
+        NameRules::windows().entry_problems(r"dir\file.txt"),
+        vec![NameProblem::Character {
+            character: '\\',
+            fault: CharacterFault::Rejected,
+        }]
+    );
+    assert!(NameRules::unix().entry_problems(r"dir\file.txt").is_empty());
+}
+
+/// Issue caught by nothing until Windows CI ran: collapse could build an archive
+/// it then refused to extract.
+///
+/// A backslash is a legal character in a Unix file name. The old splitter made
+/// it one component on Unix, and `rewrite` refused any rewritten component
+/// holding a separator, so `extract` failed the **whole** archive and wrote
+/// nothing, after `compress_dir` had happily archived it and the verification
+/// pass had signed it off. The user could have deleted the originals by then.
+#[cfg(unix)]
+#[test]
+fn a_unix_name_holding_a_backslash_survives_the_round_trip() {
+    use collapse_core::{compress_dir, Algorithm, Verify};
+
+    for algorithm in [Algorithm::Zip, Algorithm::Tar, Algorithm::SevenZ] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let tree = dir.path().join("tree");
+        fs::create_dir_all(&tree).unwrap();
+        fs::write(tree.join(r"a\b.txt"), b"payload").unwrap();
+        fs::write(tree.join("ok.txt"), b"fine").unwrap();
+
+        let archive = dir.path().join(format!("t.{}", algorithm.extension()));
+        compress_dir(&tree, &archive, algorithm, 3, Verify::Index).unwrap();
+
+        let out = dir.path().join("back");
+        let mut files = extract(&archive, &out).unwrap();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![r"tree/a\b.txt".to_string(), "tree/ok.txt".to_string()],
+            "{algorithm}: the archive this crate just built must extract"
+        );
+        assert_eq!(
+            fs::read(out.join("tree").join(r"a\b.txt")).unwrap(),
+            b"payload"
         );
     }
 }
