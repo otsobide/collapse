@@ -6,16 +6,12 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::time::Duration;
 
 use collapse_core::compression::compress_tar_dir;
 use collapse_core::Algorithm;
 
 use crate::protocol::{self, Progress};
 use crate::RemoteError;
-
-/// How often the job status is polled while the server compresses.
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Compress a file or a whole directory on a remote server and return the
 /// archive bytes.
@@ -132,7 +128,14 @@ fn create_job(
 }
 
 /// Poll `GET /jobs/{id}` until the job is ready (Ok) or gives up (Err).
+///
+/// The wait between polls starts at [`protocol::FIRST_POLL_DELAY`] and doubles
+/// to [`protocol::MAX_POLL_DELAY`]. It used to be that ceiling from the first
+/// wait onwards, which meant a job the server had already finished still cost
+/// the caller 200 ms of this function sleeping (issue #48). The schedule
+/// itself lives in `protocol` so it can be checked without a server.
 fn wait_for_completion(base: &str, job_id: &str) -> Result<(), RemoteError> {
+    let mut delay = protocol::FIRST_POLL_DELAY;
     loop {
         let response = ureq::get(&format!("{base}/jobs/{job_id}"))
             .call()
@@ -140,7 +143,10 @@ fn wait_for_completion(base: &str, job_id: &str) -> Result<(), RemoteError> {
 
         match protocol::progress_of(&parse_json(response)?)? {
             Progress::Ready => return Ok(()),
-            Progress::Waiting => std::thread::sleep(POLL_INTERVAL),
+            Progress::Waiting => {
+                std::thread::sleep(delay);
+                delay = protocol::next_delay(delay);
+            }
         }
     }
 }

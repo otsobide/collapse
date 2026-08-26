@@ -2,10 +2,12 @@
 //! the server's JSON, and the poll loop's decision on each job status.
 
 use collapse_remote::protocol::{
-    base_url, healthy, job_id_of, progress_of, rejection_message, Progress,
+    base_url, healthy, job_id_of, next_delay, progress_of, rejection_message, Progress,
+    FIRST_POLL_DELAY, MAX_POLL_DELAY,
 };
 use collapse_remote::RemoteError;
 use serde_json::json;
+use std::time::Duration;
 
 fn message_of(error: RemoteError) -> String {
     error.to_string()
@@ -298,4 +300,82 @@ fn rejection_handles_a_detail_that_is_not_a_string() {
     let body = r#"{"detail":{"code":7}}"#;
     let message = rejection_message(400, body);
     assert!(message.contains(body), "got {message:?}");
+}
+
+// ------------------------------------------------------- the poll schedule --
+
+/// The whole point of issue #48: a job the server has already finished must
+/// not be made to wait out a fixed interval before anyone asks again.
+///
+/// The measurement in the issue was ~235 ms for a five byte file against ~23 ms
+/// locally, and almost none of that was the server. It was this delay.
+#[test]
+fn the_first_wait_is_short_enough_not_to_dominate_a_tiny_job() {
+    assert!(
+        FIRST_POLL_DELAY <= Duration::from_millis(25),
+        "a finished job would still be waiting: {FIRST_POLL_DELAY:?}"
+    );
+    // And not so short that a busy server is hammered: this is a backoff, not
+    // a spin.
+    assert!(
+        FIRST_POLL_DELAY >= Duration::from_millis(5),
+        "too close to a spin: {FIRST_POLL_DELAY:?}"
+    );
+}
+
+/// The schedule doubles, reaches the ceiling and stays there.
+#[test]
+fn the_wait_doubles_up_to_the_ceiling_and_then_holds() {
+    let mut delay = FIRST_POLL_DELAY;
+    let mut schedule = vec![delay];
+    for _ in 0..12 {
+        delay = next_delay(delay);
+        schedule.push(delay);
+    }
+
+    assert_eq!(
+        &schedule[..6],
+        &[
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+            Duration::from_millis(40),
+            Duration::from_millis(80),
+            Duration::from_millis(160),
+            Duration::from_millis(200),
+        ],
+        "got {schedule:?}"
+    );
+    // Never above the ceiling, and never smaller than the step before it.
+    for pair in schedule.windows(2) {
+        assert!(pair[1] <= MAX_POLL_DELAY, "past the ceiling: {schedule:?}");
+        assert!(pair[1] >= pair[0], "not monotonic: {schedule:?}");
+    }
+    assert_eq!(*schedule.last().unwrap(), MAX_POLL_DELAY);
+}
+
+/// A long job must not pay for the ramp. Reaching the ceiling costs 310 ms
+/// spread over five extra requests, which is the whole price of the change.
+#[test]
+fn reaching_the_ceiling_is_cheap_for_a_job_that_runs_for_minutes() {
+    let mut delay = FIRST_POLL_DELAY;
+    let mut total = delay;
+    let mut polls = 1;
+    while delay < MAX_POLL_DELAY {
+        delay = next_delay(delay);
+        total += delay;
+        polls += 1;
+    }
+    assert_eq!(polls, 6, "the ramp got longer");
+    assert!(
+        total <= Duration::from_millis(600),
+        "the ramp costs too much: {total:?}"
+    );
+}
+
+/// `next_delay` must be total: no overflow panic on a nonsense input, since it
+/// is public and nothing stops a caller feeding it one.
+#[test]
+fn the_schedule_saturates_instead_of_overflowing() {
+    assert_eq!(next_delay(Duration::MAX), MAX_POLL_DELAY);
+    assert_eq!(next_delay(Duration::ZERO), Duration::ZERO);
 }

@@ -518,3 +518,78 @@ fn a_missing_source_fails_before_any_request() {
     .expect_err("the source does not exist");
     assert!(matches!(error, RemoteError::Io(_)), "got {error:?}");
 }
+
+// ------------------------------------------------------------- the backoff --
+
+/// A job still compressing, so the client keeps polling.
+const COMPRESSING_JOB: &str = r#"{"job_id":"stub","name":"notes.txt","archive_name":"notes.txt.zip","algorithm":"zip","level":3,"envelope":"none","status":"compressing","error_message":null}"#;
+
+/// Issue #48: the wait between polls used to be a flat 200 ms from the first
+/// one, so a job the server had already finished still cost the caller that
+/// much of `wait_for_completion` sleeping.
+///
+/// The stub reports `compressing` three times and then `completed`, so the
+/// client sleeps three times. Under the old schedule that was 600 ms; under
+/// the backoff it is 10 + 20 + 40 = 70 ms. The assertion has a wide margin on
+/// purpose, since a loaded CI runner is not a stopwatch, but 400 ms is still
+/// far below what a fixed 200 ms interval could achieve here, so a revert
+/// fails this rather than merely slowing it down.
+#[test]
+fn a_job_that_finishes_quickly_is_not_made_to_wait_out_the_ceiling() {
+    let polls = Arc::new(Mutex::new(0usize));
+    let counter = Arc::clone(&polls);
+    let archive = vec![b'Z'; 32];
+    let served = archive.clone();
+
+    let server = raw_server(move |path, _body, out| {
+        if path.ends_with("/download") {
+            respond_with(out, served.len(), &served, "application/zip");
+            return;
+        }
+        if path.starts_with("/jobs/") {
+            let mut seen = counter.lock().unwrap();
+            *seen += 1;
+            // The first three say "still working"; the fourth settles it.
+            let body = if *seen <= 3 {
+                COMPRESSING_JOB
+            } else {
+                FINISHED_JOB
+            };
+            respond_with(out, body.len(), body.as_bytes(), "application/json");
+            return;
+        }
+        // POST /compress
+        respond_with(
+            out,
+            FINISHED_JOB.len(),
+            FINISHED_JOB.as_bytes(),
+            "application/json",
+        );
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"tiny").unwrap();
+
+    let started = std::time::Instant::now();
+    let delivered =
+        compress_path(&server, &source, Algorithm::Zip, 3).expect("the stub finishes the job");
+    let elapsed = started.elapsed();
+
+    assert_eq!(delivered, archive);
+    // It really did poll four times, so the timing below is measuring the
+    // schedule and not a stub that answered "done" straight away.
+    assert!(
+        *polls.lock().unwrap() >= 4,
+        "the stub was not polled as expected: {:?}",
+        polls.lock().unwrap()
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(70),
+        "it cannot have slept the schedule in {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(400),
+        "three waits took {elapsed:?}; the fixed 200 ms interval is back"
+    );
+}
