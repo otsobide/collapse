@@ -68,12 +68,31 @@ the link and then writes *through* it, landing `evil` outside the output dir.
 - **tar** skips any entry that is not a regular file or a directory (symlinks,
   hardlinks, and special nodes are dropped). A follow-up file whose parent was
   the skipped link is created as a real subdirectory *inside* the output dir
-  instead. `unpack_in` additionally canonicalizes each entry's parent and
-  blocks writing through any pre-existing symlink.
+  instead.
+
+A symlink the archive did not bring is a separate case, and until v0.7.0 only
+tar defended against it. Extracting into a directory that **already** holds a
+symlink named `link` and an archive holding `link/evil.txt` wrote straight
+through it and returned success: tar was immune because `unpack_in`
+canonicalizes each entry's parent, while zip and 7z sanitized the entry name,
+joined it to the output and wrote, with no check on where the join had landed.
+Extracting into a directory that already has a symlink is ordinary, so this was
+reachable without a hostile archive doing anything but naming a path.
+
+Every write site now resolves the directory it is about to write into and
+refuses one that came out from under the output directory (`ensure_inside`).
+This also covers a second case a name-only rule cannot see: on Windows,
+`PathBuf::push` replaces what it holds when handed a component that parses as a
+drive, so `docs/c:evil.txt` would resolve against the current directory of C:.
+`sanitize_entry_path` additionally re-parses each component and requires it to
+still be exactly one `Normal` component, which closes that at the source.
 
 **Covered by** `tar_symlink_write_through_does_not_escape`,
 `zip_symlink_entry_is_not_materialized_as_symlink`,
-`tar_symlink_entry_is_not_materialized`.
+`tar_symlink_entry_is_not_materialized`,
+`no_format_writes_through_a_symlink_already_in_the_output`,
+`a_renamed_entry_cannot_be_written_through_such_a_symlink`,
+`a_colon_in_a_later_component_cannot_clear_the_path_being_built`.
 
 ### 3. Hardlink escape (tar)
 
@@ -95,6 +114,46 @@ it discloses an outside file.
 materializes a symlink, so nothing is planted.
 
 ---
+
+### 4b. Entry names this host cannot write
+
+**Attack.** An entry name that a filesystem does not reject but *reinterprets*.
+The colon is the one that matters: on Windows `notes.txt:hidden` names the
+`hidden` alternate data stream of `notes.txt`, so the write succeeds, the bytes
+land somewhere no listing shows, and the extractor reports a file that exists
+nowhere (issue #63). Reserved device names (`CON`, `NUL`, `COM1`, reserved with
+an extension too) and trailing dots or spaces are the quieter members of the
+same family: the host silently gives the file a different name than the archive
+asked for.
+
+**Prevention.** Extraction judges every entry name against the host's rules
+before anything is written, and refuses rather than guessing. A character the
+host cannot hold is a question for the user, who supplies a replacement; the two
+adjustments nobody can be asked about (a trailing run, a device name) are
+applied and reported. The whole listing is planned before the first byte, so an
+unanswerable name or two entries that would collide leave the output directory
+as they were found.
+
+The rules are **data**, not `#[cfg]`, so a Mac can be asked what a Windows host
+would refuse, which is what makes them testable at all: nobody working on this
+repository runs Windows day to day.
+
+That property is only as good as what it runs over, and v0.7.0 shipped a hole
+worth recording. Entry names were split into components with
+`std::path::Path::components`, which *is* `#[cfg]`-dependent. On Windows a
+leading `a:` parses as a drive prefix rather than a component, so it was
+discarded before any rule saw it: `a:b/c.txt` was reported clean, and written as
+`b/c.txt`. The colon defence had a hole on the only platform it exists for. An
+archive entry name is not a host path (ZIP mandates `/`, APPNOTE 4.4.17.1, and
+tar has used it since v7), so the split is now on `/` on every machine, and a
+backslash is judged as what it is: an ordinary character, legal on Unix, refused
+by Windows.
+
+**Covered by** `apps/core/tests/names.rs`, in particular
+`an_entry_splits_the_same_way_on_every_host`,
+`the_report_sees_a_colon_in_the_first_component_too`,
+`only_windows_refuses_a_backslash_inside_a_component`, and
+`a_unix_name_holding_a_backslash_survives_the_round_trip`.
 
 ## Compression measures
 
