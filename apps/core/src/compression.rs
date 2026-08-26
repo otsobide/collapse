@@ -398,6 +398,49 @@ fn algorithm_of(archive: &Path) -> Result<Algorithm, CompressionError> {
         .ok_or_else(|| CompressionError::Failed(format!("Unknown archive extension: .{ext}")))
 }
 
+/// Say that the archive could not be read, in words, keeping the parser's
+/// detail but not its debris.
+///
+/// This mattered less while a failed listing was advisory. Now that it stops
+/// the extraction, the message is the whole of what the user gets, and the tar
+/// crate embeds the bytes it choked on, so a damaged header arrived as a wall
+/// of replacement characters ("numeric field did not have utf-8 text: ????
+/// when getting cksum for ????...", with every ? an unprintable byte).
+///
+/// Narrower than issue #66, which is about callers being able to tell causes
+/// apart. This is only about what is fit to show a person.
+fn unreadable_archive(error: CompressionError) -> CompressionError {
+    let detail = match &error {
+        // Unwrap rather than nest, or the message repeats its own prefix:
+        // "Compression failed: ... : Compression failed: ...".
+        CompressionError::Failed(message) => legible(message),
+        CompressionError::Io(io) => legible(&io.to_string()),
+        other => legible(&other.to_string()),
+    };
+    CompressionError::Failed(format!(
+        "this archive could not be read, so nothing was extracted: {detail}"
+    ))
+}
+
+/// Strip what a person cannot read out of a dependency's message, and cap it.
+fn legible(detail: &str) -> String {
+    let cleaned: String = detail
+        .chars()
+        .map(|c| {
+            if c.is_control() || c == char::REPLACEMENT_CHARACTER {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    match collapsed.char_indices().nth(140) {
+        Some((cut, _)) => format!("{}...", &collapsed[..cut]),
+        None => collapsed,
+    }
+}
+
 /// The entry names an archive holds, without extracting anything.
 fn list_entries(archive: &Path, algorithm: Algorithm) -> Result<Vec<String>, CompressionError> {
     match algorithm {
@@ -446,8 +489,9 @@ pub fn extract(archive: &Path, output_dir: &Path) -> Result<Vec<String>, Compres
 /// cannot write.
 ///
 /// Naming is settled over the whole listing before the first byte is written,
-/// so the two answers nothing can recover from (a character with no
-/// replacement, and two entries that would land on one name) leave the output
+/// and a listing that cannot be read stops it there (issue #89), so the answers
+/// nothing can recover from (a character with no replacement, two entries that
+/// would land on one name, an archive too damaged to read) leave the output
 /// directory as they found it.
 pub fn extract_with(
     archive: &Path,
@@ -469,10 +513,31 @@ pub fn extract_with(
 
 /// Work out what every entry will be called, from the listing.
 ///
-/// A listing that cannot be read is deliberately **not** an error here: the
-/// extractor is about to open the same archive and fail on it in its own
-/// vocabulary, which is the message this layer would otherwise replace with a
-/// worse one. Only a readable listing produces a plan.
+/// **A listing that cannot be read stops the extraction here**, before anything
+/// is written.
+///
+/// It used to be swallowed, on the reasoning that the extractor was about to
+/// open the same archive and fail on it in its own vocabulary, and that this
+/// layer would only replace that message with a worse one. The reasoning was
+/// right about the message and wrong about the timing (issue #89): the
+/// extractor fails **while streaming**, so by the time it notices it has
+/// already written every entry before the fault, and written them with no plan
+/// at all, which means no rewriting, no refusal and no collision check. An
+/// archive holding `notes.txt:hidden` was refused outright when its listing was
+/// intact and written as an invisible NTFS stream when it was not: the harm of
+/// issue #63, performed without the user ever being asked. One bad 512 byte
+/// header appended to a tar was enough to arrange it.
+///
+/// The message turned out to be the weaker half of the argument anyway. Both
+/// passes go through the same parser, so in practice they say close to the same
+/// thing; the reproduction had them differing only in where they were cut off.
+///
+/// What this does cost is partial recovery: a truncated tar used to hand back
+/// whatever preceded the damage and now hands back nothing. That was a
+/// deliberate call. It is still reachable on purpose through the backends
+/// themselves ([`self::tar::extract_tar`] and friends), which take no options
+/// and so never come through here; `recovering_from_a_damaged_archive_is_still_
+/// possible_through_the_backend` pins that.
 ///
 /// It costs one listing per extraction, paid even when nothing needs renaming,
 /// because the only way to know that is to read the names. For zip and 7z that
@@ -483,8 +548,6 @@ fn plan_for(
     algorithm: Algorithm,
     options: &ExtractOptions,
 ) -> Result<NamePlan, CompressionError> {
-    let Ok(names) = list_entries(archive, algorithm) else {
-        return Ok(NamePlan::identity());
-    };
+    let names = list_entries(archive, algorithm).map_err(unreadable_archive)?;
     Ok(plan_names(&names, options.rules(), options.replacements())?)
 }
