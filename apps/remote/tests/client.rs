@@ -9,9 +9,12 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use collapse_core::Algorithm;
-use collapse_remote::{check_health, compress_path, RemoteError};
+use collapse_remote::{
+    check_health, check_health_with, compress_path, compress_path_with, RemoteError, Timeouts,
+};
 
 /// Serve something on an ephemeral port for the rest of the test process.
 ///
@@ -517,4 +520,272 @@ fn a_missing_source_fails_before_any_request() {
     )
     .expect_err("the source does not exist");
     assert!(matches!(error, RemoteError::Io(_)), "got {error:?}");
+}
+
+// ------------------------------------------------------------- the backoff --
+
+/// A job still compressing, so the client keeps polling.
+const COMPRESSING_JOB: &str = r#"{"job_id":"stub","name":"notes.txt","archive_name":"notes.txt.zip","algorithm":"zip","level":3,"envelope":"none","status":"compressing","error_message":null}"#;
+
+/// Issue #48: the wait between polls used to be a flat 200 ms from the first
+/// one, so a job the server had already finished still cost the caller that
+/// much of `wait_for_completion` sleeping.
+///
+/// The stub reports `compressing` three times and then `completed`, so the
+/// client sleeps three times. Under the old schedule that was 600 ms; under
+/// the backoff it is 10 + 20 + 40 = 70 ms. The assertion has a wide margin on
+/// purpose, since a loaded CI runner is not a stopwatch, but 400 ms is still
+/// far below what a fixed 200 ms interval could achieve here, so a revert
+/// fails this rather than merely slowing it down.
+#[test]
+fn a_job_that_finishes_quickly_is_not_made_to_wait_out_the_ceiling() {
+    let polls = Arc::new(Mutex::new(0usize));
+    let counter = Arc::clone(&polls);
+    let archive = vec![b'Z'; 32];
+    let served = archive.clone();
+
+    let server = raw_server(move |path, _body, out| {
+        if path.ends_with("/download") {
+            respond_with(out, served.len(), &served, "application/zip");
+            return;
+        }
+        if path.starts_with("/jobs/") {
+            let mut seen = counter.lock().unwrap();
+            *seen += 1;
+            // The first three say "still working"; the fourth settles it.
+            let body = if *seen <= 3 {
+                COMPRESSING_JOB
+            } else {
+                FINISHED_JOB
+            };
+            respond_with(out, body.len(), body.as_bytes(), "application/json");
+            return;
+        }
+        // POST /compress
+        respond_with(
+            out,
+            FINISHED_JOB.len(),
+            FINISHED_JOB.as_bytes(),
+            "application/json",
+        );
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"tiny").unwrap();
+
+    let started = std::time::Instant::now();
+    let delivered =
+        compress_path(&server, &source, Algorithm::Zip, 3).expect("the stub finishes the job");
+    let elapsed = started.elapsed();
+
+    assert_eq!(delivered, archive);
+    // It really did poll four times, so the timing below is measuring the
+    // schedule and not a stub that answered "done" straight away.
+    assert!(
+        *polls.lock().unwrap() >= 4,
+        "the stub was not polled as expected: {:?}",
+        polls.lock().unwrap()
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(70),
+        "it cannot have slept the schedule in {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(400),
+        "three waits took {elapsed:?}; the fixed 200 ms interval is back"
+    );
+}
+
+// ------------------------------------------- a server that stops answering --
+
+/// Test-sized limits. The real ones are tens of seconds, deliberately, so that
+/// hitting one is unambiguous evidence of a hang rather than of impatience
+/// (see `Timeouts`); a suite cannot wait that long to prove it.
+///
+/// **Two helpers, because the cases pull in opposite directions**, and getting
+/// that wrong is what made the first version of these tests flaky. Where the
+/// timeout is the thing being proved, it has to be short. Where the stub has to
+/// answer *inside* it, it has to be long enough to survive a loaded CI runner
+/// stalling a thread: `thread::sleep` promises a floor, not a ceiling, and a
+/// shared runner will happily turn 60 ms into 250 ms. A margin that looked
+/// generous on a quiet laptop (3x) was not, and macOS CI caught it.
+fn firing_timeouts() -> Timeouts {
+    Timeouts {
+        connect: Duration::from_millis(500),
+        read: Duration::from_millis(200),
+        write: Duration::from_millis(500),
+    }
+}
+
+/// For the cases where the stub answers promptly and the point is that nothing
+/// fires. The margin over each nominal gap is at least 20x.
+fn patient_timeouts() -> Timeouts {
+    Timeouts {
+        connect: Duration::from_secs(2),
+        read: Duration::from_millis(1_000),
+        write: Duration::from_secs(2),
+    }
+}
+
+/// Issue #71: the client used to wait on a silent server for as long as the
+/// process lived. Measured against v0.7.0 it was still polling after 60 s,
+/// having printed nothing and written nothing, and had to be killed.
+///
+/// A socket that opens and then goes quiet is now bounded.
+#[test]
+fn a_server_that_goes_quiet_is_given_up_on_rather_than_waited_on_forever() {
+    let server = raw_server(|_path, _body, _out| {
+        // Accept, read the request, answer nothing, and hold the socket open.
+        // Dropping it would close the connection, which is a different failure.
+        std::thread::sleep(Duration::from_secs(5));
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"upload me").unwrap();
+
+    let started = std::time::Instant::now();
+    let error = compress_path_with(&server, &source, Algorithm::Zip, 3, firing_timeouts())
+        .expect_err("a server that never answers must not be waited on");
+    let elapsed = started.elapsed();
+
+    assert!(
+        matches!(error, RemoteError::Unresponsive { .. }),
+        "got {error:?}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "it gave up, but only after {elapsed:?}"
+    );
+
+    // The message has to be unmistakable: it is the only thing the user gets.
+    let message = error.to_string();
+    assert!(message.contains("stopped answering"), "{message}");
+    assert!(message.contains("may still be running"), "{message}");
+}
+
+/// Going quiet and never being reachable are different diagnoses, and the
+/// error says which. One usually means a wrong address or a server that is
+/// down; the other means a server that is up and stuck.
+#[test]
+fn an_unreachable_address_is_not_reported_as_an_unresponsive_server() {
+    let error =
+        check_health_with(UNREACHABLE, firing_timeouts()).expect_err("nothing is listening there");
+    assert!(
+        matches!(error, RemoteError::Unreachable { .. }),
+        "got {error:?}"
+    );
+}
+
+/// **The limit is on the server's answers, not on the job.**
+///
+/// This is the property that makes the whole change safe, and the one most
+/// easily broken by a later "simplification" that puts a deadline on the loop
+/// instead. The stub answers every poll at once, but reports `compressing`
+/// eight times, so the client legitimately waits far longer than any single
+/// timeout allows. Compression is allowed to take as long as it takes.
+#[test]
+fn a_long_job_is_never_cut_short_while_the_server_keeps_answering() {
+    let polls = Arc::new(Mutex::new(0usize));
+    let counter = Arc::clone(&polls);
+    let archive = vec![b'Z'; 64];
+    let served = archive.clone();
+
+    let server = raw_server(move |path, _body, out| {
+        if path.ends_with("/download") {
+            respond_with(out, served.len(), &served, "application/zip");
+            return;
+        }
+        let body = if path.starts_with("/jobs/") {
+            let mut seen = counter.lock().unwrap();
+            *seen += 1;
+            if *seen <= 12 {
+                COMPRESSING_JOB
+            } else {
+                FINISHED_JOB
+            }
+        } else {
+            FINISHED_JOB
+        };
+        respond_with(out, body.len(), body.as_bytes(), "application/json");
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"a job that takes a while").unwrap();
+
+    let started = std::time::Instant::now();
+    let delivered = compress_path_with(&server, &source, Algorithm::Zip, 3, patient_timeouts())
+        .expect("a slow job that keeps answering must not be aborted");
+    let elapsed = started.elapsed();
+
+    assert_eq!(delivered, archive);
+    // Twelve `compressing` answers is 10 + 20 + 40 + 80 + 160 + 200 * 7 =
+    // 1710 ms of waiting, comfortably past the 1000 ms read timeout. If the
+    // limit ever starts bounding the job instead of the answers, this cannot
+    // pass. Sleeps only ever overrun, so the comparison is safe in the one
+    // direction a loaded runner can move it.
+    assert!(
+        elapsed > patient_timeouts().read,
+        "the job lasted {elapsed:?}, which does not outlive the read timeout, \
+         so this proves nothing"
+    );
+    assert!(*polls.lock().unwrap() >= 13);
+}
+
+/// A response that arrives slowly but steadily is not a hang.
+///
+/// `read` is a per socket operation limit, not a per response one. That is what
+/// lets a 500 MB archive come back over a slow link without tripping anything,
+/// and it was verified against ureq rather than assumed.
+#[test]
+fn a_body_delivered_in_slow_pieces_is_not_mistaken_for_silence() {
+    use std::io::Write;
+
+    let chunks = 30;
+    let chunk = vec![b'A'; 64];
+    let total = chunk.len() * chunks;
+    let served = chunk.clone();
+
+    let server = raw_server(move |path, _body, out| {
+        if !path.ends_with("/download") {
+            respond_with(
+                out,
+                FINISHED_JOB.len(),
+                FINISHED_JOB.as_bytes(),
+                "application/json",
+            );
+            return;
+        }
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/zip\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+        );
+        let _ = out.write_all(head.as_bytes());
+        for _ in 0..chunks {
+            let _ = out.write_all(&served);
+            let _ = out.flush();
+            // 40 ms nominal against a 1000 ms read timeout: a 25x margin, so
+            // only a stall of most of a second breaks it. The first version of
+            // this used 60 ms against 200 ms and macOS CI stalled past it.
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        let _ = out.shutdown(std::net::Shutdown::Write);
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"x").unwrap();
+
+    let started = std::time::Instant::now();
+    let delivered = compress_path_with(&server, &source, Algorithm::Zip, 3, patient_timeouts())
+        .expect("a steady trickle is not a hang");
+
+    assert_eq!(delivered.len(), total);
+    // 30 chunks 40 ms apart is ~1200 ms, past the 1000 ms read timeout, so a
+    // per-response limit would have fired and a per-read one does not.
+    assert!(
+        started.elapsed() > patient_timeouts().read,
+        "the download did not outlast the read timeout, so this proves nothing"
+    );
 }

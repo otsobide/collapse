@@ -8,7 +8,9 @@
 //!
 //! The crate is split so the decisions can be tested without a server:
 //! [`protocol`] holds the pure ones (URL building, reading the server's JSON,
-//! what to do with each job status) and the HTTP plumbing stays private.
+//! what to do with each job status), [`waiting`] holds the poll loop and the
+//! two traits that let a test drive it without spending the time it is
+//! deciding how to spend, and the HTTP plumbing stays private.
 //!
 //! It exists as its own crate because more than one front-end needs it: the
 //! CLI's `--server` flag today, the desktop app next. Duplicating the exchange
@@ -18,6 +20,10 @@ mod client;
 mod error;
 
 pub mod protocol;
+pub mod waiting;
 
-pub use client::{check_health, compress_path};
+pub use client::{
+    check_health, check_health_with, compress_path, compress_path_with, Timeouts,
+    DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT, DEFAULT_WRITE_TIMEOUT,
+};
 pub use error::RemoteError;

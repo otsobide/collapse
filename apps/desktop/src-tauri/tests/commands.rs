@@ -1540,11 +1540,21 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
                 );
             }
             // The short read reaches core as its dependency's `Io` variant, so
-            // core unwraps it to `CompressionError::Io` (issue #66). It used to
-            // read `Compression failed: Io(Error { kind: UnexpectedEof,
-            // message: "failed to fill whole buffer" }, "")`.
+            // core unwraps it (issue #66). It used to read `Compression failed:
+            // Io(Error { kind: UnexpectedEof, message: "failed to fill whole
+            // buffer" }, "")`, and then plain `IO error: failed to fill whole
+            // buffer` once that was mapped properly.
+            //
+            // It now names the consequence first: a listing that cannot be read
+            // stops the extraction rather than letting it write raw names
+            // (issue #89), and that refusal is the whole of what the user gets,
+            // so it has to say what happened before it says why.
             "7z" => {
-                assert_eq!(err, "IO error: failed to fill whole buffer");
+                assert_eq!(
+                    err,
+                    "Compression failed: this archive could not be read, so nothing was \
+                     extracted: failed to fill whole buffer"
+                );
                 let leftovers: Vec<PathBuf> = fs::read_dir(&out_dir)
                     .map(|entries| entries.map(|e| e.unwrap().path()).collect())
                     .unwrap_or_default();

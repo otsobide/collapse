@@ -149,11 +149,25 @@ tar has used it since v7), so the split is now on `/` on every machine, and a
 backslash is judged as what it is: an ordinary character, legal on Unix, refused
 by Windows.
 
+An archive whose **listing cannot be read** stops extraction before anything is
+written. It used to be waved through: the pre-flight pass gave up, extraction
+carried on with no plan, and every entry before the damage was written under its
+raw name, unrewritten and unrefused. One bad 512 byte header appended to a tar
+was enough, because tar lists all its headers up front and writes as it walks.
+On Windows that turned `notes.txt:hidden` into an invisible NTFS stream without
+the user ever seeing the question (issue #89).
+
+Recovering what a damaged archive still holds is not gone, it is simply no
+longer the default: the backends (`extract_tar` and friends) take no options and
+never come through the planning pass.
+
 **Covered by** `apps/core/tests/names.rs`, in particular
 `an_entry_splits_the_same_way_on_every_host`,
 `the_report_sees_a_colon_in_the_first_component_too`,
 `only_windows_refuses_a_backslash_inside_a_component`, and
-`a_unix_name_holding_a_backslash_survives_the_round_trip`.
+`a_unix_name_holding_a_backslash_survives_the_round_trip`,
+`a_damaged_archive_writes_nothing_rather_than_writing_raw_names` and
+`the_same_names_are_refused_whether_or_not_the_archive_is_damaged`.
 
 ## Compression measures
 

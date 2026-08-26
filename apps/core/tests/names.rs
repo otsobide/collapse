@@ -19,7 +19,9 @@ use collapse_core::compression::{
     extract_7z, extract_tar, extract_zip, CharacterFault, NameError, NameProblem, NameReport,
     NameRules, Substitutions,
 };
-use collapse_core::{extract, extract_with, unwritable_names_with, ExtractOptions};
+use collapse_core::{
+    extract, extract_with, unwritable_names_with, CompressionError, ExtractOptions,
+};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 use tar::{Builder, EntryType, Header};
 use zip::write::SimpleFileOptions;
@@ -810,10 +812,11 @@ fn the_backends_called_directly_still_write_the_archive_s_own_names() {
 }
 
 #[test]
-fn an_archive_that_cannot_be_listed_still_fails_in_the_extractor_s_words() {
-    // The listing pass is advisory on purpose. A corrupt archive must produce
-    // the message extraction has always produced, not a second-hand one from a
-    // pass that only exists to plan names.
+fn an_archive_that_cannot_be_listed_still_fails_in_the_parser_s_words() {
+    // The listing pass is no longer advisory (issue #89): it stops the
+    // extraction. The message is unaffected, because both passes go through the
+    // same parser, which is what made the old "keep going so the extractor can
+    // phrase it better" argument weaker than it looked.
     let dir = tempfile::TempDir::new().unwrap();
     let archive = dir.path().join("truncated.zip");
     fs::write(&archive, b"PK\x03\x04 and then nothing").unwrap();
@@ -972,4 +975,161 @@ fn a_unix_name_holding_a_backslash_survives_the_round_trip() {
             b"payload"
         );
     }
+}
+
+// ------------------------------------------ a listing that cannot be read ---
+
+/// A tar whose entries are sound and whose end-of-archive marker is not.
+///
+/// This shape is the whole of issue #89: `list_tar_entries` walks every header
+/// before extraction starts, while extraction writes as it walks, so the
+/// listing dies on the damage after the extractor would already have written
+/// everything before it.
+fn tar_with_a_broken_tail(dir: &Path, entries: &[(&str, &[u8])]) -> PathBuf {
+    let mut builder = Builder::new(Vec::new());
+    for (name, content) in entries {
+        let mut header = Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_entry_type(EntryType::Regular);
+        let raw = name.as_bytes();
+        header.as_old_mut().name[..raw.len()].copy_from_slice(raw);
+        header.set_cksum();
+        builder.append(&header, *content).unwrap();
+    }
+    let mut bytes = builder.into_inner().unwrap();
+    // Replace the two trailing zero blocks with something that is not a header.
+    let tail = bytes.len() - 1024;
+    for byte in bytes[tail..].iter_mut() {
+        *byte = 0xAA;
+    }
+    let archive = dir.join("broken-tail.tar");
+    fs::write(&archive, &bytes).unwrap();
+    archive
+}
+
+/// Issue #89. An unreadable listing used to turn the entire naming layer off
+/// and let every entry before the damage be written under its raw name.
+///
+/// On Windows `notes.txt:hidden` is not a file name: it is the `hidden`
+/// alternate data stream of `notes.txt`, so the write succeeds, the bytes land
+/// where no listing shows them, and the user was told there was nothing to
+/// answer for. That is issue #63's harm performed without consent, and one bad
+/// 512 byte header was enough to arrange it.
+#[test]
+fn a_damaged_archive_writes_nothing_rather_than_writing_raw_names() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = tar_with_a_broken_tail(
+        dir.path(),
+        &[("notes.txt:hidden", b"payload"), ("second.txt", b"more")],
+    );
+    let out = dir.path().join("out");
+
+    let options = ExtractOptions::new().with_rules(NameRules::windows());
+    let err = extract_with(&archive, &out, &options).unwrap_err();
+
+    // The parser's own words, not a second-hand summary.
+    assert!(err.to_string().starts_with("Compression failed:"), "{err}");
+    // And nothing on disk. Before the fix both entries were here, the first as
+    // an NTFS stream on a Windows host.
+    let written: Vec<_> = fs::read_dir(&out)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|e| e.file_name())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        written.is_empty(),
+        "a damaged archive wrote {written:?} before failing"
+    );
+}
+
+/// The same archive with an intact tail is refused too, but for the reason the
+/// user can act on. The pair is the point: an archive must not become *more*
+/// permissive by being damaged.
+#[test]
+fn the_same_names_are_refused_whether_or_not_the_archive_is_damaged() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let entries: &[(&str, &[u8])] = &[("notes.txt:hidden", b"payload"), ("second.txt", b"more")];
+    let options = ExtractOptions::new().with_rules(NameRules::windows());
+
+    let intact = archive_with(dir.path(), "tar", entries);
+    let out = dir.path().join("intact");
+    let err = extract_with(&intact, &out, &options).unwrap_err();
+    assert!(
+        matches!(err, CompressionError::Name(_)),
+        "an intact archive must name the character to answer for: {err}"
+    );
+    assert!(!out.exists() || fs::read_dir(&out).unwrap().count() == 0);
+
+    let damaged = tar_with_a_broken_tail(dir.path(), entries);
+    let out = dir.path().join("damaged");
+    assert!(extract_with(&damaged, &out, &options).is_err());
+    assert!(!out.exists() || fs::read_dir(&out).unwrap().count() == 0);
+}
+
+/// Recovering what a damaged archive still holds is deliberately not gone, it
+/// is just no longer what `extract` does by default.
+///
+/// The backends take no options, so they never go through the planning pass.
+/// That is the escape hatch, and it is worth knowing it exists: without this
+/// test the capability would look like it had been deleted.
+#[test]
+fn recovering_from_a_damaged_archive_is_still_possible_through_the_backend() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive =
+        tar_with_a_broken_tail(dir.path(), &[("first.txt", b"one"), ("second.txt", b"two")]);
+    let out = dir.path().join("salvage");
+
+    // It still fails, on the damage, but only after handing back what preceded
+    // it. `extract` writes nothing at all for the same archive.
+    let _ = extract_tar(&archive, &out);
+    let salvaged: Vec<_> = fs::read_dir(&out)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|e| e.file_name())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert_eq!(salvaged.len(), 2, "the backend salvaged {salvaged:?}");
+}
+
+/// A refusal is now the whole of what the user gets for a damaged archive, so
+/// the message has to be fit to read.
+///
+/// The tar crate embeds the bytes it choked on, so this one used to arrive as
+/// "numeric field did not have utf-8 text: <four unprintable bytes> when
+/// getting cksum for <a hundred more>". That was survivable while the listing
+/// pass was advisory and the files came out anyway; it is not now.
+#[test]
+fn a_damaged_archive_says_so_in_words_a_person_can_read() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = tar_with_a_broken_tail(dir.path(), &[("a.txt", b"one")]);
+
+    let err = extract(&archive, &dir.path().join("out")).unwrap_err();
+    let message = err.to_string();
+
+    assert!(
+        message.contains("could not be read, so nothing was extracted"),
+        "it must lead with what happened: {message}"
+    );
+    assert!(
+        !message.contains(char::REPLACEMENT_CHARACTER),
+        "the dependency's debris reached the user: {message}"
+    );
+    assert!(
+        !message.chars().any(char::is_control),
+        "control characters reached the user: {message}"
+    );
+    // The parser's own detail is kept, just cleaned up.
+    assert!(message.contains("cksum"), "the detail was lost: {message}");
+    // And it stays short enough to read in a terminal.
+    assert!(
+        message.chars().count() < 240,
+        "{} chars",
+        message.chars().count()
+    );
 }
