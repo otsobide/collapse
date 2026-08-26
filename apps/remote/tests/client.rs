@@ -602,11 +602,29 @@ fn a_job_that_finishes_quickly_is_not_made_to_wait_out_the_ceiling() {
 /// Test-sized limits. The real ones are tens of seconds, deliberately, so that
 /// hitting one is unambiguous evidence of a hang rather than of impatience
 /// (see `Timeouts`); a suite cannot wait that long to prove it.
-fn quick_timeouts() -> Timeouts {
+///
+/// **Two helpers, because the cases pull in opposite directions**, and getting
+/// that wrong is what made the first version of these tests flaky. Where the
+/// timeout is the thing being proved, it has to be short. Where the stub has to
+/// answer *inside* it, it has to be long enough to survive a loaded CI runner
+/// stalling a thread: `thread::sleep` promises a floor, not a ceiling, and a
+/// shared runner will happily turn 60 ms into 250 ms. A margin that looked
+/// generous on a quiet laptop (3x) was not, and macOS CI caught it.
+fn firing_timeouts() -> Timeouts {
     Timeouts {
         connect: Duration::from_millis(500),
         read: Duration::from_millis(200),
         write: Duration::from_millis(500),
+    }
+}
+
+/// For the cases where the stub answers promptly and the point is that nothing
+/// fires. The margin over each nominal gap is at least 20x.
+fn patient_timeouts() -> Timeouts {
+    Timeouts {
+        connect: Duration::from_secs(2),
+        read: Duration::from_millis(1_000),
+        write: Duration::from_secs(2),
     }
 }
 
@@ -628,7 +646,7 @@ fn a_server_that_goes_quiet_is_given_up_on_rather_than_waited_on_forever() {
     std::fs::write(&source, b"upload me").unwrap();
 
     let started = std::time::Instant::now();
-    let error = compress_path_with(&server, &source, Algorithm::Zip, 3, quick_timeouts())
+    let error = compress_path_with(&server, &source, Algorithm::Zip, 3, firing_timeouts())
         .expect_err("a server that never answers must not be waited on");
     let elapsed = started.elapsed();
 
@@ -653,7 +671,7 @@ fn a_server_that_goes_quiet_is_given_up_on_rather_than_waited_on_forever() {
 #[test]
 fn an_unreachable_address_is_not_reported_as_an_unresponsive_server() {
     let error =
-        check_health_with(UNREACHABLE, quick_timeouts()).expect_err("nothing is listening there");
+        check_health_with(UNREACHABLE, firing_timeouts()).expect_err("nothing is listening there");
     assert!(
         matches!(error, RemoteError::Unreachable { .. }),
         "got {error:?}"
@@ -682,7 +700,7 @@ fn a_long_job_is_never_cut_short_while_the_server_keeps_answering() {
         let body = if path.starts_with("/jobs/") {
             let mut seen = counter.lock().unwrap();
             *seen += 1;
-            if *seen <= 8 {
+            if *seen <= 12 {
                 COMPRESSING_JOB
             } else {
                 FINISHED_JOB
@@ -698,19 +716,22 @@ fn a_long_job_is_never_cut_short_while_the_server_keeps_answering() {
     std::fs::write(&source, b"a job that takes a while").unwrap();
 
     let started = std::time::Instant::now();
-    let delivered = compress_path_with(&server, &source, Algorithm::Zip, 3, quick_timeouts())
+    let delivered = compress_path_with(&server, &source, Algorithm::Zip, 3, patient_timeouts())
         .expect("a slow job that keeps answering must not be aborted");
     let elapsed = started.elapsed();
 
     assert_eq!(delivered, archive);
-    // 10 + 20 + 40 + 80 + 160 + 200 + 200 + 200 = 910 ms of waiting, against a
-    // 200 ms read timeout. If the limit ever starts bounding the job instead of
-    // the answers, this cannot pass.
+    // Twelve `compressing` answers is 10 + 20 + 40 + 80 + 160 + 200 * 7 =
+    // 1710 ms of waiting, comfortably past the 1000 ms read timeout. If the
+    // limit ever starts bounding the job instead of the answers, this cannot
+    // pass. Sleeps only ever overrun, so the comparison is safe in the one
+    // direction a loaded runner can move it.
     assert!(
-        elapsed > quick_timeouts().read * 3,
-        "the job only lasted {elapsed:?}; it is not outliving the timeout"
+        elapsed > patient_timeouts().read,
+        "the job lasted {elapsed:?}, which does not outlive the read timeout, \
+         so this proves nothing"
     );
-    assert!(*polls.lock().unwrap() >= 9);
+    assert!(*polls.lock().unwrap() >= 13);
 }
 
 /// A response that arrives slowly but steadily is not a hang.
@@ -722,7 +743,7 @@ fn a_long_job_is_never_cut_short_while_the_server_keeps_answering() {
 fn a_body_delivered_in_slow_pieces_is_not_mistaken_for_silence() {
     use std::io::Write;
 
-    let chunks = 8;
+    let chunks = 30;
     let chunk = vec![b'A'; 64];
     let total = chunk.len() * chunks;
     let served = chunk.clone();
@@ -744,9 +765,10 @@ fn a_body_delivered_in_slow_pieces_is_not_mistaken_for_silence() {
         for _ in 0..chunks {
             let _ = out.write_all(&served);
             let _ = out.flush();
-            // Comfortably inside the read timeout each time, and well past it
-            // in total.
-            std::thread::sleep(Duration::from_millis(60));
+            // 40 ms nominal against a 1000 ms read timeout: a 25x margin, so
+            // only a stall of most of a second breaks it. The first version of
+            // this used 60 ms against 200 ms and macOS CI stalled past it.
+            std::thread::sleep(Duration::from_millis(40));
         }
         let _ = out.shutdown(std::net::Shutdown::Write);
     });
@@ -756,12 +778,14 @@ fn a_body_delivered_in_slow_pieces_is_not_mistaken_for_silence() {
     std::fs::write(&source, b"x").unwrap();
 
     let started = std::time::Instant::now();
-    let delivered = compress_path_with(&server, &source, Algorithm::Zip, 3, quick_timeouts())
+    let delivered = compress_path_with(&server, &source, Algorithm::Zip, 3, patient_timeouts())
         .expect("a steady trickle is not a hang");
 
     assert_eq!(delivered.len(), total);
+    // 30 chunks 40 ms apart is ~1200 ms, past the 1000 ms read timeout, so a
+    // per-response limit would have fired and a per-read one does not.
     assert!(
-        started.elapsed() > quick_timeouts().read,
+        started.elapsed() > patient_timeouts().read,
         "the download did not outlast the read timeout, so this proves nothing"
     );
 }
