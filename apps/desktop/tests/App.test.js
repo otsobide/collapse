@@ -441,6 +441,23 @@ describe('App', () => {
     expect(w.find('.error').exists()).toBe(false)
   })
 
+  it('shows a naming refusal in the banner when no dialog is open to hold it', async () => {
+    // The report and the extractor read the archive in two separate passes and
+    // can disagree: a listing the first pass could not read is reported as
+    // "nothing to ask", and then extraction refuses a name. `nameProblem` is
+    // rendered only inside the sheet, so this combination used to make the
+    // Extract button do nothing at all: no files, no question, no banner.
+    const message = 'the archive entry "x:y.txt" contains \':\' and no replacement for it was given'
+    const w = await ask({
+      report: NOTHING_TO_ASK,
+      extraction: { status: 'nameProblem', message },
+    })
+
+    expect(namingSheet(w).exists()).toBe(false)
+    expect(w.find('.error').text()).toContain(message)
+    expect(w.text()).not.toContain('Extracted')
+  })
+
   it('states the adjustment for a problem with no character to replace', async () => {
     // A trailing dot and a device name have nothing to substitute: the host
     // would mangle them whatever anyone typed. So they are explained, not

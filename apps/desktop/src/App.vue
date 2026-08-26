@@ -304,7 +304,19 @@ async function runExtraction(archive, outputDir, replacements) {
     replacements,
   })
   if (outcome.status === 'nameProblem') {
-    nameProblem.value = outcome.message
+    // The sheet is where a naming question belongs, but it is only open when
+    // the report found something to ask about. A refusal can still arrive
+    // without one, because the report and the extractor read the archive in two
+    // separate passes and can disagree: a listing the first pass could not read
+    // is reported as "nothing to ask", and then extraction refuses a name. With
+    // `nameProblem` rendered only inside the sheet, that combination made the
+    // Extract button do nothing at all: no files, no question, no banner. Send
+    // it to the banner when there is no sheet to hold it.
+    if (naming.value) {
+      nameProblem.value = outcome.message
+    } else {
+      error.value = outcome.message
+    }
     return
   }
   closeNaming()
