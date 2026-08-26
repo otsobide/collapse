@@ -6,16 +6,13 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::time::Duration;
 
 use collapse_core::compression::compress_tar_dir;
 use collapse_core::Algorithm;
 
 use crate::protocol::{self, Progress};
+use crate::waiting::{self, Poller};
 use crate::RemoteError;
-
-/// How often the job status is polled while the server compresses.
-const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Compress a file or a whole directory on a remote server and return the
 /// archive bytes.
@@ -131,18 +128,31 @@ fn create_job(
     parse_json(response)
 }
 
-/// Poll `GET /jobs/{id}` until the job is ready (Ok) or gives up (Err).
-fn wait_for_completion(base: &str, job_id: &str) -> Result<(), RemoteError> {
-    loop {
-        let response = ureq::get(&format!("{base}/jobs/{job_id}"))
-            .call()
-            .map_err(|e| remote_error(base, e))?;
+/// Ask `GET /jobs/{id}` once. The loop that decides when to ask again lives in
+/// [`crate::waiting`]; this is only the half that needs a socket.
+struct HttpPoller<'a> {
+    base: &'a str,
+    job_id: &'a str,
+}
 
-        match protocol::progress_of(&parse_json(response)?)? {
-            Progress::Ready => return Ok(()),
-            Progress::Waiting => std::thread::sleep(POLL_INTERVAL),
-        }
+impl Poller for HttpPoller<'_> {
+    fn poll(&self) -> Result<Progress, RemoteError> {
+        let response = ureq::get(&format!("{}/jobs/{}", self.base, self.job_id))
+            .call()
+            .map_err(|e| remote_error(self.base, e))?;
+        protocol::progress_of(&parse_json(response)?)
     }
+}
+
+/// Poll `GET /jobs/{id}` until the job is ready (Ok) or gives up (Err).
+///
+/// The wait starts at [`waiting::FIRST_POLL_DELAY`] and doubles to
+/// [`waiting::MAX_POLL_DELAY`]. It used to be that ceiling from the first wait
+/// onwards, so a job the server had already finished still cost the caller
+/// 200 ms of sleeping (issue #48).
+fn wait_for_completion(base: &str, job_id: &str) -> Result<(), RemoteError> {
+    let poller = HttpPoller { base, job_id };
+    waiting::wait_for(&waiting::RealSleeper, &poller).map(|_| ())
 }
 
 /// `GET /jobs/{id}/download`: the archive bytes.
