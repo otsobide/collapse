@@ -103,6 +103,24 @@ pub enum CompressionError {
         source: std::io::Error,
     },
 
+    /// One of the archive's own entries would be written over the archive.
+    ///
+    /// Refused outright rather than made overridable. Writing an entry onto the
+    /// archive being read truncates it mid-read: the archive is gone and what
+    /// replaces it is whatever fraction the extractor had reached, so the
+    /// contents are lost from the output as much as from disk. Nobody agrees to
+    /// that by asking to extract something.
+    ///
+    /// Compression has always refused the mirror image of this, and by file
+    /// identity rather than by path, so that a hardlink cannot slip past
+    /// (`paths::same_file`). Extraction had no equivalent (issue #96).
+    #[error(
+        "the entry {entry:?} would be written over the archive itself ({}), so nothing was \
+         extracted. Extract into a different directory.",
+        archive.display()
+    )]
+    WouldOverwriteArchive { archive: PathBuf, entry: String },
+
     /// An entry name this filesystem cannot hold, or an answer that does not
     /// resolve one.
     #[error(transparent)]
@@ -502,7 +520,8 @@ pub fn extract_with(
     // Before the archive is even opened: an answer that is itself unwritable is
     // wrong whether or not any entry needs it.
     options.rules().check_replacements(options.replacements())?;
-    let plan = plan_for(archive, algorithm, options)?;
+    let (names, plan) = plan_for(archive, algorithm, options)?;
+    refuse_overwriting_the_archive(archive, output_dir, &names, &plan)?;
 
     match algorithm {
         Algorithm::SevenZ => self::sevenz::extract_7z_planned(archive, output_dir, &plan),
@@ -547,7 +566,42 @@ fn plan_for(
     archive: &Path,
     algorithm: Algorithm,
     options: &ExtractOptions,
-) -> Result<NamePlan, CompressionError> {
+) -> Result<(Vec<String>, NamePlan), CompressionError> {
     let names = list_entries(archive, algorithm).map_err(unreadable_archive)?;
-    Ok(plan_names(&names, options.rules(), options.replacements())?)
+    let plan = plan_names(&names, options.rules(), options.replacements())?;
+    Ok((names, plan))
+}
+
+/// Refuse an extraction that would write one of the archive's own entries over
+/// the archive.
+///
+/// Free to run, in the sense that matters: the listing it needs has already
+/// been read and paid for by the planning pass, so this adds one identity check
+/// per entry and no extra pass over the file.
+///
+/// By **file identity**, not by path. A hardlink is a second name for one file
+/// and never resolves to the same string, which is exactly how `--force` used
+/// to be able to overwrite its own source on the compression side before that
+/// was fixed. Repeating the path comparison here would repeat the bug.
+fn refuse_overwriting_the_archive(
+    archive: &Path,
+    output_dir: &Path,
+    names: &[String],
+    plan: &NamePlan,
+) -> Result<(), CompressionError> {
+    for name in names {
+        let Some(natural) = sanitize_entry_path(name) else {
+            // Not containable at all. The backend rejects it as traversal, and
+            // that is the message worth keeping.
+            continue;
+        };
+        let rel = plan.written_as(name).map_or(natural, Path::to_path_buf);
+        if crate::paths::same_file(&output_dir.join(&rel), archive) {
+            return Err(CompressionError::WouldOverwriteArchive {
+                archive: archive.to_path_buf(),
+                entry: name.clone(),
+            });
+        }
+    }
+    Ok(())
 }

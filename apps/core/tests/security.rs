@@ -799,3 +799,113 @@ fn a_colon_in_a_later_component_cannot_clear_the_path_being_built() {
         }
     }
 }
+
+// -------------------------------------- writing over the archive being read --
+
+/// Issue #96. An archive holding an entry with its own name, extracted into its
+/// own directory, used to overwrite itself and report success.
+///
+/// Measured before this guard, on all three formats: `Ok`, "Extracted 1
+/// file(s)", and the archive replaced by the 12 bytes it contained.
+///
+/// The asymmetry is what made it indefensible rather than merely unfortunate:
+/// compression has always refused to write an archive over its own source, and
+/// refuses it even with `--force`, while extraction had no equivalent at all.
+#[test]
+fn no_format_writes_an_entry_over_the_archive_it_is_reading() {
+    for ext in ["zip", "7z", "tar"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = dir.path().join(format!("victim.{ext}"));
+
+        // An archive whose single entry is named after the archive itself.
+        let entry = format!("victim.{ext}");
+        match ext {
+            "zip" => malicious_zip(&archive, &entry),
+            "7z" => malicious_7z(&archive, &entry),
+            _ => malicious_tar(&archive, &entry),
+        }
+        let before = std::fs::read(&archive).unwrap();
+
+        let err = extract(&archive, dir.path())
+            .expect_err("extracting into its own directory must be refused");
+
+        assert!(
+            err.to_string().contains("over the archive itself"),
+            "{ext}: {err}"
+        );
+        assert_eq!(
+            std::fs::read(&archive).unwrap(),
+            before,
+            "{ext}: the archive was modified"
+        );
+    }
+}
+
+/// The same guard, reached through a second name for the same file.
+///
+/// A hardlink never resolves to the same path, so a string comparison would
+/// wave this through. That is not hypothetical: it is exactly how `--force`
+/// used to be able to overwrite its own source on the compression side, which
+/// is why `paths::same_file` exists and why this uses it.
+#[cfg(unix)]
+#[test]
+fn a_hardlink_to_the_archive_is_not_a_way_around_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("real.zip");
+    malicious_zip(&archive, "alias.zip");
+
+    std::fs::hard_link(&archive, dir.path().join("alias.zip")).unwrap();
+    let before = std::fs::read(&archive).unwrap();
+
+    let err = extract(&archive, dir.path()).expect_err("a second name is still the same file");
+    assert!(err.to_string().contains("over the archive itself"), "{err}");
+    assert_eq!(std::fs::read(&archive).unwrap(), before);
+}
+
+/// The guard must not cost anyone an extraction that was never dangerous.
+///
+/// Same archive, same entry name, a different output directory: nothing to
+/// refuse. Without this the fix could be "refuse everything that looks vaguely
+/// like the archive" and still pass the two tests above.
+#[test]
+fn the_same_archive_extracts_normally_somewhere_else() {
+    for ext in ["zip", "7z", "tar"] {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = dir.path().join(format!("victim.{ext}"));
+        let entry = format!("victim.{ext}");
+        match ext {
+            "zip" => malicious_zip(&archive, &entry),
+            "7z" => malicious_7z(&archive, &entry),
+            _ => malicious_tar(&archive, &entry),
+        }
+
+        let out = dir.path().join("elsewhere");
+        let files = extract(&archive, &out).unwrap_or_else(|e| panic!("{ext}: {e}"));
+        assert_eq!(listing(files), vec![entry.clone()], "{ext}");
+        assert!(out.join(&entry).exists(), "{ext}");
+    }
+}
+
+/// A renamed entry must be checked at the name it will actually be written
+/// under, not the one the archive spells.
+///
+/// The archive is `v_.zip` and its entry is `v?.zip`, which is nothing special
+/// on Unix; under Windows rules the `?` is answered with `_`, so the entry
+/// lands exactly on the archive. Checking the archive's own spelling would
+/// miss it.
+#[test]
+fn the_check_follows_the_renamed_name_not_the_archive_s() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let archive = dir.path().join("v_.zip");
+    malicious_zip(&archive, "v?.zip");
+    let before = std::fs::read(&archive).unwrap();
+
+    let options = ExtractOptions::new()
+        .with_rules(NameRules::windows())
+        .with_replacements(Substitutions::new().with('?', "_"));
+
+    let err = extract_with(&archive, dir.path(), &options)
+        .expect_err("the planned name lands on the archive");
+    assert!(err.to_string().contains("over the archive itself"), "{err}");
+    assert_eq!(std::fs::read(&archive).unwrap(), before);
+}

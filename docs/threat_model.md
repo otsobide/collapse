@@ -115,6 +115,41 @@ materializes a symlink, so nothing is planted.
 
 ---
 
+### 4a. An entry written over the archive being read
+
+**Attack.** Not an attack so much as a foot-gun the product armed itself with:
+an archive holding an entry named after the archive, extracted into the
+archive's own directory. The entry is written onto the file still being read, so
+the archive is truncated mid-read and what replaces it is whatever fraction the
+extractor had reached. The contents are lost from the output as much as from
+disk.
+
+Measured before the guard, on all three formats: `Ok`, "Extracted 1 file(s)",
+and a 132 byte archive replaced by the 12 bytes it contained. Two of the three
+reported success while doing it.
+
+**Prevention.** The planning pass already reads the whole listing before a byte
+is written, so it now also resolves each entry's destination and refuses one
+that turns out to be the archive itself. By **file identity**, not by path: a
+hardlink is a second name for one file and never resolves to the same string,
+which is precisely how `--force` was once able to overwrite its own source on
+the compression side.
+
+The check follows the **planned** name rather than the archive's spelling, since
+a rename can land an entry on the archive that the archive's own name does not
+match.
+
+This is the mirror of a guard compression has always had (`OutputIsSource`, and
+an output inside the folder being archived, neither of which `--force` unlocks).
+Extraction simply had no equivalent, so the same product held two opposite
+positions on the same question (issue #96).
+
+**Covered by** `no_format_writes_an_entry_over_the_archive_it_is_reading`,
+`a_hardlink_to_the_archive_is_not_a_way_around_it`,
+`the_check_follows_the_renamed_name_not_the_archive_s`, and
+`the_same_archive_extracts_normally_somewhere_else`, which is the one that stops
+the guard from being fixed by refusing too much.
+
 ### 4b. Entry names this host cannot write
 
 **Attack.** An entry name that a filesystem does not reject but *reinterprets*.
