@@ -881,3 +881,202 @@ fn extract_missing_archive_errors() {
     let missing = dir.path().join("ghost.zip");
     assert!(run(parse(&["collapse", "extract", missing.to_str().unwrap()]).unwrap()).is_err());
 }
+
+// ------------------------------------------ the path the user actually typed --
+
+/// Issue #67. The source is canonicalized so `.`, `..` and a trailing slash
+/// resolve to something with a usable name, and so an output that aliases the
+/// source can be spotted. That resolved path then leaked into what the user was
+/// told: type six characters, get an absolute path back.
+///
+/// Driven through a symlink rather than a relative path, because these tests
+/// run in-process and share one working directory. A symlink gives the same
+/// property, a typed spelling that differs from the resolved one, without any
+/// of them having to agree about where they are.
+#[cfg(unix)]
+#[test]
+fn the_default_output_is_reported_where_the_user_pointed_not_where_it_resolves() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::write(real.join("notes.txt"), b"hello").unwrap();
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let typed = link.join("notes.txt");
+    let output = compressed_output(run_ok(&[
+        "collapse",
+        "compress",
+        typed.to_str().unwrap(),
+        "-f",
+        "zip",
+    ]));
+
+    assert_eq!(
+        output,
+        link.join("notes.txt.zip"),
+        "the archive is reported beside the path that was typed"
+    );
+    assert!(output.exists(), "and it is really there");
+}
+
+/// A `.` in the middle of the path is the same question in miniature: the user
+/// wrote it, so it comes back.
+#[test]
+fn a_redundant_component_in_the_typed_path_is_not_tidied_away() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let sub = dir.path().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("a.txt"), b"hello").unwrap();
+
+    let typed = dir.path().join(".").join("sub").join("a.txt");
+    let output = compressed_output(run_ok(&[
+        "collapse",
+        "compress",
+        typed.to_str().unwrap(),
+        "-f",
+        "zip",
+    ]));
+
+    assert_eq!(output, typed.with_file_name("a.txt.zip"));
+}
+
+/// Whichever spelling wins, a directory's archive belongs **beside** it and not
+/// inside it. Getting that wrong would put the output within the tree being
+/// archived, which the guards then refuse, so the user would meet a confusing
+/// refusal instead of an archive.
+///
+/// The property, not the spelling: a trailing `/.` still has `tree` as its file
+/// name, so this goes through the typed branch and keeps the caller's
+/// un-canonicalized prefix. That is correct, and asserting the canonical form
+/// here would be asserting the wrong thing.
+#[test]
+fn a_directory_s_archive_lands_beside_it_and_never_inside_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let tree = dir.path().join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    std::fs::write(tree.join("a.txt"), b"hello").unwrap();
+
+    for typed in [tree.clone(), tree.join(".")] {
+        let output = compressed_output(run_ok(&[
+            "collapse",
+            "compress",
+            typed.to_str().unwrap(),
+            "-f",
+            "zip",
+        ]));
+
+        assert_eq!(
+            output.file_name().unwrap(),
+            "tree.zip",
+            "named after the directory: {}",
+            output.display()
+        );
+        let resolved = tree.canonicalize().unwrap();
+        let landed = output.parent().unwrap().canonicalize().unwrap();
+        assert!(
+            !landed.starts_with(&resolved),
+            "the archive landed inside the tree it archives: {}",
+            output.display()
+        );
+        std::fs::remove_file(&output).unwrap();
+    }
+}
+
+// --------------------------------------------- --format against -o's extension --
+
+/// Issue #75. `--format` used to win in silence, producing a file whose name
+/// lies about its contents and that this same CLI then refuses:
+///
+/// ```text
+/// $ collapse compress notes.txt -f tar -o mixed.zip
+/// Created mixed.zip
+/// $ collapse extract mixed.zip -o out
+/// error: Could not find EOCD
+/// ```
+#[test]
+fn a_format_that_contradicts_the_output_extension_is_refused() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"hello").unwrap();
+    let output = dir.path().join("mixed.zip");
+
+    let err = run_err(&[
+        "collapse",
+        "compress",
+        source.to_str().unwrap(),
+        "-f",
+        "tar",
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+
+    assert!(
+        matches!(err, CliError::FormatContradictsOutput { .. }),
+        "got {err:?}"
+    );
+    // Decidable from the arguments alone, so it must cost nothing: refused
+    // before anything is read or written.
+    assert!(!output.exists(), "a file was written before the refusal");
+    // And the message names both halves, or the user cannot tell which to drop.
+    let message = err.to_string();
+    assert!(message.contains("tar"), "{message}");
+    assert!(message.contains("zip"), "{message}");
+}
+
+/// Agreeing is not contradicting.
+#[test]
+fn a_format_that_matches_the_output_extension_is_fine() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"hello").unwrap();
+    let output = dir.path().join("kept.tar");
+
+    let produced = compressed_output(run_ok(&[
+        "collapse",
+        "compress",
+        source.to_str().unwrap(),
+        "-f",
+        "tar",
+        "-o",
+        output.to_str().unwrap(),
+    ]));
+    assert_eq!(produced, output);
+    assert_eq!(
+        verify_archive(
+            &output,
+            Algorithm::Tar,
+            &["notes.txt".to_string()],
+            Verify::Index
+        )
+        .is_ok(),
+        true
+    );
+}
+
+/// An extension that names no format at all is a deliberate choice, not a
+/// mistake. Refusing `-o backup.bin -f 7z` would be the guard overreaching.
+#[test]
+fn an_unknown_output_extension_does_not_contradict_anything() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let source = dir.path().join("notes.txt");
+    std::fs::write(&source, b"hello").unwrap();
+    let output = dir.path().join("backup.bin");
+
+    run_ok(&[
+        "collapse",
+        "compress",
+        source.to_str().unwrap(),
+        "-f",
+        "7z",
+        "-o",
+        output.to_str().unwrap(),
+    ]);
+    assert!(verify_archive(
+        &output,
+        Algorithm::SevenZ,
+        &["notes.txt".to_string()],
+        Verify::Index
+    )
+    .is_ok());
+}

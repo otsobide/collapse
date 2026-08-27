@@ -170,11 +170,22 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
 ### Compression flow (`run_compress`)
 
 1. **Canonicalize the source** (so `.`, `..`, and trailing slashes resolve to a
-   real path with a usable name; also lets the safety check detect a source-alias).
+   real path with a usable name; also lets the safety check detect a
+   source-alias). **Both spellings are kept from here on.** The resolved one is
+   what the guards and the engine use, and it is also the arcname's source,
+   since that has to be the file's real name. The typed one is what the user is
+   told: answering `./sub/a.txt` with an absolute path makes a person check
+   whether the tool understood them (issue #67).
 2. **Resolve the format**: explicit `--format` wins; otherwise infer it from the
-   output file's extension; otherwise default to zip.
+   output file's extension; otherwise default to zip. A `--format` that
+   **contradicts** `-o`'s extension is refused rather than resolved, since
+   either resolution leaves a file whose name does not describe it, and this
+   same CLI would then refuse to extract it (issue #75). An extension naming no
+   known format is not a contradiction: `-o backup.bin -f 7z` is a choice.
 3. **Determine the output path**: `-o` if given, else `<source>.<ext>` beside the
-   source.
+   source, in the spelling the user typed. A source with no name of its own
+   (`.`, `..`) falls back to the resolved path, which is also what keeps a
+   directory's archive beside it rather than inside it.
 4. **Safety guards** (before writing anything):
    - refuse if the output would overwrite its **own source** (this would truncate
      the source before it is read, which is data loss);

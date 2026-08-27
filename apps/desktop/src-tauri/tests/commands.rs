@@ -1560,13 +1560,28 @@ fn a_truncated_archive_is_reported_legibly_instead_of_panicking() {
                     .unwrap_or_default();
                 assert!(leftovers.is_empty(), "7z left {leftovers:?} behind");
             }
-            // "Compression failed: failed to unpack `<output dir>/notes.txt`"
+            // `cannot write entry "notes.txt" to <output dir>/notes.txt: failed
+            // to write entire file`.
+            //
+            // It used to read `Compression failed: failed to unpack
+            // \`<output dir>/notes.txt\``, which named no entry: the guarantee
+            // issue #64 asked for reached zip and 7z but not tar's
+            // untouched-name branch, the one nearly every archive takes
+            // (issue #93).
             _ => {
-                assert!(err.starts_with("Compression failed:"), "{format}: {err}");
-                assert!(err.contains("failed to unpack"), "{err}");
                 assert!(
-                    err.contains("notes.txt"),
-                    "the message names the entry: {err}"
+                    err.contains(r#"entry "notes.txt""#),
+                    "the message names the entry as an entry: {err}"
+                );
+                assert!(
+                    err.contains("failed to write entire file"),
+                    "and carries what actually went wrong: {err}"
+                );
+                // Not the dependency's own wrapper, which said the destination
+                // and nothing else.
+                assert!(
+                    !err.contains("failed to unpack"),
+                    "the tar crate's wrapper leaked through: {err}"
                 );
                 // KNOWN DEFECT, pinned rather than endorsed: tar streams entries
                 // straight to disk, so a failure part-way leaves a truncated

@@ -180,6 +180,23 @@ impl Outcome {
 
 #[derive(Debug, Error)]
 pub enum CliError {
+    /// `--format` and `-o`'s extension name different formats.
+    ///
+    /// Refused rather than resolved, because either resolution leaves the user
+    /// with a file whose name does not describe it. Decidable from the
+    /// arguments alone, so it is reported before anything is read or written.
+    #[error(
+        "--format says {asked} but {} ends in .{}, which is a different format. \
+         Drop one of the two.",
+        output.display(),
+        implied.extension()
+    )]
+    FormatContradictsOutput {
+        asked: Algorithm,
+        implied: Algorithm,
+        output: PathBuf,
+    },
+
     #[error("path not found: {}", .0.display())]
     NotFound(PathBuf),
 
@@ -262,18 +279,28 @@ fn run_compress(
         return Err(CliError::RemoteVerifyUnsupported);
     }
 
-    // Canonicalize so `.`/`..`/trailing slashes resolve to a real path with a
-    // usable file name (and to detect an output that aliases the source).
-    let source = source
+    // Both spellings are kept from here on, and the distinction matters at
+    // every use.
+    //
+    // The **resolved** one is what the guards and the engine need: `.`, `..`
+    // and a trailing slash have to become a real path with a usable file name,
+    // and an output that aliases the source can only be spotted against a
+    // resolved path.
+    //
+    // The **typed** one is what the user gets told. Answering `./sub/a.txt`
+    // with `/Users/…/sub/a.txt.zip` makes a person check whether the tool
+    // understood them (issue #67).
+    let typed = source;
+    let resolved = typed
         .canonicalize()
-        .map_err(|_| CliError::NotFound(source))?;
+        .map_err(|_| CliError::NotFound(typed.clone()))?;
 
     // Explicit --format wins; otherwise infer from the output's extension, else zip.
-    let algorithm = resolve_format(format, output.as_deref());
+    let algorithm = resolve_format(format, output.as_deref())?;
 
     let output = match output {
         Some(path) => path,
-        None => default_output_path(&source, algorithm)?,
+        None => default_output_path(&typed, &resolved, algorithm)?,
     };
 
     if output.exists() {
@@ -281,7 +308,7 @@ fn run_compress(
         // whether they are spelled the same: a hardlink is a second name for
         // one file, so it never resolves to the same path. Comparing paths
         // here is what let --force overwrite its own source.
-        if same_file(&source, &output) {
+        if same_file(&resolved, &output) {
             return Err(CliError::OutputIsSource(output));
         }
         // Inside the tree being archived, and --force cannot buy past it. The
@@ -290,7 +317,7 @@ fn run_compress(
         // from the archive as much as from disk, and the archive corrupt with
         // it. Same reasoning as OutputIsSource above, which is also ahead of
         // the force check.
-        if source.is_dir() && inside(&source, &output) {
+        if resolved.is_dir() && inside(&resolved, &output) {
             return Err(CliError::OutputInsideSource(output));
         }
         if !force {
@@ -302,8 +329,8 @@ fn run_compress(
         // as it was. Removing it up front would trade that away for nothing.
     }
 
-    if !source.is_dir() && !source.is_file() {
-        return Err(CliError::UnsupportedSource(source));
+    if !resolved.is_dir() && !resolved.is_file() {
+        return Err(CliError::UnsupportedSource(typed));
     }
 
     // Every local compression is checked; --verify only says how deeply. The
@@ -319,21 +346,24 @@ fn run_compress(
         // Remote handles both shapes: a file goes as-is, a directory travels
         // as a tar envelope the server unwraps.
         Some(server) => {
-            let archive = collapse_remote::compress_path(server, &source, algorithm, level)?;
+            let archive = collapse_remote::compress_path(server, &resolved, algorithm, level)?;
             std::fs::write(&output, archive)?;
             None
         }
-        None if source.is_dir() => {
-            compress_dir(&source, &output, algorithm, level, depth)?;
+        None if resolved.is_dir() => {
+            compress_dir(&resolved, &output, algorithm, level, depth)?;
             Some(depth)
         }
         None => {
-            let arcname = source
+            // The resolved spelling, deliberately: this is the name stored
+            // inside the archive, so it has to be the file's real one. `.` and
+            // a trailing slash have no name to give.
+            let arcname = resolved
                 .file_name()
-                .ok_or_else(|| CliError::InvalidPath(source.clone()))?
+                .ok_or_else(|| CliError::InvalidPath(typed.clone()))?
                 .to_string_lossy()
                 .into_owned();
-            compress(&source, &output, &arcname, algorithm, level, depth)?;
+            compress(&resolved, &output, &arcname, algorithm, level, depth)?;
             Some(depth)
         }
     };
@@ -343,15 +373,48 @@ fn run_compress(
 
 /// Resolve the archive format: explicit `--format`, else the output file's
 /// extension if it names a known format, else zip.
-fn resolve_format(format: Option<Format>, output: Option<&Path>) -> Algorithm {
-    if let Some(format) = format {
-        return format.into();
-    }
-    output
+///
+/// **A `--format` that contradicts `-o`'s extension is refused**, rather than
+/// letting one win. It used to let `--format` win in silence, which produced a
+/// file whose name lies about its contents and that this same CLI then rejects:
+///
+/// ```text
+/// $ collapse compress notes.txt -f tar -o mixed.zip
+/// Created mixed.zip
+/// $ collapse extract mixed.zip -o out
+/// error: Could not find EOCD
+/// ```
+///
+/// A warning was the other candidate and is worse: it goes to a terminal nobody
+/// is reading in a script, and what is left behind is still a broken file with
+/// a misleading name. This is decidable from the arguments alone, before any
+/// work, so it is the cheapest possible moment to say so (issue #75).
+///
+/// An extension that names no known format is **not** a contradiction: `-o
+/// backup.bin -f 7z` is a deliberate choice, and only an extension that names a
+/// *different* format is a mistake.
+fn resolve_format(format: Option<Format>, output: Option<&Path>) -> Result<Algorithm, CliError> {
+    let from_output = output
         .and_then(|p| p.extension())
         .and_then(|e| e.to_str())
-        .and_then(Algorithm::from_extension)
-        .unwrap_or(Algorithm::Zip)
+        .and_then(Algorithm::from_extension);
+
+    match (format, from_output) {
+        (Some(asked), Some(implied)) => {
+            let asked: Algorithm = asked.into();
+            if asked != implied {
+                return Err(CliError::FormatContradictsOutput {
+                    asked,
+                    implied,
+                    output: output.unwrap_or(Path::new("")).to_path_buf(),
+                });
+            }
+            Ok(asked)
+        }
+        (Some(asked), None) => Ok(asked.into()),
+        (None, Some(implied)) => Ok(implied),
+        (None, None) => Ok(Algorithm::Zip),
+    }
 }
 
 fn run_extract(archive: PathBuf, output_dir: PathBuf) -> Result<Outcome, CliError> {
@@ -528,12 +591,28 @@ fn listed(report: &NameReport) -> String {
 }
 
 /// Derive the default archive path: `<source>.<ext>` next to the source.
-fn default_output_path(source: &Path, algorithm: Algorithm) -> Result<PathBuf, CliError> {
-    let name = source
+fn default_output_path(
+    typed: &Path,
+    resolved: &Path,
+    algorithm: Algorithm,
+) -> Result<PathBuf, CliError> {
+    // The name comes from the resolved path, which is the one guaranteed to
+    // have one: `.` and a trailing slash do not.
+    let name = resolved
         .file_name()
-        .ok_or_else(|| CliError::InvalidPath(source.to_path_buf()))?;
+        .ok_or_else(|| CliError::InvalidPath(resolved.to_path_buf()))?;
     let mut file_name = name.to_os_string();
     file_name.push(".");
     file_name.push(algorithm.extension());
-    Ok(source.with_file_name(file_name))
+
+    match typed.file_name() {
+        // The user spelled a name, so the archive goes beside it in their
+        // spelling: `./sub/a.txt` yields `./sub/a.txt.zip`, not an absolute
+        // path they never typed.
+        Some(_) => Ok(typed.with_file_name(file_name)),
+        // `.`, `..` or a bare root. There is no spelling to preserve, and the
+        // archive belongs beside the directory rather than inside it, which
+        // only the resolved path can express.
+        None => Ok(resolved.with_file_name(file_name)),
+    }
 }
