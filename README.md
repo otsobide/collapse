@@ -188,7 +188,7 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (604 Rust tests + 113 Vitest cases)
+make test              # run every suite (604 Rust tests + 116 Vitest cases)
 make test/rust         # only the Rust tests that need no Node toolchain (489)
 ```
 
