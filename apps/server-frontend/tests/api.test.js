@@ -1,5 +1,12 @@
 import { describe, it, expect, vi } from 'vitest'
-import { compress, health, progressOf } from '../src/api.js'
+import {
+  compress,
+  health,
+  progressOf,
+  nextDelay,
+  FIRST_POLL_DELAY,
+  MAX_POLL_DELAY,
+} from '../src/api.js'
 
 /** A fetch stub driven by a list of canned responses, in order. */
 function fetcherFrom(responses) {
@@ -182,5 +189,77 @@ describe('compress', () => {
     await expect(
       compress({ body: new Blob(['x']), name: 'a.txt', algorithm: 'zip', level: 3 }, { fetcher }),
     ).rejects.toThrow(/no job_id/)
+  })
+})
+
+describe('the poll schedule', () => {
+  /**
+   * Record every delay the loop asks for and fire it at once, so a schedule
+   * spanning seconds of nominal waiting is tested in no time at all and with
+   * no wall clock in the assertions.
+   */
+  function captureDelays() {
+    const waits = []
+    const real = globalThis.setTimeout
+    vi.spyOn(globalThis, 'setTimeout').mockImplementation((fn, ms) => {
+      waits.push(ms)
+      return real(fn, 0)
+    })
+    return waits
+  }
+
+  /** A job that answers `compressing` `n` times before it completes. */
+  function jobTaking(n) {
+    const responses = [json({ job_id: 'j' })]
+    for (let i = 0; i < n; i += 1) responses.push(json({ status: 'compressing' }))
+    responses.push(json({ status: 'completed' }))
+    responses.push(json({})) // download
+    responses.push(json({})) // delete
+    return fetcherFrom(responses)
+  }
+
+  /**
+   * Issue #48, the half this file owns. The loop slept a flat 400 ms before
+   * asking a second time, so a job the server had already finished cost the
+   * browser that much, and twice what the CLI cost after the Rust half was
+   * fixed.
+   */
+  it('does not make a job that finishes at once wait out the ceiling', async () => {
+    const waits = captureDelays()
+    const { fetcher } = jobTaking(1)
+
+    await compress(
+      { body: new Blob(['x']), name: 'a.txt', algorithm: 'zip', level: 3 },
+      { fetcher },
+    )
+
+    expect(waits).toEqual([FIRST_POLL_DELAY])
+    expect(FIRST_POLL_DELAY).toBeLessThan(400)
+  })
+
+  it('doubles to the ceiling and then holds', async () => {
+    const waits = captureDelays()
+    const { fetcher } = jobTaking(8)
+
+    await compress(
+      { body: new Blob(['x']), name: 'a.txt', algorithm: 'zip', level: 3 },
+      { fetcher },
+    )
+
+    expect(waits).toEqual([10, 20, 40, 80, 160, 200, 200, 200])
+    expect(Math.max(...waits)).toBe(MAX_POLL_DELAY)
+  })
+
+  /**
+   * The two clients must not drift. The browser waiting longer than the CLI
+   * for the same job is exactly what this issue was about.
+   */
+  it('keeps the same schedule the Rust client uses', () => {
+    expect(FIRST_POLL_DELAY).toBe(10)
+    expect(MAX_POLL_DELAY).toBe(200)
+    expect(nextDelay(FIRST_POLL_DELAY)).toBe(20)
+    expect(nextDelay(160)).toBe(MAX_POLL_DELAY)
+    expect(nextDelay(MAX_POLL_DELAY)).toBe(MAX_POLL_DELAY)
+    expect(nextDelay(10_000)).toBe(MAX_POLL_DELAY)
   })
 })
