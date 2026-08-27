@@ -4,8 +4,43 @@
 // backend, and in development Vite does. That is deliberate, because the
 // backend ships no CORS layer and should not need one.
 
-/** How often a running job is polled. */
-export const POLL_INTERVAL = 400
+/**
+ * How long to wait before the FIRST re-poll of a job the server has not
+ * finished yet.
+ *
+ * Short on purpose. Nearly every archive is done in less time than a person
+ * notices, and this loop used to sleep a flat 400 ms before asking a second
+ * time, so a tiny file spent almost all of its wall clock waiting on the
+ * client rather than on the server (issue #48).
+ *
+ * Not zero: the point is to stop making a finished job wait, not to spin on a
+ * server that is genuinely busy. These mirror `apps/remote/src/waiting.rs`,
+ * which fixed the same shape on the Rust side; keep them in step.
+ */
+export const FIRST_POLL_DELAY = 10
+
+/**
+ * The ceiling the wait grows to, and the interval a long job settles into.
+ *
+ * Deliberately below the old flat 400 ms, and equal to the Rust client's
+ * ceiling, so the browser no longer waits longer than the CLI for the same
+ * job.
+ */
+export const MAX_POLL_DELAY = 200
+
+/**
+ * The wait before the next poll, given the wait before the last one.
+ *
+ * Doubles until it reaches the ceiling: 10, 20, 40, 80, 160, 200, 200, ...
+ *
+ * It is not uniformly faster, and that is worth knowing rather than glossing:
+ * a job that finishes just after the ramp is asked again a whole ceiling
+ * later, where the flat schedule might have caught it sooner. The band is
+ * narrow and bounded by one ceiling.
+ */
+export function nextDelay(previous) {
+  return Math.min(previous * 2, MAX_POLL_DELAY)
+}
 
 /** Read the backend's error shape, falling back to the status line. */
 async function failure(response) {
@@ -75,6 +110,7 @@ export async function compress(
   if (!job?.job_id) throw new Error('malformed server response: no job_id')
 
   let last = null
+  let delay = FIRST_POLL_DELAY
   for (;;) {
     const polled = await fetcher(`/jobs/${job.job_id}`)
     if (!polled.ok) throw await failure(polled)
@@ -85,7 +121,8 @@ export async function compress(
       onStatus(current.status)
     }
     if (progressOf(current) === 'ready') break
-    await sleep(POLL_INTERVAL)
+    await sleep(delay)
+    delay = nextDelay(delay)
   }
 
   onStatus('downloading')

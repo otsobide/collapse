@@ -115,6 +115,41 @@ materializes a symlink, so nothing is planted.
 
 ---
 
+### 4a. An entry written over the archive being read
+
+**Attack.** Not an attack so much as a foot-gun the product armed itself with:
+an archive holding an entry named after the archive, extracted into the
+archive's own directory. The entry is written onto the file still being read, so
+the archive is truncated mid-read and what replaces it is whatever fraction the
+extractor had reached. The contents are lost from the output as much as from
+disk.
+
+Measured before the guard, on all three formats: `Ok`, "Extracted 1 file(s)",
+and a 132 byte archive replaced by the 12 bytes it contained. Two of the three
+reported success while doing it.
+
+**Prevention.** The planning pass already reads the whole listing before a byte
+is written, so it now also resolves each entry's destination and refuses one
+that turns out to be the archive itself. By **file identity**, not by path: a
+hardlink is a second name for one file and never resolves to the same string,
+which is precisely how `--force` was once able to overwrite its own source on
+the compression side.
+
+The check follows the **planned** name rather than the archive's spelling, since
+a rename can land an entry on the archive that the archive's own name does not
+match.
+
+This is the mirror of a guard compression has always had (`OutputIsSource`, and
+an output inside the folder being archived, neither of which `--force` unlocks).
+Extraction simply had no equivalent, so the same product held two opposite
+positions on the same question (issue #96).
+
+**Covered by** `no_format_writes_an_entry_over_the_archive_it_is_reading`,
+`a_hardlink_to_the_archive_is_not_a_way_around_it`,
+`the_check_follows_the_renamed_name_not_the_archive_s`, and
+`the_same_archive_extracts_normally_somewhere_else`, which is the one that stops
+the guard from being fixed by refusing too much.
+
 ### 4b. Entry names this host cannot write
 
 **Attack.** An entry name that a filesystem does not reject but *reinterprets*.
@@ -248,6 +283,42 @@ that expands could turn a small upload into an unbounded write; a tar cannot,
 so the existing `--max-upload-mb` cap also bounds what reaches the disk. A zip
 or 7z envelope would have introduced a decompression bomb where there is none
 today, which is why it is not offered.
+
+### 8b. What a failed job tells the client
+
+**Attack.** Not an attack, an oversight in a message. `GET /jobs/{id}` returns a
+failed job's `error_message`, and that message came from the engine, which names
+the file it was working on. For a job, that file lives inside the staging
+directory, so a client learned where the server keeps things:
+
+```text
+Compression failed: failed to unpack `/var/lib/collapse/jobs/<uuid>/tree/photos/a.txt/b.txt`
+```
+
+Reachable with an ordinary upload: a tar whose second entry has the first, a
+plain file, for a parent. Since the server has no authentication (see below),
+"a client" is anyone who can reach the port.
+
+**Prevention.** A failure now has two halves. The client is told a message with
+every absolute path removed; the log keeps the failure whole, because the person
+reading it is the one who can act on the path.
+
+The rule is **redact unless there is a curated sentence**, not the other way
+round. It used to be "rewrite a verification failure, pass everything else
+through", justified on the reasoning that every other variant already read as a
+sentence about something the client did. It did not, and enumerating the leaky
+variants would have left the next one leaking until somebody noticed. Redaction
+is blunt on purpose: the server has no reason to tell a client where anything
+lives, so removing every absolute path is correct rather than merely convenient,
+and it does not depend on knowing which variant produced the message.
+
+Relative paths survive, because those are the client's own entry names and
+exactly what it needs to see. A per-entry failure keeps the entry and drops the
+destination.
+
+**Covered by** `a_failed_job_tells_the_client_nothing_about_where_the_server_keeps_things`
+and `a_failed_job_still_says_what_went_wrong` in `apps/server-backend/tests/api.rs`,
+which drive a real job end to end, plus the unit cases in `tests/error.rs`.
 
 ### 9. What the server does not defend against
 
