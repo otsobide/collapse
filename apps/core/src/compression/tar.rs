@@ -6,6 +6,32 @@ use tar::{Archive, Builder, EntryType};
 
 use super::{CompressionError, NamePlan, Verify};
 
+/// The sentence at the bottom of tar's error chain.
+///
+/// `unpack_in` returns a stack of wrappers, each adding the destination again:
+///
+/// ```text
+/// [0] failed to unpack `/…/out/a.txt/b.txt`
+/// [1] failed to unpack `a.txt/b.txt` into `/…/out/a.txt/b.txt`
+/// [2] Not a directory (os error 20)
+/// ```
+///
+/// Only the last says what actually went wrong, and it is the register zip and
+/// 7z answer in ("File exists (os error 17)"). Wrapping level 0 in a
+/// [`CompressionError::Entry`], which names the destination itself, would print
+/// the path three times.
+fn root_cause(error: io::Error) -> io::Error {
+    let kind = error.kind();
+    let message = {
+        let mut deepest: &(dyn std::error::Error + 'static) = &error;
+        while let Some(next) = deepest.source() {
+            deepest = next;
+        }
+        deepest.to_string()
+    };
+    io::Error::new(kind, message)
+}
+
 /// tar is an archive container without compression, so there is no level.
 pub fn compress_tar(source: &Path, output: &Path, arcname: &str) -> Result<(), CompressionError> {
     // Open the source before creating the output so a missing source
@@ -200,9 +226,20 @@ pub(crate) fn extract_tar_planned(
 
         match plan.written_as(&name) {
             None => {
-                let unpacked = entry
-                    .unpack_in(&canonical_output)
-                    .map_err(|e| CompressionError::Failed(e.to_string()))?;
+                // `unpack_in` derives the destination itself, so the failure it
+                // reports names a path and nothing else: `failed to unpack
+                // \`/…/out/a.txt/b.txt\``, with no clue which of an archive's
+                // entries was at fault. That is what issue #64 was about, and
+                // the fix reached zip and 7z but not this branch, which is the
+                // one nearly every archive takes (issue #93).
+                //
+                // The call itself is untouched. It is the traversal guard tar
+                // has always used, and its canonicalizing containment check is
+                // what stops a write from following a symlink already sitting
+                // in the output directory. Only its error is dressed.
+                let unpacked = entry.unpack_in(&canonical_output).map_err(|e| {
+                    super::entry_error(&name, &canonical_output.join(&natural), root_cause(e))
+                })?;
                 if !unpacked {
                     return Err(CompressionError::Failed(format!(
                         "Path traversal detected in archive entry: {name}"
