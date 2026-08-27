@@ -848,9 +848,22 @@ fn a_failing_entry_names_itself_and_its_destination() {
         let err = extract(&archive, &out).unwrap_err();
 
         let message = err.to_string();
+        // Quoted, as an entry, not merely present as a substring of the
+        // destination path. This assertion used to be a bare `contains`, which
+        // tar satisfied for the wrong reason: its message was `failed to unpack
+        // \`/…/out/a.txt/b.txt\``, so the entry name "appeared" only as part of
+        // the path, and the guarantee issue #64 asked for was not there at all
+        // (issue #93).
         assert!(
-            message.contains("a.txt/b.txt") || message.contains(r"a.txt\b.txt"),
-            "{format}: the message must name the entry: {message}"
+            message.contains(r#"entry "a.txt/b.txt""#)
+                || message.contains(r#"entry "a.txt\b.txt""#),
+            "{format}: the message must name the entry as an entry: {message}"
+        );
+        // And say what the operating system said, in the same register on every
+        // format, rather than the dependency's own wrapper.
+        assert!(
+            message.contains("os error"),
+            "{format}: the message must carry the real cause: {message}"
         );
         // Windows renders this from a canonicalized root, which carries a `\\?\`
         // verbatim prefix and expands any 8.3 short name on the way, so the
