@@ -8,7 +8,7 @@ use std::path::Path;
 use collapse_core::compression::extract_tar;
 use collapse_core::{compress, compress_dir};
 
-use crate::error::failure_message;
+use crate::error::{failure, Failure};
 use crate::models::{Envelope, Job, JobStatus};
 use crate::registry::Registry;
 use crate::storage::{single_root_dir, Storage};
@@ -79,7 +79,7 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
             job.level,
             job.verify.into(),
         )
-        .map_err(|e| failure_message(&job.archive_name, &e)),
+        .map_err(|e| failure(&job.archive_name, &e)),
         Envelope::Tar => unwrap_and_compress(&input, &tree, &output, &job),
     })
     .await;
@@ -96,9 +96,16 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
         // A rejected upload (a hostile tar, an unreadable source) is the
         // client's problem, not the server's, so it is a warning; a worker
         // that dies mid-job is ours.
-        Ok(Err(message)) => {
-            set_status(registry, job_id, JobStatus::Failed, Some(message.clone()));
-            tracing::warn!(job = %job_id, elapsed_ms, error = %message, "failed");
+        Ok(Err(failure)) => {
+            // The client is told the redacted half; the log keeps the whole
+            // truth, including the path an operator needs to find the file.
+            set_status(
+                registry,
+                job_id,
+                JobStatus::Failed,
+                Some(failure.client.clone()),
+            );
+            tracing::warn!(job = %job_id, elapsed_ms, error = %failure.log, "failed");
         }
         Err(e) => {
             set_status(registry, job_id, JobStatus::Failed, Some(e.to_string()));
@@ -112,9 +119,11 @@ async fn process_job(registry: &Registry, storage: &Storage, job_id: &str) {
 /// Extraction goes through the engine's tar backend, which refuses entries
 /// that would escape the output directory and materializes no links, so a
 /// hostile tar cannot reach outside the job's own staging area.
-fn unwrap_and_compress(input: &Path, tree: &Path, output: &Path, job: &Job) -> Result<(), String> {
-    extract_tar(input, tree).map_err(|e| e.to_string())?;
+fn unwrap_and_compress(input: &Path, tree: &Path, output: &Path, job: &Job) -> Result<(), Failure> {
+    // This one used to bypass the curation entirely and hand the client
+    // `failed to unpack \`<staging path>\`` (issue #66).
+    extract_tar(input, tree).map_err(|e| failure(&job.archive_name, &e))?;
     let root = single_root_dir(tree, &job.name)?;
     compress_dir(&root, output, job.algorithm, job.level, job.verify.into())
-        .map_err(|e| failure_message(&job.archive_name, &e))
+        .map_err(|e| failure(&job.archive_name, &e))
 }

@@ -936,3 +936,107 @@ async fn a_job_this_build_cannot_read_answers_500_with_an_explanation() {
         "and not the database's own words: {detail}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// What a failed job tells a client about this machine (issue #66)
+// ---------------------------------------------------------------------------
+
+/// A tar whose second entry has the first, a plain file, for a parent.
+///
+/// Built by hand because a real directory cannot hold this shape: the
+/// filesystem would refuse to create `a.txt/b.txt` under a file. It is what
+/// makes `extract_tar` fail at a write site, which is where the staging path
+/// used to end up in the client's error message.
+fn tar_with_a_file_for_a_parent() -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (name, content) in [
+        ("photos/a.txt", &b"a file"[..]),
+        ("photos/a.txt/b.txt", &b"a child of a file"[..]),
+    ] {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o644);
+        header.set_entry_type(tar::EntryType::Regular);
+        let raw = name.as_bytes();
+        header.as_old_mut().name[..raw.len()].copy_from_slice(raw);
+        header.set_cksum();
+        builder.append(&header, content).unwrap();
+    }
+    builder.into_inner().unwrap()
+}
+
+/// Issue #66. `error_message` is returned by `GET /jobs/{id}`, the server has no
+/// authentication, and it used to hand back the absolute path of the job's
+/// staging directory:
+///
+/// ```text
+/// Compression failed: failed to unpack `/…/jobs/<uuid>/tree/photos/a.txt/b.txt`
+/// ```
+///
+/// That is the server's storage layout, told to anyone who can reach the port.
+#[tokio::test]
+async fn a_failed_job_tells_the_client_nothing_about_where_the_server_keeps_things() {
+    let (router, storage) = app();
+    let accepted = post_compress(
+        &router,
+        "name=photos&envelope=tar",
+        &tar_with_a_file_for_a_parent(),
+    )
+    .await;
+    assert_eq!(accepted.status(), StatusCode::ACCEPTED);
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let done = wait_for_job(&router, &job_id).await;
+    assert_eq!(done["status"], "failed");
+    let told = done["error_message"].as_str().unwrap();
+
+    assert!(
+        !told.is_empty(),
+        "a failure with nothing to say is no better"
+    );
+    // Nothing absolute, and nothing naming this machine.
+    assert!(
+        !told.contains('/')
+            || !told
+                .split_whitespace()
+                .any(|w| w.trim_matches('`').starts_with('/')),
+        "an absolute path reached the client: {told}"
+    );
+    let root = storage.path().to_string_lossy().to_string();
+    assert!(
+        !told.contains(&root),
+        "the staging directory reached the client: {told}"
+    );
+    assert!(
+        !told.contains(&job_id),
+        "the job's directory name reached the client: {told}"
+    );
+}
+
+/// The redaction must not swallow the failure itself. A client that is told
+/// nothing cannot tell a hostile upload from a broken server.
+#[tokio::test]
+async fn a_failed_job_still_says_what_went_wrong() {
+    let (router, _storage) = app();
+    let accepted = post_compress(
+        &router,
+        "name=photos&envelope=tar",
+        &tar_with_a_file_for_a_parent(),
+    )
+    .await;
+    let job_id = body_json(accepted).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let done = wait_for_job(&router, &job_id).await;
+    let told = done["error_message"].as_str().unwrap();
+
+    assert!(
+        told.contains("unpack") || told.contains("entry") || told.contains("<path>"),
+        "it has to describe the failure, not just refuse to: {told}"
+    );
+}

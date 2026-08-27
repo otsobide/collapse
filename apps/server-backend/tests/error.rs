@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Response};
 use http_body_util::BodyExt;
 
 use collapse_core::CompressionError;
-use collapse_server_backend::error::{failure_message, ApiError};
+use collapse_server_backend::error::{failure, ApiError};
 
 async fn detail_of(response: Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -69,7 +69,7 @@ fn a_verification_failure_names_the_archive_not_the_servers_own_path() {
         reason: "1 entry is missing: \"photos/b.jpg\"".to_string(),
     };
 
-    let message = failure_message("photos.zip", &error);
+    let message = failure("photos.zip", &error).client;
 
     assert!(
         message.contains("photos.zip"),
@@ -95,16 +95,17 @@ fn a_verification_failure_reads_as_a_sentence_and_keeps_the_reason() {
     };
 
     assert_eq!(
-        failure_message("photos.zip", &error),
+        failure("photos.zip", &error).client,
         "photos.zip was compressed but did not check out, so it was discarded: \
          2 entries are missing: \"a.txt\", \"b.txt\""
     );
 }
 
-/// Every other engine error already says something the client can act on, and
-/// rewriting those would throw away the only description of what went wrong.
+/// An engine error that says something the client can act on, and names no
+/// location, still reaches it word for word. Redacting those would throw away
+/// the only description of what went wrong.
 #[test]
-fn other_engine_errors_are_passed_through_word_for_word() {
+fn an_engine_error_that_names_no_location_is_passed_through_word_for_word() {
     for error in [
         CompressionError::Failed("unexpected end of file".to_string()),
         CompressionError::InvalidLevel(9),
@@ -113,6 +114,88 @@ fn other_engine_errors_are_passed_through_word_for_word() {
             "denied",
         )),
     ] {
-        assert_eq!(failure_message("photos.zip", &error), error.to_string());
+        assert_eq!(failure("photos.zip", &error).client, error.to_string());
     }
+}
+
+/// The half this used to get wrong.
+///
+/// The old rule was "rewrite a verification failure, pass everything else
+/// through", justified on the reasoning that every other variant "already reads
+/// as a sentence about something the client did". It does not. Unpacking a
+/// client's tar envelope reaches `extract_tar`, and its failure names a path
+/// inside the staging directory (issue #66).
+///
+/// The rule is now the other way round: redact unless there is a curated
+/// sentence, so a variant added later is safe by default rather than safe only
+/// if somebody remembers.
+#[test]
+fn an_engine_error_that_names_a_location_does_not_reach_the_client() {
+    let leaky = [
+        // Exactly what the tar envelope path produced.
+        CompressionError::Failed(
+            "failed to unpack `/var/lib/collapse/jobs/abc123/tree/root/a/b`".to_string(),
+        ),
+        // A Windows host, including the verbatim prefix `canonicalize` adds.
+        CompressionError::Failed(
+            "cannot write to \\\\?\\C:\\ProgramData\\collapse\\jobs\\abc\\out".to_string(),
+        ),
+        CompressionError::Failed("cannot read C:\\jobs\\abc\\input".to_string()),
+    ];
+
+    for error in leaky {
+        let told = failure("photos.zip", &error).client;
+        assert!(
+            !told.contains("/var/lib") && !told.contains("C:\\") && !told.contains("ProgramData"),
+            "a path reached the client: {told}"
+        );
+        assert!(
+            told.contains("<path>"),
+            "and it says something was removed: {told}"
+        );
+    }
+}
+
+/// The operator loses nothing. The log half is the failure whole, path and all,
+/// because the person reading it is the one who can act on the path.
+#[test]
+fn the_log_half_keeps_what_the_client_half_drops() {
+    let error = CompressionError::Failed(
+        "failed to unpack `/var/lib/collapse/jobs/abc123/tree/x`".to_string(),
+    );
+    let both = failure("photos.zip", &error);
+
+    assert!(
+        both.log.contains("/var/lib/collapse/jobs/abc123"),
+        "{}",
+        both.log
+    );
+    assert!(!both.client.contains("/var/lib"), "{}", both.client);
+}
+
+/// A per-entry failure keeps the entry, which is the client's own content and
+/// the useful half, and drops the destination, which is ours.
+#[test]
+fn a_failing_entry_names_the_entry_but_not_where_it_was_going() {
+    let error = CompressionError::Entry {
+        entry: "photos/a.jpg".to_string(),
+        destination: std::path::PathBuf::from("/var/lib/collapse/jobs/abc123/tree/photos/a.jpg"),
+        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+    };
+
+    let told = failure("photos.zip", &error).client;
+    assert!(told.contains("photos/a.jpg"), "{told}");
+    assert!(!told.contains("/var/lib"), "{told}");
+}
+
+/// A relative path is the client's own entry name, not a location on this
+/// machine, and must survive.
+#[test]
+fn a_relative_path_is_not_mistaken_for_a_location() {
+    let error = CompressionError::Failed("cannot read photos/2026/a.jpg".to_string());
+    assert_eq!(
+        failure("photos.zip", &error).client,
+        error.to_string(),
+        "an entry name was redacted as if it were a location"
+    );
 }
