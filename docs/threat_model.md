@@ -284,6 +284,42 @@ so the existing `--max-upload-mb` cap also bounds what reaches the disk. A zip
 or 7z envelope would have introduced a decompression bomb where there is none
 today, which is why it is not offered.
 
+### 8b. What a failed job tells the client
+
+**Attack.** Not an attack, an oversight in a message. `GET /jobs/{id}` returns a
+failed job's `error_message`, and that message came from the engine, which names
+the file it was working on. For a job, that file lives inside the staging
+directory, so a client learned where the server keeps things:
+
+```text
+Compression failed: failed to unpack `/var/lib/collapse/jobs/<uuid>/tree/photos/a.txt/b.txt`
+```
+
+Reachable with an ordinary upload: a tar whose second entry has the first, a
+plain file, for a parent. Since the server has no authentication (see below),
+"a client" is anyone who can reach the port.
+
+**Prevention.** A failure now has two halves. The client is told a message with
+every absolute path removed; the log keeps the failure whole, because the person
+reading it is the one who can act on the path.
+
+The rule is **redact unless there is a curated sentence**, not the other way
+round. It used to be "rewrite a verification failure, pass everything else
+through", justified on the reasoning that every other variant already read as a
+sentence about something the client did. It did not, and enumerating the leaky
+variants would have left the next one leaking until somebody noticed. Redaction
+is blunt on purpose: the server has no reason to tell a client where anything
+lives, so removing every absolute path is correct rather than merely convenient,
+and it does not depend on knowing which variant produced the message.
+
+Relative paths survive, because those are the client's own entry names and
+exactly what it needs to see. A per-entry failure keeps the entry and drops the
+destination.
+
+**Covered by** `a_failed_job_tells_the_client_nothing_about_where_the_server_keeps_things`
+and `a_failed_job_still_says_what_went_wrong` in `apps/server-backend/tests/api.rs`,
+which drive a real job end to end, plus the unit cases in `tests/error.rs`.
+
 ### 9. What the server does not defend against
 
 Stated plainly, because deploying it assumes these:
