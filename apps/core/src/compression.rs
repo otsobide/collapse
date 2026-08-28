@@ -16,7 +16,7 @@ pub use self::tar::{compress_tar, compress_tar_dir, extract_tar};
 pub use self::verify::{verify_archive, Verify};
 pub use self::zip::{compress_zip, compress_zip_dir, extract_zip};
 
-pub(crate) use self::names::{plan_names, NamePlan};
+pub(crate) use self::names::{refuse_unwritable_names, NamePlan};
 pub(crate) use self::sevenz::{list_7z_entries, read_7z_entries};
 pub(crate) use self::tar::{list_tar_entries, read_tar_entries};
 pub(crate) use self::walk::walk_tree;
@@ -371,9 +371,9 @@ pub fn compress_dir(
 ///
 /// A separate type rather than more arguments on [`extract`], and
 /// [`extract_with`] rather than a replacement for it: every existing caller
-/// (the CLI, the server, the desktop, this crate's own tests) has no
-/// substitutions to offer and should not have to say so, and the next knob
-/// extraction grows should not add a third function.
+/// (the CLI, the server, the desktop, this crate's own tests) has nothing to
+/// say here and should not have to say so, and the next knob extraction grows
+/// should not add a third function.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ExtractOptions {
@@ -394,7 +394,13 @@ impl ExtractOptions {
         self
     }
 
-    /// The caller's answers for the characters the host cannot write.
+    /// **Inert.** Kept so the callers that pass answers still compile while
+    /// their own naming dialogs are being taken out; nothing reads it.
+    ///
+    /// Extraction no longer substitutes anything: a character this filesystem
+    /// cannot write fails the extraction rather than being replaced, so there
+    /// is no answer for a caller to supply. Removing this, [`Substitutions`]
+    /// and the two front-end dialogs that fill it is follow-up work.
     pub fn with_replacements(mut self, replacements: Substitutions) -> Self {
         self.replacements = replacements;
         self
@@ -404,6 +410,8 @@ impl ExtractOptions {
         self.rules
     }
 
+    /// The answers this was handed. Read by nobody; see
+    /// [`Self::with_replacements`].
     pub fn replacements(&self) -> &Substitutions {
         &self.replacements
     }
@@ -471,11 +479,14 @@ fn list_entries(archive: &Path, algorithm: Algorithm) -> Result<Vec<String>, Com
 /// What an archive holds that this machine cannot write as ordinary files.
 ///
 /// Reads the listing and nothing else: no entry is decompressed and nothing is
-/// created, so a front end can ask this before it asks the user anything. Feed
-/// the answers back through [`ExtractOptions::with_replacements`].
+/// created, so a front end can ask this before it makes anyone wait.
 ///
-/// An empty report ([`NameReport::is_empty`]) means extraction has no naming
-/// question to ask, which on Unix is nearly always the case.
+/// **This is now a prediction, not a questionnaire.** A non-empty report
+/// ([`NameReport::is_empty`]) means [`extract`] will refuse this archive on
+/// this machine, and the report says which entries and why so a front end can
+/// explain it. There is nothing to answer: the entries it names are the reason
+/// the extraction will not happen, not a form to fill in. On Unix the report is
+/// nearly always empty.
 pub fn unwritable_names(archive: &Path) -> Result<NameReport, CompressionError> {
     unwritable_names_with(archive, NameRules::host())
 }
@@ -493,44 +504,55 @@ pub fn unwritable_names_with(
 
 /// Extract an archive into `output_dir`.
 ///
-/// Returns the list of extracted file paths (relative to `output_dir`), which
-/// are the names **as written**: an entry the host had to be given a different
-/// name for is reported under the name that is on disk, never under the
-/// archive's, or a front end would list files nobody can find.
+/// Returns the list of extracted file paths, relative to `output_dir` and
+/// spelled exactly as the archive spells them.
+///
+/// **All of the archive, under its own names, or none of it.** An entry this
+/// filesystem cannot hold as spelled fails the whole extraction
+/// ([`CompressionError::Name`]) before anything is written, rather than being
+/// adjusted to fit: a renamed file is not the file the archive named, and
+/// nothing downstream can tell the two apart afterwards. Ask
+/// [`unwritable_names`] first if the answer is worth showing someone before
+/// they wait for it.
 ///
 /// The algorithm is detected from the archive file extension.
 pub fn extract(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
     extract_with(archive, output_dir, &ExtractOptions::default())
 }
 
-/// [`extract`], with the caller's answers for the entry names this machine
-/// cannot write.
+/// [`extract`], against a chosen set of [`NameRules`] rather than the host's.
 ///
-/// Naming is settled over the whole listing before the first byte is written,
-/// and a listing that cannot be read stops it there (issue #89), so the answers
-/// nothing can recover from (a character with no replacement, two entries that
-/// would land on one name, an archive too damaged to read) leave the output
-/// directory as they found it.
+/// Same policy as [`extract`], which is the point of it: this exists so a test
+/// on one machine can ask what another machine would do, not so a caller can
+/// soften the answer.
+///
+/// Every name is judged against the whole listing before the first byte is
+/// written, and a listing that cannot be read stops it there (issue #89), so
+/// an archive this system cannot hold leaves the output directory exactly as
+/// it found it.
 pub fn extract_with(
     archive: &Path,
     output_dir: &Path,
     options: &ExtractOptions,
 ) -> Result<Vec<String>, CompressionError> {
     let algorithm = algorithm_of(archive)?;
-    // Before the archive is even opened: an answer that is itself unwritable is
-    // wrong whether or not any entry needs it.
-    options.rules().check_replacements(options.replacements())?;
-    let (names, plan) = plan_for(archive, algorithm, options)?;
-    refuse_overwriting_the_archive(archive, output_dir, &names, &plan)?;
+    let names = listing_for(archive, algorithm)?;
+    // Judged against the whole listing before a byte is written, so an archive
+    // this host cannot hold leaves the output directory as it found it.
+    refuse_unwritable_names(&names, options.rules())?;
+    refuse_overwriting_the_archive(archive, output_dir, &names)?;
 
+    // The plain backends, because there is no longer any plan to hand them:
+    // every entry is written under the name the archive spells or the run
+    // stopped above.
     match algorithm {
-        Algorithm::SevenZ => self::sevenz::extract_7z_planned(archive, output_dir, &plan),
-        Algorithm::Tar => self::tar::extract_tar_planned(archive, output_dir, &plan),
-        Algorithm::Zip => self::zip::extract_zip_planned(archive, output_dir, &plan),
+        Algorithm::SevenZ => self::sevenz::extract_7z(archive, output_dir),
+        Algorithm::Tar => self::tar::extract_tar(archive, output_dir),
+        Algorithm::Zip => self::zip::extract_zip(archive, output_dir),
     }
 }
 
-/// Work out what every entry will be called, from the listing.
+/// The archive's listing, read before anything is written.
 ///
 /// **A listing that cannot be read stops the extraction here**, before anything
 /// is written.
@@ -540,8 +562,8 @@ pub fn extract_with(
 /// layer would only replace that message with a worse one. The reasoning was
 /// right about the message and wrong about the timing (issue #89): the
 /// extractor fails **while streaming**, so by the time it notices it has
-/// already written every entry before the fault, and written them with no plan
-/// at all, which means no rewriting, no refusal and no collision check. An
+/// already written every entry before the fault, and written them with nothing
+/// judged at all, so no name was refused however badly it fitted the host. An
 /// archive holding `notes.txt:hidden` was refused outright when its listing was
 /// intact and written as an invisible NTFS stream when it was not: the harm of
 /// issue #63, performed without the user ever being asked. One bad 512 byte
@@ -558,26 +580,25 @@ pub fn extract_with(
 /// and so never come through here; `recovering_from_a_damaged_archive_is_still_
 /// possible_through_the_backend` pins that.
 ///
-/// It costs one listing per extraction, paid even when nothing needs renaming,
+/// It costs one listing per extraction, paid even when every name is ordinary,
 /// because the only way to know that is to read the names. For zip and 7z that
 /// is a header read; for tar it is a second walk over the headers, seeking past
 /// each member rather than reading it.
-fn plan_for(
-    archive: &Path,
-    algorithm: Algorithm,
-    options: &ExtractOptions,
-) -> Result<(Vec<String>, NamePlan), CompressionError> {
-    let names = list_entries(archive, algorithm).map_err(unreadable_archive)?;
-    let plan = plan_names(&names, options.rules(), options.replacements())?;
-    Ok((names, plan))
+fn listing_for(archive: &Path, algorithm: Algorithm) -> Result<Vec<String>, CompressionError> {
+    list_entries(archive, algorithm).map_err(unreadable_archive)
 }
 
 /// Refuse an extraction that would write one of the archive's own entries over
 /// the archive.
 ///
 /// Free to run, in the sense that matters: the listing it needs has already
-/// been read and paid for by the planning pass, so this adds one identity check
+/// been read and paid for by [`listing_for`], so this adds one identity check
 /// per entry and no extra pass over the file.
+///
+/// It compares the name the archive spells, because that is now the only name
+/// an entry can be written under. It used to have to follow a rewritten name
+/// as well, since a substitution could land an entry on the archive that the
+/// archive's own name did not match; nothing rewrites a name any more.
 ///
 /// By **file identity**, not by path. A hardlink is a second name for one file
 /// and never resolves to the same string, which is exactly how `--force` used
@@ -587,7 +608,6 @@ fn refuse_overwriting_the_archive(
     archive: &Path,
     output_dir: &Path,
     names: &[String],
-    plan: &NamePlan,
 ) -> Result<(), CompressionError> {
     for name in names {
         let Some(natural) = sanitize_entry_path(name) else {
@@ -595,8 +615,7 @@ fn refuse_overwriting_the_archive(
             // that is the message worth keeping.
             continue;
         };
-        let rel = plan.written_as(name).map_or(natural, Path::to_path_buf);
-        if crate::paths::same_file(&output_dir.join(&rel), archive) {
+        if crate::paths::same_file(&output_dir.join(&natural), archive) {
             return Err(CompressionError::WouldOverwriteArchive {
                 archive: archive.to_path_buf(),
                 entry: name.clone(),

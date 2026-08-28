@@ -1,5 +1,4 @@
-//! Which entry names the host can write, and what to do with the ones it
-//! cannot.
+//! Which entry names the host can write, and which ones stop an extraction.
 //!
 //! Extraction takes names from an archive, which is to say from another
 //! machine. Containment ([`sanitize_entry_path`](super::sanitize_entry_path))
@@ -9,6 +8,18 @@
 //! `notes.txt.` is not preserved, `CON` resolves to a device in every
 //! directory, and `notes.txt:hidden` is accepted as the `hidden` stream of
 //! `notes.txt` rather than as a file, with no error at all.
+//!
+//! **The answer to all four is the same: refuse the archive.** This module used
+//! to negotiate instead. It asked the user to supply a character in place of
+//! the `?`, dropped the trailing dot on its own and suffixed the device name,
+//! then extracted under the names it had arrived at. The output was then a tree
+//! whose names were this crate's invention rather than the archive's, with no
+//! way for anything downstream to tell which files those were. An extraction
+//! that cannot reproduce what the archive says is one that should not happen,
+//! so [`refuse_unwritable_names`] stops it before the first byte and says which
+//! entry and why. The machinery for the old answer is still here and unused,
+//! because the front ends still hand it answers; see
+//! [`super::ExtractOptions::with_replacements`].
 //!
 //! The rules are **data** ([`NameRules`]) rather than `#[cfg]`, and that is the
 //! point: [`NameRules::windows`] can be asked for from any machine, so every
@@ -633,8 +644,57 @@ pub enum NameError {
         result: String,
     },
 
+    /// The host cannot hold this name exactly as the archive spells it.
+    ///
+    /// The whole extraction stops here. Extraction writes what the archive
+    /// says or it writes nothing: a name this filesystem would refuse, or
+    /// silently store under a different name, is reported rather than adjusted,
+    /// because the adjusted file is not the file the archive named and nothing
+    /// downstream can tell the difference afterwards.
+    #[error(
+        "the archive entry {entry:?} cannot be written on this system: {component:?} {}. \
+         Nothing was extracted; extract it on a system that can hold the name.",
+        describe(.problems)
+    )]
+    Unwritable {
+        entry: String,
+        component: String,
+        problems: Vec<NameProblem>,
+    },
+
     #[error("{key:?} is not a single character, so there is nothing to replace")]
     NotOneCharacter { key: String },
+}
+
+/// Why one component cannot be written, as a phrase that follows its name.
+///
+/// Rendered here rather than on [`NameProblem`] itself: this is the sentence a
+/// refusal reads in, and the same data has to render differently in the desktop
+/// dialog, which shows it as structure rather than as prose.
+fn describe(problems: &[NameProblem]) -> String {
+    problems
+        .iter()
+        .map(|problem| match problem {
+            NameProblem::Character {
+                character,
+                fault: CharacterFault::Rejected,
+            } => format!("contains {character:?}, which this system refuses in a file name"),
+            NameProblem::Character {
+                character,
+                fault: CharacterFault::Reinterpreted,
+            } => format!(
+                "contains {character:?}, which this system reads as something other than part \
+                 of the name"
+            ),
+            NameProblem::TrailingCharacters { removed } => {
+                format!("ends in {removed:?}, which this system does not preserve")
+            }
+            NameProblem::ReservedDevice { device } => {
+                format!("is the reserved device name {device:?}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; and ")
 }
 
 impl NameError {
@@ -661,10 +721,14 @@ impl NameError {
 /// The name every entry will be written under, for the entries whose name
 /// changes.
 ///
-/// Built from the whole listing before anything is written, because two of the
-/// three answers it can give ("no replacement for this" and "these two entries
-/// collide") must stop the extraction while the output directory is still
-/// empty, and a collision cannot be seen one entry at a time.
+/// **Always the identity now, and kept only so the write paths do not have to
+/// change in the same commit as the policy.** Extraction no longer renames an
+/// entry ([`refuse_unwritable_names`]), so nothing constructs a plan that
+/// says anything: every backend receives [`Self::identity`] and every
+/// [`Self::written_as`] answers `None`. Removing this type, the
+/// `extract_*_planned` variants that take it and tar's second write path is
+/// follow-up work, deliberately separate because that path carries the
+/// containment guard and should not be moved by a commit about naming.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct NamePlan {
     /// Only the entries whose name changed. An entry that is absent is written
@@ -685,55 +749,55 @@ impl NamePlan {
     }
 }
 
-/// Work out what each name in `names` becomes, and refuse the two situations
-/// nothing downstream could recover from.
-pub(crate) fn plan_names<S: AsRef<str>>(
+/// Refuse a listing holding a name this filesystem cannot write exactly as the
+/// archive spells it.
+///
+/// **Nothing is renamed.** This used to be a planning pass: it applied the
+/// caller's replacements, dropped a trailing dot or space and suffixed a
+/// reserved device, so an archive Windows could not hold was extracted anyway
+/// under names it could. That traded one problem for a worse one. The file on
+/// disk was then not the file the archive named, nothing downstream could tell
+/// the two apart, and the listing handed back was the only record that a
+/// substitution had happened at all. An extraction either reproduces what the
+/// archive says or it does not happen.
+///
+/// So the question is now the narrow one [`NameRules::can_write`] answers, and
+/// the answer is yes or no rather than a rewrite: can this host hold this
+/// component, spelled this way. A component it would refuse (`what?.txt` on
+/// Windows), silently store elsewhere (`notes.txt:hidden`, an NTFS stream),
+/// silently rename (`notes.txt.`, whose trailing dot is dropped) or resolve to
+/// a device (`CON`) all fail the same way, because from the caller's side they
+/// are the same failure: the name they asked for is not the name they would
+/// get.
+///
+/// The whole listing is judged before a byte is written, so a refusal leaves
+/// the output directory exactly as it found it.
+///
+/// The first offending component stops it. Reporting every one at once is a
+/// front end's job, and both have the listing to do it from
+/// ([`NameReport::of`]), which is also what lets them ask before extracting
+/// rather than after failing.
+pub(crate) fn refuse_unwritable_names<S: AsRef<str>>(
     names: &[S],
     rules: NameRules,
-    replacements: &Substitutions,
-) -> Result<NamePlan, NameError> {
-    let mut rewritten = HashMap::new();
-    // planned name -> the first entry that claimed it, and whether that entry's
-    // name had to change to claim it.
-    let mut claimed: HashMap<PathBuf, (&str, bool)> = HashMap::new();
-
+) -> Result<(), NameError> {
     for name in names {
         let name = name.as_ref();
-        let planned = rules.rewrite_entry(name, replacements)?;
-        if planned.as_os_str().is_empty() {
-            // Nothing normal in it (`.`, a bare root). Containment decides what
-            // becomes of those, per format, and it is not this pass's business.
-            continue;
-        }
-        let changed = planned != natural_path(name);
-
-        if let Some((first, first_changed)) = claimed.get(&planned) {
-            // Two entries spelled the same way is an archive that was already
-            // like that, and extraction has always let the second win. Refusing
-            // it here would start rejecting archives that have nothing to do
-            // with this feature; a collision is only ours when a rewrite caused
-            // it.
-            if *first != name && (changed || *first_changed) {
-                return Err(NameError::Collision {
-                    first: (*first).to_string(),
-                    second: name.to_string(),
-                    name: planned.to_string_lossy().into_owned(),
+        // Component by component, and split on `/` rather than by the host's
+        // rules: an archive entry name means the same thing on every machine,
+        // which is the property `entry_components` exists to preserve.
+        for component in entry_components(name) {
+            let problems = rules.problems(component);
+            if !problems.is_empty() {
+                return Err(NameError::Unwritable {
+                    entry: name.to_string(),
+                    component: component.to_string(),
+                    problems,
                 });
             }
         }
-        claimed.insert(planned.clone(), (name, changed));
-        if changed {
-            rewritten.insert(name.to_string(), planned);
-        }
     }
-
-    Ok(NamePlan { rewritten })
-}
-
-/// The relative path an extractor derives from an entry name with no rules
-/// applied: its `Normal` components and nothing else.
-fn natural_path(name: &str) -> PathBuf {
-    entry_components(name).collect()
+    Ok(())
 }
 
 /// Split an archive entry name into its components, the same way on every host.
