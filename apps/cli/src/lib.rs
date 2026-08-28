@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use collapse_core::paths::{inside, same_file};
 use collapse_core::{
     compress, compress_dir, extract, unwritable_names_with, Algorithm, CharacterFault, NameProblem,
-    NameReport, NameRules, Substitutions, Verify,
+    NameReport, NameRules, Verify,
 };
 use thiserror::Error;
 
@@ -105,31 +105,13 @@ pub enum Outcome {
     Extracted {
         output_dir: PathBuf,
         /// The names as written, which is what the engine returns.
+        ///
+        /// "As written" is no longer a distinction: extraction refuses a name
+        /// it cannot write rather than adjusting it, so these are the names the
+        /// archive spells. The wording stays because the guarantee is worth
+        /// stating either way.
         files: Vec<String>,
-        /// Entries whose name this machine could not hold as the archive
-        /// spells it, and the name they were written under instead.
-        ///
-        /// Only the adjustments that need no answer land here (a trailing dot
-        /// or space to drop, a device name to suffix); anything needing a
-        /// replacement stopped the run before it started. Reported rather than
-        /// left to be noticed, because a rename the user did not ask for is
-        /// the kind of thing they should hear about from us and not from a
-        /// missing file later.
-        ///
-        /// Always empty on Unix, where the one character no name can hold is a
-        /// NUL, and that is a question rather than an adjustment.
-        adjusted: Vec<Adjustment>,
     },
-}
-
-/// An entry the host could not name as the archive spells it, and what it is
-/// called on disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Adjustment {
-    /// The name the archive spells.
-    pub entry: String,
-    /// The name on disk, relative to the output directory.
-    pub written: String,
 }
 
 impl Outcome {
@@ -149,11 +131,7 @@ impl Outcome {
             Outcome::Compressed { output, .. } => {
                 println!("Created {}", output.display());
             }
-            Outcome::Extracted {
-                output_dir,
-                files,
-                adjusted,
-            } => {
+            Outcome::Extracted { output_dir, files } => {
                 println!(
                     "Extracted {} file(s) into {}",
                     files.len(),
@@ -161,17 +139,6 @@ impl Outcome {
                 );
                 for file in files {
                     println!("  {file}");
-                }
-                if !adjusted.is_empty() {
-                    println!(
-                        "{} name(s) this system cannot write were adjusted:",
-                        adjusted.len()
-                    );
-                    for change in adjusted {
-                        // Quoted, because the difference between the two names
-                        // can be a trailing space, which is invisible unquoted.
-                        println!("  {:?} was written as {:?}", change.entry, change.written);
-                    }
                 }
             }
         }
@@ -446,41 +413,8 @@ fn run_extract(archive: PathBuf, output_dir: PathBuf) -> Result<Outcome, CliErro
     if !report.is_empty() {
         return Err(CliError::UnwritableEntries { archive, report });
     }
-    // Nothing is adjusted any more, so this is provably empty by the time it is
-    // reached: the report above was empty, and adjustments come from the report.
-    // Kept until `Outcome::Extracted` loses the field.
-    let adjusted = adjustments(&report, rules);
-
     let files = extract(&archive, &output_dir)?;
-    Ok(Outcome::Extracted {
-        output_dir,
-        files,
-        adjusted,
-    })
-}
-
-/// The name each unwritable entry ends up with, for the entries whose problems
-/// are settled without asking anyone.
-///
-/// Entries needing a replacement are absent, and that is the mechanism rather
-/// than a filter: with no substitution to apply, `rewrite_entry` refuses them,
-/// and those are exactly the ones [`run_extract`] has already refused to
-/// proceed with. Asking the engine (instead of reimplementing "drop the
-/// trailing dot, suffix the device") is what keeps this from drifting away
-/// from the name actually written.
-pub fn adjustments(report: &NameReport, rules: NameRules) -> Vec<Adjustment> {
-    let no_answers = Substitutions::new();
-    report
-        .entries
-        .iter()
-        .filter_map(|unwritable| {
-            let written = rules.rewrite_entry(&unwritable.entry, &no_answers).ok()?;
-            Some(Adjustment {
-                entry: unwritable.entry.clone(),
-                written: written.to_string_lossy().into_owned(),
-            })
-        })
-        .collect()
+    Ok(Outcome::Extracted { output_dir, files })
 }
 
 /// Why an archive was refused, which entries are at fault, what is wrong with
@@ -512,30 +446,18 @@ pub fn unwritable_entries_message(archive: &Path, report: &NameReport) -> String
         }
     }
 
-    let _ = write!(message, "\nNothing was extracted.");
+    let _ = write!(
+        message,
+        "\nNothing was extracted, and nothing this command could be told would change that: \
+         extraction writes every entry under the name the archive spells or it writes none of \
+         them. Extract on a system that can hold these names."
+    );
     if !report.characters.is_empty() {
-        let (needed, them) = if report.characters.len() == 1 {
-            ("a replacement for", "it")
-        } else {
-            ("replacements for", "them")
-        };
-        let _ = write!(
-            message,
-            " Going ahead needs {needed} {}, and this command cannot ask for {them} mid-run \
-             without becoming interactive: the Collapse desktop app asks once per character, \
-             checks the answer is writable too, and extracts with it.",
-            listed(report)
-        );
-    }
-    if report
-        .entries
-        .iter()
-        .any(|e| e.problems.iter().any(|p| p.replaceable().is_none()))
-    {
-        let _ = write!(
-            message,
-            " The names above with nothing to replace are adjusted for you once it can go ahead."
-        );
+        // Named even though there is no answer to give, because it is what
+        // tells a user whether the archive is unusable here or merely awkward:
+        // one character across forty entries is a different problem from forty
+        // characters.
+        let _ = write!(message, " The characters at fault are {}.", listed(report));
     }
     message
 }
@@ -560,12 +482,12 @@ fn explain(problem: &NameProblem) -> String {
              another file as hidden data instead of becoming a file, with no error"
         ),
         NameProblem::TrailingCharacters { removed } => format!(
-            "the name ends in {removed:?}, which this system does not keep, so it would be dropped"
+            "the name ends in {removed:?}, which this system does not keep, so the file would not \
+             be the one the archive names"
         ),
-        NameProblem::ReservedDevice { device } => format!(
-            "{device:?} names a device rather than a file, in every directory, so it would be \
-             written under an adjusted name"
-        ),
+        NameProblem::ReservedDevice { device } => {
+            format!("{device:?} names a device rather than a file, in every directory")
+        }
     }
 }
 

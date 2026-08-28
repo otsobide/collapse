@@ -7,5 +7,5 @@ pub mod paths;
 pub use compression::{
     compress, compress_dir, extract, extract_with, unwritable_names, unwritable_names_with,
     Algorithm, CharacterFault, CompressionError, ExtractOptions, NameError, NameProblem,
-    NameReport, NameRules, OffendingCharacter, Substitutions, UnwritableEntry, Verify,
+    NameReport, NameRules, OffendingCharacter, UnwritableEntry, Verify,
 };

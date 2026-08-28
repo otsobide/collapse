@@ -25,14 +25,9 @@ apps/desktop/
   src-tauri/          Rust backend
     src/lib.rs        app wiring: the plugin, the command registry, run()
     src/commands.rs   the commands the webview invokes: is_directory,
-                      compress_path, extract_archive, check_server,
-                      unwritable_names
+                      compress_path, extract_archive, check_server
     src/paths.rs      same_file and inside, the guards that stop an archive
                       overwriting its own source or a file within it
-    src/names.rs      the entry-name exchange the extract dialog was built on.
-                      Inert: extraction refuses a name this host cannot write
-                      rather than taking a replacement for it, so the answers
-                      the dialog collects reach nothing. Goes when it does.
     tests/            Cargo integration tests (see below)
     tauri.conf.json   window, bundle, identifier (com.cervantic.collapse)
     capabilities/     window permissions (core + dialog)

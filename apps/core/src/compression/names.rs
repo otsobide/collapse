@@ -37,9 +37,6 @@
 //! reserved device name is reserved *with* an extension too (`NUL.tar.gz` is
 //! `NUL`), and the superscript digits `¹²³` count as digits in `COM#`/`LPT#`.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-
 use serde::Serialize;
 use thiserror::Error;
 
@@ -86,12 +83,6 @@ const DEVICE_PREFIXES: &[&str] = &["COM", "LPT"];
 /// Windows reads the ISO 8859-1 `¹`, `²` and `³` as digits, so `COM¹` is as
 /// reserved as `COM1`.
 const DEVICE_DIGITS: &[char] = &['1', '2', '3', '4', '5', '6', '7', '8', '9', '¹', '²', '³'];
-
-/// What a reserved device name gains so it stops being one.
-///
-/// Appended to the part before the first dot, so `CON.txt` becomes `CON_.txt`
-/// and keeps the extension that tells a person what the file is.
-const DEVICE_SUFFIX: char = '_';
 
 /// What a filesystem will accept as the name of an ordinary file.
 ///
@@ -142,28 +133,6 @@ impl NameRules {
             trailing: NO_CHARS,
             devices: false,
         }
-    }
-
-    /// Characters that need a replacement before a name carrying them can be
-    /// written, in no particular order. Offered so a front end can explain the
-    /// rules before it has an archive to complain about.
-    pub fn offending_characters(&self) -> impl Iterator<Item = (char, CharacterFault)> + '_ {
-        let rejected = self
-            .rejected
-            .iter()
-            .map(|c| (*c, CharacterFault::Rejected))
-            .chain(
-                self.reinterpreted
-                    .iter()
-                    .map(|c| (*c, CharacterFault::Reinterpreted)),
-            );
-        let controls = self
-            .rejects_control_characters
-            .then_some('\u{0}'..='\u{1f}')
-            .into_iter()
-            .flatten()
-            .map(|c| (c, CharacterFault::Rejected));
-        rejected.chain(controls)
     }
 
     /// Everything about **one component** of a name that this filesystem cannot
@@ -218,135 +187,6 @@ impl NameRules {
     /// True when this filesystem can hold `component` exactly as spelled.
     pub fn can_write(&self, component: &str) -> bool {
         self.problems(component).is_empty()
-    }
-
-    /// The name this filesystem would be given for **one component**, applying
-    /// the caller's replacements and the two adjustments that need no answer.
-    ///
-    /// The order matters and is not arbitrary:
-    ///
-    /// 1. every offending character is replaced, because a replacement can
-    ///    create or remove either of the problems below (`CO?1` answered with
-    ///    `M` is `COM1`, a device that was not there before);
-    /// 2. trailing dots and spaces go, which is what the host would silently do
-    ///    to the name anyway;
-    /// 3. a reserved device name gains [`DEVICE_SUFFIX`].
-    pub fn rewrite(
-        &self,
-        component: &str,
-        replacements: &Substitutions,
-    ) -> Result<String, NameError> {
-        let mut written = String::with_capacity(component.len());
-        for character in component.chars() {
-            if self.fault_of(character).is_none() {
-                written.push(character);
-                continue;
-            }
-            let replacement =
-                replacements
-                    .get(character)
-                    .ok_or_else(|| NameError::NoReplacement {
-                        entry: component.to_string(),
-                        character,
-                    })?;
-            self.check_replacement(character, replacement)?;
-            written.push_str(replacement);
-        }
-
-        let trailing = self.trailing_run(&written).len();
-        written.truncate(written.len() - trailing);
-
-        // The offset of the first dot, which is where the device name ends.
-        let device_ends = self.reserved_device(&written).map(str::len);
-        if let Some(at) = device_ends {
-            written.insert(at, DEVICE_SUFFIX);
-        }
-
-        // Everything below is defence in depth against a replacement that turns
-        // a name into something that is not a name: `??` answered with `.` is
-        // `..`, which would climb out of the output directory, and an empty
-        // answer can leave nothing at all. A caller cannot reach the write path
-        // without coming through here.
-        //
-        // `/` is checked structurally because it is the archive separator and so
-        // is in no ruleset; a component holding one would silently become two.
-        // A backslash is deliberately **not** checked here any more. It used to
-        // be, on the premise that a separator could only appear because a
-        // replacement put it there, and that premise was wrong twice over:
-        // `check_replacement` already refuses both separators before either is
-        // pushed, so the test could not fire for its stated reason, and on Unix
-        // a backslash is an ordinary, legal character, so the only thing it ever
-        // caught was a name the host could hold perfectly well. Windows cannot,
-        // and says so through `can_write` below, because the backslash is in
-        // WINDOWS_REJECTED where it belongs.
-        let unnameable = written.is_empty()
-            || written == "."
-            || written == ".."
-            || written.contains('/')
-            || !self.can_write(&written);
-        if unnameable {
-            return Err(NameError::Unnameable {
-                entry: component.to_string(),
-                component: component.to_string(),
-                result: written,
-            });
-        }
-        Ok(written)
-    }
-
-    /// [`Self::rewrite`] over a whole entry name, rebuilt as a relative path.
-    ///
-    /// **Not a traversal guard**: `.`, `..` and empty components are dropped,
-    /// exactly as `unpack_in` drops a root and as `sanitize_entry_path` reduces
-    /// a name to what is left. Callers check containment first; all three
-    /// extractors in this crate do.
-    pub fn rewrite_entry(
-        &self,
-        name: &str,
-        replacements: &Substitutions,
-    ) -> Result<PathBuf, NameError> {
-        let mut written = PathBuf::new();
-        for component in entry_components(name) {
-            written.push(
-                self.rewrite(component, replacements)
-                    .map_err(|e| e.in_entry(name))?,
-            );
-        }
-        Ok(written)
-    }
-
-    /// Refuse a replacement this filesystem could not write either, before an
-    /// archive is opened and before anything is on disk.
-    ///
-    /// An empty replacement is fine, and means "drop the character".
-    pub fn check_replacements(&self, replacements: &Substitutions) -> Result<(), NameError> {
-        for (character, replacement) in replacements.pairs() {
-            self.check_replacement(character, replacement)?;
-        }
-        Ok(())
-    }
-
-    fn check_replacement(&self, character: char, replacement: &str) -> Result<(), NameError> {
-        for candidate in replacement.chars() {
-            // Checked before the ruleset, because neither ruleset lists the
-            // separators (see WINDOWS_REJECTED) and this is the one that would
-            // be a traversal rather than an unreadable name: `?` answered with
-            // `../` moves the entry to another directory entirely.
-            if candidate == '/' || candidate == '\\' {
-                return Err(NameError::SeparatorInReplacement {
-                    character,
-                    replacement: replacement.to_string(),
-                });
-            }
-            if self.fault_of(candidate).is_some() {
-                return Err(NameError::UnwritableReplacement {
-                    character,
-                    replacement: replacement.to_string(),
-                    offending: candidate,
-                });
-            }
-        }
-        Ok(())
     }
 
     fn fault_of(&self, character: char) -> Option<CharacterFault> {
@@ -429,16 +269,7 @@ pub enum NameProblem {
     ReservedDevice { device: String },
 }
 
-impl NameProblem {
-    /// The character a caller has to supply a replacement for, or `None` when
-    /// the problem is adjusted automatically.
-    pub fn replaceable(&self) -> Option<char> {
-        match self {
-            Self::Character { character, .. } => Some(*character),
-            Self::TrailingCharacters { .. } | Self::ReservedDevice { .. } => None,
-        }
-    }
-}
+impl NameProblem {}
 
 /// How a filesystem gets a character in a name wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -526,72 +357,6 @@ impl NameReport {
     }
 }
 
-/// The caller's answers: what to write in place of each character the host
-/// refuses.
-///
-/// A replacement may be empty, which drops the character. It is validated
-/// against the same rules ([`NameRules::check_replacements`]), because "replace
-/// `?` with `*`" is not an answer.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Substitutions {
-    /// Ordered so that a caller who gives two bad answers is told about the
-    /// same one every run.
-    by_character: BTreeMap<char, String>,
-}
-
-impl Substitutions {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.by_character.is_empty()
-    }
-
-    /// Answer for one character. A later answer replaces an earlier one.
-    pub fn set(&mut self, character: char, replacement: impl Into<String>) {
-        self.by_character.insert(character, replacement.into());
-    }
-
-    /// [`Self::set`] for a key that arrived as a string, which is how it
-    /// crosses a UI boundary (a JSON object has no char keys). Both front ends
-    /// need this, so it lives here rather than twice.
-    pub fn set_str(&mut self, key: &str, replacement: impl Into<String>) -> Result<(), NameError> {
-        let mut characters = key.chars();
-        match (characters.next(), characters.next()) {
-            (Some(character), None) => {
-                self.set(character, replacement);
-                Ok(())
-            }
-            _ => Err(NameError::NotOneCharacter {
-                key: key.to_string(),
-            }),
-        }
-    }
-
-    /// Builder form, for a caller that has its answers to hand.
-    pub fn with(mut self, character: char, replacement: impl Into<String>) -> Self {
-        self.set(character, replacement);
-        self
-    }
-
-    pub fn get(&self, character: char) -> Option<&str> {
-        self.by_character.get(&character).map(String::as_str)
-    }
-
-    pub fn pairs(&self) -> impl Iterator<Item = (char, &str)> {
-        self.by_character.iter().map(|(c, r)| (*c, r.as_str()))
-    }
-}
-
-impl FromIterator<(char, String)> for Substitutions {
-    fn from_iter<T: IntoIterator<Item = (char, String)>>(pairs: T) -> Self {
-        Self {
-            by_character: pairs.into_iter().collect(),
-        }
-    }
-}
-
 /// A name that cannot be written, or an answer that does not help.
 ///
 /// Separate from the IO and format errors because every one of these is
@@ -599,51 +364,6 @@ impl FromIterator<(char, String)> for Substitutions {
 /// says what would fix it.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum NameError {
-    #[error(
-        "the archive entry {entry:?} contains {character:?}, which this system cannot write in a \
-         file name, and no replacement for it was given"
-    )]
-    NoReplacement { entry: String, character: char },
-
-    #[error(
-        "{replacement:?} cannot replace {character:?}: this system cannot write {offending:?} in a \
-         file name either"
-    )]
-    UnwritableReplacement {
-        character: char,
-        replacement: String,
-        offending: char,
-    },
-
-    #[error(
-        "{replacement:?} cannot replace {character:?}: a replacement may not contain a path \
-         separator, which would move the entry to another directory"
-    )]
-    SeparatorInReplacement {
-        character: char,
-        replacement: String,
-    },
-
-    #[error(
-        "the archive entries {first:?} and {second:?} would both be written as {name:?}; choose a \
-         replacement that keeps them apart"
-    )]
-    Collision {
-        first: String,
-        second: String,
-        name: String,
-    },
-
-    #[error(
-        "the archive entry {entry:?} cannot be written: {component:?} becomes {result:?}, which is \
-         not a name this system can hold"
-    )]
-    Unnameable {
-        entry: String,
-        component: String,
-        result: String,
-    },
-
     /// The host cannot hold this name exactly as the archive spells it.
     ///
     /// The whole extraction stops here. Extraction writes what the archive
@@ -661,9 +381,6 @@ pub enum NameError {
         component: String,
         problems: Vec<NameProblem>,
     },
-
-    #[error("{key:?} is not a single character, so there is nothing to replace")]
-    NotOneCharacter { key: String },
 }
 
 /// Why one component cannot be written, as a phrase that follows its name.
@@ -695,58 +412,6 @@ fn describe(problems: &[NameProblem]) -> String {
         })
         .collect::<Vec<_>>()
         .join("; and ")
-}
-
-impl NameError {
-    /// Re-point an error raised over one component at the whole entry, which is
-    /// the only name the person reading it has ever seen.
-    fn in_entry(self, entry: &str) -> Self {
-        match self {
-            Self::NoReplacement { character, .. } => Self::NoReplacement {
-                entry: entry.to_string(),
-                character,
-            },
-            Self::Unnameable {
-                component, result, ..
-            } => Self::Unnameable {
-                entry: entry.to_string(),
-                component,
-                result,
-            },
-            other => other,
-        }
-    }
-}
-
-/// The name every entry will be written under, for the entries whose name
-/// changes.
-///
-/// **Always the identity now, and kept only so the write paths do not have to
-/// change in the same commit as the policy.** Extraction no longer renames an
-/// entry ([`refuse_unwritable_names`]), so nothing constructs a plan that
-/// says anything: every backend receives [`Self::identity`] and every
-/// [`Self::written_as`] answers `None`. Removing this type, the
-/// `extract_*_planned` variants that take it and tar's second write path is
-/// follow-up work, deliberately separate because that path carries the
-/// containment guard and should not be moved by a commit about naming.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct NamePlan {
-    /// Only the entries whose name changed. An entry that is absent is written
-    /// under the name the extractor derived for it, which is what this would
-    /// have stored anyway.
-    rewritten: HashMap<String, PathBuf>,
-}
-
-impl NamePlan {
-    /// The plan that changes nothing, for [`super::extract_zip`] and the other
-    /// backends called directly with no options.
-    pub(crate) fn identity() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn written_as(&self, entry: &str) -> Option<&Path> {
-        self.rewritten.get(entry).map(PathBuf::as_path)
-    }
 }
 
 /// Refuse a listing holding a name this filesystem cannot write exactly as the

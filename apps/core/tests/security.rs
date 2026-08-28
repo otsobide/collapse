@@ -9,7 +9,7 @@ use std::path::Path;
 
 use collapse_core::compression::{
     compress_7z_dir, compress_tar_dir, compress_zip_dir, extract_7z, extract_tar, extract_zip,
-    NameRules, Substitutions,
+    NameRules,
 };
 use collapse_core::{extract, extract_with, Algorithm, CompressionError, ExtractOptions, Verify};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
@@ -626,47 +626,19 @@ fn no_format_writes_an_entry_name_with_a_colon_as_a_stream() {
     }
 }
 
-#[test]
-fn a_replacement_cannot_carry_an_entry_out_of_the_output_directory() {
-    // The answer the user gave used to be pushed inside a name that containment
-    // had already cleared, so an unchecked replacement was a traversal by the
-    // back door: `?` answered with `../..` would write above the output
-    // directory with nothing left to notice it. `check_replacements` stood in
-    // front of that.
-    //
-    // The hole is now closed a layer earlier and by construction rather than by
-    // a check: an answer is never applied to anything, so it cannot reach a
-    // path at all, and the entry that would have carried it is refused for its
-    // own name. The hostile answers are still offered here, and must still
-    // change nothing.
-    for (ext, build) in [
-        ("zip", malicious_zip as fn(&Path, &str)),
-        ("7z", malicious_7z),
-        ("tar", malicious_tar),
-    ] {
-        for replacement in ["../../escape", "/escape", r"..\..\escape"] {
-            let dir = tempfile::TempDir::new().unwrap();
-            let archive = dir.path().join(format!("q.{ext}"));
-            build(&archive, "sub/a?b.txt");
-            let out = dir.path().join("out");
-
-            let options = ExtractOptions::new()
-                .with_rules(NameRules::windows())
-                .with_replacements(Substitutions::new().with('?', replacement));
-            let result = extract_with(&archive, &out, &options);
-
-            assert!(
-                result.is_err(),
-                "{ext}: {replacement:?} was accepted as a replacement"
-            );
-            assert!(
-                !dir.path().join("escape").exists()
-                    && !dir.path().join("..").join("escape").exists(),
-                "{ext}: {replacement:?} wrote outside the output directory"
-            );
-        }
-    }
-}
+// `a_replacement_cannot_carry_an_entry_out_of_the_output_directory` stood here.
+//
+// It offered `?` answers like `../../escape` and proved none of them moved an
+// entry out of the output directory, because the answer was pushed inside a
+// name containment had already cleared — a traversal by the back door that
+// `check_replacements` existed to stop.
+//
+// The hole is now closed by construction rather than by a check: there is no
+// way to supply a replacement, so nothing can be pushed into a name at all.
+// `ExtractOptions` has no such method and `Substitutions` no longer exists, so
+// this cannot be tested at runtime — the code that would fail it does not
+// compile. Recorded here rather than deleted silently, because the guarantee is
+// still one this crate makes.
 
 // -- compression: archiving a directory must never follow a symlink out of
 //    the tree (all three formats skip symlinks) --

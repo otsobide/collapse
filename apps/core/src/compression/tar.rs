@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 
 use tar::{Archive, Builder, EntryType};
 
-use super::{CompressionError, NamePlan, Verify};
+use super::{CompressionError, Verify};
 
 /// The sentence at the bottom of tar's error chain.
 ///
@@ -163,25 +163,16 @@ pub(crate) fn list_tar_entries(archive: &Path) -> Result<Vec<String>, Compressio
     Ok(names)
 }
 
-pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
-    extract_tar_planned(archive, output_dir, &NamePlan::identity())
-}
-
-/// [`extract_tar`], writing each entry under the name `plan` gives it.
+/// Extract every entry under the name the archive spells for it.
 ///
-/// Two write paths, and the split is deliberate. `unpack_in` derives the
-/// destination from the entry's own name, so it cannot write a renamed entry at
-/// all; but it is also the traversal guard tar has always used, and the
-/// canonicalizing containment check inside it is what stops a write from
-/// following a symlink that was already sitting in the output directory. So an
-/// entry whose name is unchanged still goes through it, exactly as before, and
-/// only a renamed one is unpacked to an explicit destination, with the same
-/// containment check made here.
-pub(crate) fn extract_tar_planned(
-    archive: &Path,
-    output_dir: &Path,
-    plan: &NamePlan,
-) -> Result<Vec<String>, CompressionError> {
+/// One write path, and it is `unpack_in`: the traversal guard tar has always
+/// used, whose canonicalizing containment check is what stops a write from
+/// following a symlink already sitting in the output directory. There used to
+/// be a second, for entries extraction had renamed to fit the host, which
+/// could not go through `unpack_in` because that derives the destination from
+/// the entry's own name. Nothing is renamed any more, so that branch is gone
+/// and with it the containment check it had to repeat by hand.
+pub fn extract_tar(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
     fs::create_dir_all(output_dir)?;
     let canonical_output = output_dir.canonicalize()?;
 
@@ -212,9 +203,9 @@ pub(crate) fn extract_tar_planned(
         }
 
         // The path unpack_in would write to: its `Normal` components, with a
-        // root or a drive stripped. `..` is refused here rather than left to
-        // unpack_in's `Ok(false)`, because the renamed branch below never calls
-        // unpack_in and would otherwise have no guard at all.
+        // root or a drive stripped. `..` is refused here as well as by
+        // unpack_in's `Ok(false)`, which is belt and braces now that the branch
+        // needing its own guard is gone, and is what names the entry.
         let natural = normal_path(&name).ok_or_else(|| {
             CompressionError::Failed(format!("Path traversal detected in archive entry: {name}"))
         })?;
@@ -224,54 +215,27 @@ pub(crate) fn extract_tar_planned(
             continue;
         }
 
-        match plan.written_as(&name) {
-            None => {
-                // `unpack_in` derives the destination itself, so the failure it
-                // reports names a path and nothing else: `failed to unpack
-                // \`/…/out/a.txt/b.txt\``, with no clue which of an archive's
-                // entries was at fault. That is what issue #64 was about, and
-                // the fix reached zip and 7z but not this branch, which is the
-                // one nearly every archive takes (issue #93).
-                //
-                // The call itself is untouched. It is the traversal guard tar
-                // has always used, and its canonicalizing containment check is
-                // what stops a write from following a symlink already sitting
-                // in the output directory. Only its error is dressed.
-                let unpacked = entry.unpack_in(&canonical_output).map_err(|e| {
-                    super::entry_error(&name, &canonical_output.join(&natural), root_cause(e))
-                })?;
-                if !unpacked {
-                    return Err(CompressionError::Failed(format!(
-                        "Path traversal detected in archive entry: {name}"
-                    )));
-                }
-                if entry_type == EntryType::Regular {
-                    extracted.push(natural.to_string_lossy().to_string());
-                }
-            }
-            Some(rel) => {
-                let dest = canonical_output.join(rel);
-                if let Some(parent) = dest.parent() {
-                    fs::create_dir_all(parent).map_err(|e| super::entry_error(&name, &dest, e))?;
-                    // What unpack_in's `validate_inside_dst` does: resolve the
-                    // directory being written into and refuse one that turned
-                    // out to be somewhere else.
-                    let resolved = parent
-                        .canonicalize()
-                        .map_err(|e| super::entry_error(&name, &dest, e))?;
-                    if !resolved.starts_with(&canonical_output) {
-                        return Err(CompressionError::Failed(format!(
-                            "Path traversal detected in archive entry: {name}"
-                        )));
-                    }
-                }
-                entry
-                    .unpack(&dest)
-                    .map_err(|e| super::entry_error(&name, &dest, e))?;
-                if entry_type == EntryType::Regular {
-                    extracted.push(rel.to_string_lossy().to_string());
-                }
-            }
+        // `unpack_in` derives the destination itself, so the failure it
+        // reports names a path and nothing else: `failed to unpack
+        // \`/…/out/a.txt/b.txt\``, with no clue which of an archive's
+        // entries was at fault. That is what issue #64 was about, and
+        // the fix reached zip and 7z but not this branch, which is the
+        // one nearly every archive takes (issue #93).
+        //
+        // The call itself is untouched. It is the traversal guard tar
+        // has always used, and its canonicalizing containment check is
+        // what stops a write from following a symlink already sitting
+        // in the output directory. Only its error is dressed.
+        let unpacked = entry.unpack_in(&canonical_output).map_err(|e| {
+            super::entry_error(&name, &canonical_output.join(&natural), root_cause(e))
+        })?;
+        if !unpacked {
+            return Err(CompressionError::Failed(format!(
+                "Path traversal detected in archive entry: {name}"
+            )));
+        }
+        if entry_type == EntryType::Regular {
+            extracted.push(natural.to_string_lossy().to_string());
         }
     }
     Ok(extracted)
