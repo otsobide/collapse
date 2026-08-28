@@ -933,4 +933,3 @@ fn an_entry_that_cannot_be_named_never_reaches_the_archive_it_would_overwrite() 
     );
     assert_eq!(std::fs::read(&archive).unwrap(), before);
 }
-
