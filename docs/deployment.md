@@ -13,23 +13,28 @@ pipeline and [desktop.md](desktop.md) for the desktop bundle specifics.
 The landing is published to a **build branch** that holds only the compiled site
 (no source). Which branch depends on where the change landed:
 
-| Source branch | Deploys to           | Environment | Purpose                                   |
-|---------------|----------------------|-------------|-------------------------------------------|
-| `dev`         | `pages/landing-dev`  | staging     | preview changes before they reach `main`  |
-| `main`        | `pages/landing`      | production  | the live site                             |
+| Source branch | Deploys to          | Environment | Purpose                                  |
+|---------------|---------------------|-------------|------------------------------------------|
+| `develop`     | `pages/landing-dev` | staging     | preview changes before they reach `main` |
+| `main`        | `pages/landing`     | production  | the live site                            |
 
-So the normal flow is: iterate on `dev` → check the result on `pages/landing-dev`
-→ merge `dev` into `main` (a release) → production updates on `pages/landing`.
+The staging branch keeps its `-dev` name now that the source branch is
+`develop`. It is the branch that serves the staging site, so renaming it would
+change that URL and buy nothing; the name is a label for the environment rather
+than for the branch it is built from.
+
+So the normal flow is: iterate on `develop` → check the result on `pages/landing-dev`
+→ merge `develop` into `main` (a release) → production updates on `pages/landing`.
 
 ```
-commit to dev  ──▶  CI build  ──▶  pages/landing-dev   (staging)
-merge to main  ──▶  CI build  ──▶  pages/landing       (production)
+commit to develop  ──▶  CI build  ──▶  pages/landing-dev   (staging)
+merge to main     ──▶  CI build  ──▶  pages/landing       (production)
 ```
 
 ## How it works
 
 The workflow is [`.github/workflows/deploy-landing.yml`](../.github/workflows/deploy-landing.yml).
-On every push to `main` or `dev` (and via manual **Run workflow** / `workflow_dispatch`):
+On every push to `main` or `develop` (and via manual **Run workflow** / `workflow_dispatch`):
 
 1. **Build** — `make landing/build`, which runs `npm ci` then `nuxt generate`,
    producing the static site in `apps/landing/.output/public`.
@@ -39,7 +44,7 @@ On every push to `main` or `dev` (and via manual **Run workflow** / `workflow_di
    branch: `main` → `pages/landing`, anything else → `pages/landing-dev`.
 
 The deploy commit is authored as the repo owner (via the account's GitHub noreply
-email), not a bot. Concurrency is keyed per source branch, so a `dev` deploy and a
+email), not a bot. Concurrency is keyed per source branch, so a `develop` deploy and a
 `main` deploy never cancel each other.
 
 Because each deploy force-pushes an orphan-style commit, the build branches never

@@ -254,9 +254,9 @@ make fmt  make lint  # format / clippy both Rust workspaces
 make fmt/check       # fail instead of reformatting (the tree is rustfmt clean)
 ```
 
-Work happens on `dev`, merged into `main` per release (see
+Work happens on `develop`, merged into `main` per release (see
 [git flow](docs/git_flow.md)). CI invokes these same `make` targets on every
-pull request and on pushes to `dev` and `main`.
+pull request and on pushes to `develop` and `main`.
 
 ## License
 
