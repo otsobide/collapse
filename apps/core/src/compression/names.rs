@@ -37,8 +37,8 @@
 //! reserved device name is reserved *with* an extension too (`NUL.tar.gz` is
 //! `NUL`), and the superscript digits `¹²³` count as digits in `COM#`/`LPT#`.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use serde::Serialize;
 use thiserror::Error;
@@ -715,37 +715,6 @@ impl NameError {
             },
             other => other,
         }
-    }
-}
-
-/// The name every entry will be written under, for the entries whose name
-/// changes.
-///
-/// **Always the identity now, and kept only so the write paths do not have to
-/// change in the same commit as the policy.** Extraction no longer renames an
-/// entry ([`refuse_unwritable_names`]), so nothing constructs a plan that
-/// says anything: every backend receives [`Self::identity`] and every
-/// [`Self::written_as`] answers `None`. Removing this type, the
-/// `extract_*_planned` variants that take it and tar's second write path is
-/// follow-up work, deliberately separate because that path carries the
-/// containment guard and should not be moved by a commit about naming.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct NamePlan {
-    /// Only the entries whose name changed. An entry that is absent is written
-    /// under the name the extractor derived for it, which is what this would
-    /// have stored anyway.
-    rewritten: HashMap<String, PathBuf>,
-}
-
-impl NamePlan {
-    /// The plan that changes nothing, for [`super::extract_zip`] and the other
-    /// backends called directly with no options.
-    pub(crate) fn identity() -> Self {
-        Self::default()
-    }
-
-    pub(crate) fn written_as(&self, entry: &str) -> Option<&Path> {
-        self.rewritten.get(entry).map(PathBuf::as_path)
     }
 }
 

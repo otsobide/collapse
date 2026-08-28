@@ -5,7 +5,7 @@ use std::path::Path;
 use sevenz_rust2::lzma::LZMA2Options;
 use sevenz_rust2::{SevenZArchiveEntry, SevenZMethod, SevenZMethodConfiguration, SevenZWriter};
 
-use super::{CompressionError, NamePlan, Verify};
+use super::{CompressionError, Verify};
 
 /// API level (1–5) → LZMA2 preset (1–9).
 const SEVENZ_PRESETS: [u32; 5] = [1, 3, 5, 7, 9];
@@ -250,16 +250,8 @@ pub(crate) fn list_7z_entries(archive: &Path) -> Result<Vec<String>, Compression
     read_7z_entries(archive, Verify::Index)
 }
 
+/// Extract every entry under the name the archive spells for it.
 pub fn extract_7z(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
-    extract_7z_planned(archive, output_dir, &NamePlan::identity())
-}
-
-/// [`extract_7z`], writing each entry under the name `plan` gives it.
-pub(crate) fn extract_7z_planned(
-    archive: &Path,
-    output_dir: &Path,
-    plan: &NamePlan,
-) -> Result<Vec<String>, CompressionError> {
     fs::create_dir_all(output_dir)?;
     let canonical_output = output_dir.canonicalize()?;
 
@@ -286,9 +278,8 @@ pub(crate) fn extract_7z_planned(
                     "Path traversal detected in archive entry: {name}"
                 ))
             })?;
-            // See `extract_zip_planned`: the plan renames inside the output,
-            // and `ensure_inside` below is the backstop.
-            let rel = plan.written_as(&name).map_or(rel, Path::to_path_buf);
+            // See `extract_zip`: `ensure_inside` below is the backstop for
+            // what the lexical rule cannot reach.
             let dest = canonical_output.join(&rel);
 
             // The callback can only fail with sevenz's own error type, so the

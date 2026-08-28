@@ -16,7 +16,7 @@ pub use self::tar::{compress_tar, compress_tar_dir, extract_tar};
 pub use self::verify::{verify_archive, Verify};
 pub use self::zip::{compress_zip, compress_zip_dir, extract_zip};
 
-pub(crate) use self::names::{refuse_unwritable_names, NamePlan};
+pub(crate) use self::names::refuse_unwritable_names;
 pub(crate) use self::sevenz::{list_7z_entries, read_7z_entries};
 pub(crate) use self::tar::{list_tar_entries, read_tar_entries};
 pub(crate) use self::walk::walk_tree;

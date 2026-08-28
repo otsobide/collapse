@@ -5,7 +5,7 @@ use std::path::Path;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use super::{CompressionError, NamePlan, Verify};
+use super::{CompressionError, Verify};
 
 /// API level (1–5) → Deflate compresslevel (1–9).
 const ZIP_LEVELS: [i64; 5] = [1, 3, 5, 7, 9];
@@ -144,19 +144,8 @@ pub(crate) fn list_zip_entries(archive: &Path) -> Result<Vec<String>, Compressio
         .collect())
 }
 
+/// Extract every entry under the name the archive spells for it.
 pub fn extract_zip(archive: &Path, output_dir: &Path) -> Result<Vec<String>, CompressionError> {
-    extract_zip_planned(archive, output_dir, &NamePlan::identity())
-}
-
-/// [`extract_zip`], writing each entry under the name `plan` gives it.
-///
-/// An entry the plan says nothing about keeps the name the archive spells,
-/// which is what makes the plain [`extract_zip`] the same function.
-pub(crate) fn extract_zip_planned(
-    archive: &Path,
-    output_dir: &Path,
-    plan: &NamePlan,
-) -> Result<Vec<String>, CompressionError> {
     let file = File::open(archive)?;
     let mut zip =
         zip::ZipArchive::new(file).map_err(|e| CompressionError::Failed(e.to_string()))?;
@@ -181,12 +170,9 @@ pub(crate) fn extract_zip_planned(
         let rel = super::sanitize_entry_path(&name).ok_or_else(|| {
             CompressionError::Failed(format!("Path traversal detected in archive entry: {name}"))
         })?;
-        // The plan is built from the same name, one component at a time, so it
-        // can only rename inside the output directory. `ensure_inside` below is
-        // the backstop for the cases a lexical rule cannot reach: a caller that
-        // judged the name under another host's rules, and a symlink already
-        // sitting in the output.
-        let rel = plan.written_as(&name).map_or(rel, Path::to_path_buf);
+        // `sanitize_entry_path` is a lexical rule, so `ensure_inside` below is
+        // the backstop for what it cannot reach: a symlink already sitting in
+        // the output directory.
         let dest = canonical_output.join(&rel);
 
         if entry.is_dir() {
