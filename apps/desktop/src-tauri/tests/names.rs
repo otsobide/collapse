@@ -482,4 +482,3 @@ fn an_entry_beside_the_name_it_would_have_taken_is_still_just_refused() {
     );
     assert!(!out.exists(), "wrote {:?}", files_under(&out));
 }
-
