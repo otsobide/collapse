@@ -91,7 +91,7 @@ still be exactly one `Normal` component, which closes that at the source.
 `zip_symlink_entry_is_not_materialized_as_symlink`,
 `tar_symlink_entry_is_not_materialized`,
 `no_format_writes_through_a_symlink_already_in_the_output`,
-`a_renamed_entry_cannot_be_written_through_such_a_symlink`,
+`an_entry_that_cannot_be_named_is_refused_before_any_symlink_is_followed`,
 `a_colon_in_a_later_component_cannot_clear_the_path_being_built`.
 
 ### 3. Hardlink escape (tar)
@@ -135,9 +135,12 @@ hardlink is a second name for one file and never resolves to the same string,
 which is precisely how `--force` was once able to overwrite its own source on
 the compression side.
 
-The check follows the **planned** name rather than the archive's spelling, since
-a rename can land an entry on the archive that the archive's own name does not
-match.
+The check compares the name the archive spells, because that is the only name an
+entry can be written under. It used to have to follow a *planned* name as well:
+while extraction still renamed entries to fit the host, a substitution could
+land one on the archive that the archive's own name did not match. Nothing
+renames an entry any more (see [4b](#4b-entry-names-this-host-cannot-write)), so
+the two names are one and the guard got simpler rather than weaker.
 
 This is the mirror of a guard compression has always had (`OutputIsSource`, and
 an output inside the folder being archived, neither of which `--force` unlocks).
@@ -146,7 +149,7 @@ positions on the same question (issue #96).
 
 **Covered by** `no_format_writes_an_entry_over_the_archive_it_is_reading`,
 `a_hardlink_to_the_archive_is_not_a_way_around_it`,
-`the_check_follows_the_renamed_name_not_the_archive_s`, and
+`an_entry_that_cannot_be_named_never_reaches_the_archive_it_would_overwrite`, and
 `the_same_archive_extracts_normally_somewhere_else`, which is the one that stops
 the guard from being fixed by refusing too much.
 
@@ -162,12 +165,34 @@ same family: the host silently gives the file a different name than the archive
 asked for.
 
 **Prevention.** Extraction judges every entry name against the host's rules
-before anything is written, and refuses rather than guessing. A character the
-host cannot hold is a question for the user, who supplies a replacement; the two
-adjustments nobody can be asked about (a trailing run, a device name) are
-applied and reported. The whole listing is planned before the first byte, so an
-unanswerable name or two entries that would collide leave the output directory
-as they were found.
+before anything is written, and **refuses**. Not adjusts, and not asks: an
+archive arrives under the names it carries or it does not arrive.
+
+That is a narrowing of what shipped first, and the reason is worth recording,
+because the original answer looked like the kinder one. A character the host
+could not hold was put to the user as a question and replaced with their answer;
+a trailing run and a reserved device name were adjusted without asking, since
+neither has anything anyone could be asked about. It worked. What it produced
+was a directory tree whose names this program had invented: `what?.txt` arrived
+as `what_.txt` and `CON.txt` as `CON_.txt`, and nothing afterwards — not the
+returned listing, not a later `collapse compress` of the same folder, not the
+person reading it a month later — could tell which names came from the archive
+and which from us. An extraction that cannot reproduce what the archive says is
+one that should not happen, and saying so is cheaper to live with than a rename
+nobody remembers agreeing to.
+
+So the four faults have one ending now. `NameRules::can_write` is the whole
+question — can this host hold this component, spelled exactly this way — and the
+first component that fails it stops the run with `NameError::Unwritable`, naming
+the entry, the component and the reason. The listing is judged in full before
+the first byte, so a refusal leaves the output directory exactly as it found it,
+the entries that were perfectly writable included.
+
+What replaces the question is a prediction. `unwritable_names` reads a listing
+and reports every entry this host would refuse, decompressing nothing and
+creating nothing, so a front end can say what will not work before anybody waits
+for it. The CLI surveys the whole listing and names every offending entry at
+once; core stops at the first, since by then the run is over either way.
 
 The rules are **data**, not `#[cfg]`, so a Mac can be asked what a Windows host
 would refuse, which is what makes them testable at all: nobody working on this
@@ -194,7 +219,7 @@ the user ever seeing the question (issue #89).
 
 Recovering what a damaged archive still holds is not gone, it is simply no
 longer the default: the backends (`extract_tar` and friends) take no options and
-never come through the planning pass.
+never come through this pass.
 
 **Covered by** `apps/core/tests/names.rs`, in particular
 `an_entry_splits_the_same_way_on_every_host`,
@@ -203,6 +228,12 @@ never come through the planning pass.
 `a_unix_name_holding_a_backslash_survives_the_round_trip`,
 `a_damaged_archive_writes_nothing_rather_than_writing_raw_names` and
 `the_same_names_are_refused_whether_or_not_the_archive_is_damaged`.
+
+The policy itself is pinned by `every_fault_stops_the_whole_archive_the_same_way`,
+which drives all four faults through all three formats and checks that a
+writable entry sitting beside a bad one is not written either, and by
+`an_answer_no_longer_rescues_an_entry_the_host_cannot_write`, which is the guard
+against the substitutions being quietly reintroduced.
 
 ## Compression measures
 
