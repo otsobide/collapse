@@ -407,7 +407,11 @@ fn no_answer_rescues_a_name_this_computer_cannot_write() {
             problem.contains("cannot be written on this system"),
             "answer {answer:?}: {problem}"
         );
-        assert!(!out.exists(), "answer {answer:?} wrote {:?}", files_under(&out));
+        assert!(
+            !out.exists(),
+            "answer {answer:?} wrote {:?}",
+            files_under(&out)
+        );
     }
 }
 
@@ -451,7 +455,10 @@ fn the_refusal_says_which_character_is_the_problem() {
     let problem = refusal(extract_answering(&archive, &out, &[]).unwrap());
 
     assert!(problem.contains("refuses in a file name"), "{problem}");
-    assert!(problem.contains("\\0"), "the character is shown escaped: {problem}");
+    assert!(
+        problem.contains("\\0"),
+        "the character is shown escaped: {problem}"
+    );
     assert!(!out.exists());
 }
 
