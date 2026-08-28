@@ -107,29 +107,37 @@ fn the_refusal_names_every_bad_entry_and_says_what_is_wrong_with_each() {
     );
 }
 
-/// Nothing is half-written, and the user is told where to go. Drop the pointer
-/// and the message becomes a dead end.
+/// Nothing is half-written, and the user is told the only thing that helps.
+///
+/// This used to promise a replacement would unblock it and point at the desktop
+/// app as the front end that could ask for one. Both stopped being true when
+/// extraction stopped substituting, and a message that sends someone to a
+/// dialog that no longer exists is worse than one that says nothing.
 #[test]
-fn the_refusal_says_nothing_was_written_and_where_to_go_next() {
+fn the_refusal_says_nothing_was_written_and_what_actually_helps() {
     let message = windows_refusal("report.zip", &["what?.txt"]);
 
     assert!(
-        message.contains("Nothing was extracted."),
+        message.contains("Nothing was extracted"),
         "the state of the output directory is the first thing a user wonders about: {message}"
     );
     assert!(
-        message.contains("a replacement for '?' (1 entry)"),
-        "what would unblock it, in the singular: {message}"
+        message.contains("Extract on a system that can hold these names"),
+        "the only thing that helps, and it is not something this command can do: {message}"
     );
     assert!(
-        message.contains("desktop app"),
-        "the pointer at the one front end that can ask: {message}"
+        !message.contains("desktop app") && !message.contains("replacement for"),
+        "nothing may point at an answer nobody can give any more: {message}"
     );
 }
 
-/// A UI puts one field per character, not one per file, and the message counts
-/// the same way: the user needs to know how much of the archive one answer
-/// buys.
+/// The characters are still counted, though nothing can be done about them.
+///
+/// The count used to say how much of the archive one answer would buy. There
+/// are no answers now, and it is still worth saying: one character across forty
+/// entries is an archive that is awkward here, forty characters is one that
+/// does not belong on this machine at all, and the user decides what to do with
+/// that.
 #[test]
 fn the_refusal_counts_the_entries_each_character_holds_up() {
     let message = windows_refusal(
@@ -138,7 +146,7 @@ fn the_refusal_counts_the_entries_each_character_holds_up() {
     );
 
     assert!(
-        message.contains("replacements for '?' (2 entries) and ':' (1 entry)"),
+        message.contains("The characters at fault are '?' (2 entries) and ':' (1 entry)"),
         "both characters, both counts, and a plural that matches: {message}"
     );
 }
