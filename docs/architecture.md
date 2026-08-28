@@ -105,12 +105,17 @@ can say what will not work before anyone waits for it. The CLI names every
 offending entry at once from that report; core stops at the first, the run being
 over either way.
 
-`Substitutions` and `ExtractOptions::with_replacements` survive as inert
-surface, so the two front ends still compile while their naming dialogs are
-taken out. `NamePlan` and the `extract_*_planned` backend variants are likewise
-vestigial: nothing constructs a plan that says anything. Removing all of it,
-tar's second write path included, is follow-up work kept out of the commit that
-changed the policy, because that path carries the containment guard.
+The machinery of the old answer is gone: `Substitutions`,
+`ExtractOptions::with_replacements`, `NameRules::rewrite`, `NamePlan` and the
+`extract_*_planned` backend variants. `NameError` is one variant, `Unwritable`,
+because the other six described a negotiation that no longer happens.
+
+Tar went from two write paths to one with it. `unpack_in` derives the
+destination from the entry's own name and so could not write a renamed entry,
+which meant the renamed branch had to repeat by hand the canonicalizing
+containment check `unpack_in` does — the one that stops a write following a
+symlink already in the output. Nothing is renamed, so that branch and its
+duplicate check are both gone.
 
 ### `src/paths.rs` — the guards both front ends share
 
@@ -473,19 +478,20 @@ HTTP, same engine as the CLI. It compresses files and folders and extracts
 archives, in the cervantic visual style (warm cream + terracotta, monospace), and
 targets macOS, Windows and Linux from one codebase.
 
-The backend exposes five Tauri commands: `is_directory` (UI icon/name hint),
+The backend exposes four Tauri commands: `is_directory` (UI icon/name hint),
 `compress_path` (dispatches file vs. folder, refuses to overwrite its own source
 or a file inside the folder being compressed, replaces an existing output only
 when `overwrite` says the user agreed to it in the save dialog, and hands the
 work to a remote server when one is chosen),
-`extract_archive`, `check_server` (a health probe for the settings panel), and
-`unwritable_names`, which reports the entry names this machine cannot write.
+`extract_archive` (which takes where the archive is and where it goes, and
+nothing else: a name this host cannot write fails the extraction rather than
+becoming a question) and `check_server` (a health probe for the settings panel).
 
-That last one, and the dialog it feeds, are **inert**: extraction refuses such
-an archive outright rather than taking answers, so the replacements the dialog
-collects reach nothing. Both go when the dialog does.
+There used to be a fifth, `unwritable_names`, feeding a dialog that asked the
+user for a character to put in place of one the host refuses. It went when the
+answers stopped reaching anything.
 
-All four of the blocking ones carry `#[tauri::command(async)]`. A bare
+All three of the blocking ones carry `#[tauri::command(async)]`. A bare
 `#[tauri::command]` on a synchronous function runs the body on the thread
 handling the IPC message,
 so the window stops repainting until it returns: a compression froze it for its
