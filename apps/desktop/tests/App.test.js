@@ -28,78 +28,13 @@ const modeButtons = (w) => w.findAll('.modes button')
 const formatButtons = (w) => w.findAll('.segmented:not(.levels) button')
 const verifyBox = (w) => w.find('input[type="checkbox"]')
 
-/// The naming sheet: the second modal, so every selector inside it is scoped
-/// to `.naming` rather than fighting the servers sheet for `.sheet`.
-const namingSheet = (w) => w.find('.naming')
-const answerFields = (w) => w.findAll('.naming .answer-field')
-const confirmNames = (w) => w.find('.naming .cta')
-
-/**
- * What `unwritable_names` answers when the host cannot write something.
- *
- * Every case below builds one of these by hand, because the machine running
- * this suite is a Mac or a Linux CI runner and both write `what?.txt` without
- * complaint: the dialog literally cannot be produced here by extracting a real
- * archive. The shape is not invented, it is `NameInspection`'s serialization,
- * pinned on the Rust side by `src-tauri/tests/names.rs`.
- */
-function inspection({ entries = [], characters = [], rejected = '<>"|?*:/\\' } = {}) {
-  return { entries, characters, rejectedInReplacement: rejected }
-}
-
-const NOTHING_TO_ASK = inspection()
-
-/**
- * An archive holding two entries a Windows host cannot write, both for the
- * same reason: one question, two files behind it.
- */
-const A_QUESTION = inspection({
-  entries: [
-    {
-      entry: 'logs/what?.txt',
-      problems: [{ kind: 'character', character: '?', fault: 'rejected' }],
-    },
-    { entry: 'when?.txt', problems: [{ kind: 'character', character: '?', fault: 'rejected' }] },
-  ],
-  characters: [{ character: '?', fault: 'rejected', entries: 2 }],
-})
-
-/**
- * Pick an archive, choose a destination, and get as far as the naming sheet.
- *
- * `extraction` is what `extract_archive` will answer once the user confirms;
- * everything else falls through to the stub switch in `beforeEach`.
- */
-async function ask({ report = A_QUESTION, extraction } = {}) {
-  open
-    .mockResolvedValueOnce('/Users/me/logs.tar') // browse: pick the archive
-    .mockResolvedValueOnce('/Users/me/out') // extract: pick the destination
-  const stub = invoke.getMockImplementation()
-  invoke.mockImplementation(async (cmd, args) => {
-    if (cmd === 'unwritable_names') return report
-    if (cmd === 'extract_archive' && extraction) return extraction
-    return stub(cmd, args)
-  })
-
-  const w = await mountApp()
-  await modeButtons(w)[1].trigger('click') // Extract mode
-  await w.find('.drop').trigger('click') // browse
-  await flushPromises()
-  await w.find('.work .cta').trigger('click') // "Extract to…"
-  await flushPromises()
-  return w
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
   onDragDropEvent.mockResolvedValue(() => {})
   invoke.mockImplementation(async (cmd) => {
     if (cmd === 'is_directory') return false
     if (cmd === 'compress_path') return '/Users/me/report.pdf.7z'
-    if (cmd === 'unwritable_names') return NOTHING_TO_ASK
-    if (cmd === 'extract_archive') {
-      return { status: 'extracted', files: ['notes.txt', 'sub/data.bin'] }
-    }
+    if (cmd === 'extract_archive') return ['notes.txt', 'sub/data.bin']
     if (cmd === 'check_server') return null
     return null
   })
@@ -162,14 +97,12 @@ describe('App', () => {
     await w.find('.cta').trigger('click') // "Extract to…"
     await flushPromises()
 
+    // Where the archive is and where it goes, and nothing else: there is no
+    // answer to carry any more.
     expect(invoke).toHaveBeenCalledWith('extract_archive', {
       archive: '/Users/me/photos.zip',
       outputDir: '/Users/me/out',
-      // Nothing to answer, so nothing is substituted. An archive the host can
-      // write goes straight through, without a dialog in the way.
-      replacements: {},
     })
-    expect(namingSheet(w).exists()).toBe(false)
     expect(w.text()).toContain('Extracted 2 files')
   })
 
@@ -337,181 +270,49 @@ describe('App', () => {
     expect(w.find('.picker').exists()).toBe(false)
   })
 
-  it('asks before extracting a name this computer cannot write', async () => {
-    const w = await ask()
-
-    expect(namingSheet(w).exists()).toBe(true)
-    expect(w.text()).toContain('Names this computer cannot write')
-    expect(w.text()).toContain('2 entries are named')
-    expect(w.text()).toContain('logs/what?.txt')
-    // The whole point of the feature: the archive is not touched until the
-    // question is answered. A component that extracted first and asked
-    // afterwards would pass every other assertion here.
-    expect(invoke).not.toHaveBeenCalledWith('extract_archive', expect.anything())
-    // One field for the one character, whatever the number of entries, and
-    // prefilled so the common case is one click.
-    expect(answerFields(w)).toHaveLength(1)
-    expect(answerFields(w)[0].element.value).toBe('_')
-  })
-
-  it('extracts with the answers the user gave, and lists what is on disk', async () => {
-    const w = await ask({
-      extraction: { status: 'extracted', files: ['logs/what-.txt', 'when-.txt'] },
+  it('shows a naming refusal in the banner', async () => {
+    // The dialog that used to hold these is gone: extraction refuses a name it
+    // cannot write instead of asking what to call it, so the refusal is an
+    // ordinary failure and the banner is the only place it can land. If it
+    // stopped arriving, the Extract button would appear to do nothing at all.
+    open
+      .mockResolvedValueOnce('/Users/me/logs.tar')
+      .mockResolvedValueOnce('/Users/me/out')
+    const stub = invoke.getMockImplementation()
+    invoke.mockImplementation(async (cmd, args) => {
+      if (cmd === 'extract_archive') {
+        throw 'the archive entry "what?.txt" cannot be written on this system'
+      }
+      return stub(cmd, args)
     })
 
-    await answerFields(w)[0].setValue('-')
-    await confirmNames(w).trigger('click')
+    const w = await mountApp()
+    await modeButtons(w)[1].trigger('click')
+    await w.find('.drop').trigger('click')
+    await flushPromises()
+    await w.find('.work .cta').trigger('click')
     await flushPromises()
 
-    expect(invoke).toHaveBeenCalledWith('extract_archive', {
-      archive: '/Users/me/logs.tar',
-      outputDir: '/Users/me/out',
-      replacements: { '?': '-' },
-    })
-    expect(namingSheet(w).exists()).toBe(false)
-    // The names as written, never the archive's: `what?.txt` is on no disk
-    // here, and showing it would send the user looking for a file that is not
-    // there.
-    expect(w.text()).toContain('when-.txt')
-    expect(w.text()).not.toContain('when?.txt')
+    expect(w.text()).toContain('cannot be written on this system')
   })
 
-  it('reads an empty answer as "remove the character"', async () => {
-    const w = await ask()
-
-    await answerFields(w)[0].setValue('')
-    await confirmNames(w).trigger('click')
-    await flushPromises()
-
-    // Empty is an answer, not a missing one: a component that treated a blank
-    // field as "unanswered" and refused to send it would fail here.
-    expect(invoke).toHaveBeenCalledWith(
-      'extract_archive',
-      expect.objectContaining({ replacements: { '?': '' } })
-    )
-  })
-
-  it('extracts nothing when the question is cancelled', async () => {
-    const w = await ask()
-
-    await w.find('.naming .ghost').trigger('click') // Cancel
-
-    expect(namingSheet(w).exists()).toBe(false)
-    expect(invoke).not.toHaveBeenCalledWith('extract_archive', expect.anything())
-    expect(w.text()).not.toContain('Extracted')
-  })
-
-  it('refuses a replacement this computer cannot write either', async () => {
-    const w = await ask()
-
-    await answerFields(w)[0].setValue('*')
-    expect(w.find('.answer-error').text()).toContain('cannot write in a file name either')
-    expect(confirmNames(w).attributes('disabled')).toBeDefined()
-
-    // A separator is refused for its own reason: it would not rename the entry,
-    // it would move it somewhere else entirely.
-    await answerFields(w)[0].setValue('../')
-    expect(w.find('.answer-error').text()).toContain('move the file into another folder')
-
-    await confirmNames(w).trigger('click')
-    await flushPromises()
-    expect(invoke).not.toHaveBeenCalledWith('extract_archive', expect.anything())
-
-    // And a good answer clears the way again.
-    await answerFields(w)[0].setValue('-')
-    expect(w.find('.answer-error').exists()).toBe(false)
-    expect(confirmNames(w).attributes('disabled')).toBeUndefined()
-  })
-
-  it('brings a collision back into the dialog naming both entries', async () => {
-    const message =
-      'the archive entries "what?.txt" and "what_.txt" would both be written as "what_.txt"; ' +
-      'choose a replacement that keeps them apart'
-    const w = await ask({ extraction: { status: 'nameProblem', message } })
-
-    await confirmNames(w).trigger('click')
-    await flushPromises()
-
-    // Nothing was written, so this is a question and not a failure: the sheet
-    // stays open on it, the success screen never appears, and the error banner
-    // (which means "this did not work") is not the thing that says so.
-    expect(namingSheet(w).exists()).toBe(true)
-    expect(w.find('.name-problem').text()).toBe(message)
-    expect(w.text()).not.toContain('Extracted')
-    expect(w.find('.error').exists()).toBe(false)
-  })
-
-  it('shows a naming refusal in the banner when no dialog is open to hold it', async () => {
-    // The report and the extractor read the archive in two separate passes and
-    // can disagree: a listing the first pass could not read is reported as
-    // "nothing to ask", and then extraction refuses a name. `nameProblem` is
-    // rendered only inside the sheet, so this combination used to make the
-    // Extract button do nothing at all: no files, no question, no banner.
-    const message = 'the archive entry "x:y.txt" contains \':\' and no replacement for it was given'
-    const w = await ask({
-      report: NOTHING_TO_ASK,
-      extraction: { status: 'nameProblem', message },
-    })
-
-    expect(namingSheet(w).exists()).toBe(false)
-    expect(w.find('.error').text()).toContain(message)
-    expect(w.text()).not.toContain('Extracted')
-  })
-
-  it('states the adjustment for a problem with no character to replace', async () => {
-    // A trailing dot and a device name have nothing to substitute: the host
-    // would mangle them whatever anyone typed. So they are explained, not
-    // asked about, and a text field beside them would be a lie.
-    const w = await ask({
-      report: inspection({
-        entries: [
-          { entry: 'notes.txt.', problems: [{ kind: 'trailingCharacters', removed: '.' }] },
-          { entry: 'CON.txt', problems: [{ kind: 'reservedDevice', device: 'CON' }] },
-        ],
-      }),
-    })
-
-    expect(answerFields(w)).toHaveLength(0)
-    expect(w.text()).toContain('"notes.txt." ends in "."')
-    expect(w.text()).toContain('is the "CON" device in every folder')
-
-    await confirmNames(w).trigger('click')
-    await flushPromises()
-
-    expect(invoke).toHaveBeenCalledWith(
-      'extract_archive',
-      expect.objectContaining({ replacements: {} })
-    )
-  })
-
-  it('abandons the question when another archive is dropped on it', async () => {
-    const w = await ask()
-    expect(namingSheet(w).exists()).toBe(true)
-
-    // A drop reaches the webview even with the sheet on screen. Keeping the
-    // question up would let one archive's answers be applied to another
-    // archive's names, which is a rename nobody asked for.
-    const onDrop = onDragDropEvent.mock.calls[0][0]
-    onDrop({ payload: { type: 'drop', paths: ['/Users/me/other.zip'] } })
-    await flushPromises()
-
-    expect(namingSheet(w).exists()).toBe(false)
-    expect(invoke).not.toHaveBeenCalledWith('extract_archive', expect.anything())
-  })
-
-  it('gives way to the error banner when the failure is not about names', async () => {
-    const w = await ask()
-
-    invoke.mockImplementation(async (cmd) => {
+  it('shows a failure that is not about names in the banner too', async () => {
+    open
+      .mockResolvedValueOnce('/Users/me/logs.tar')
+      .mockResolvedValueOnce('/Users/me/out')
+    const stub = invoke.getMockImplementation()
+    invoke.mockImplementation(async (cmd, args) => {
       if (cmd === 'extract_archive') throw 'IO error: No space left on device'
-      return null
+      return stub(cmd, args)
     })
-    await confirmNames(w).trigger('click')
+
+    const w = await mountApp()
+    await modeButtons(w)[1].trigger('click')
+    await w.find('.drop').trigger('click')
+    await flushPromises()
+    await w.find('.work .cta').trigger('click')
     await flushPromises()
 
-    // A full disk is nothing the dialog can help with, so it gets out of the
-    // way instead of holding a question the user cannot answer.
-    expect(namingSheet(w).exists()).toBe(false)
     expect(w.find('.error').text()).toContain('No space left on device')
   })
 

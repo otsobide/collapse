@@ -1,10 +1,8 @@
 //! Tauri backend for the Collapse desktop app: the app wiring only. The
-//! commands themselves live in [`commands`], the path predicates they rely on
-//! in [`paths`] and the naming exchange the extract dialog needs in [`names`],
-//! all public so `tests/` can drive them directly.
+//! commands themselves live in [`commands`] and the path predicates they rely
+//! on in [`paths`], both public so `tests/` can drive them directly.
 
 pub mod commands;
-pub mod names;
 pub mod paths;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -16,7 +14,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::is_directory,
             commands::compress_path,
-            commands::unwritable_names,
             commands::extract_archive,
             commands::check_server
         ])

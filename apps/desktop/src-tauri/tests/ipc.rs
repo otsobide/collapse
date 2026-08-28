@@ -63,12 +63,11 @@ use std::path::{Path, PathBuf};
 /// containment, so adding a fifth command is also a deliberate edit here.
 /// That matters: a command missing from this list would get none of the
 /// anti-vacuity protection the canary exists to provide.
-const BASELINE: [&str; 5] = [
+const BASELINE: [&str; 4] = [
     "check_server",
     "compress_path",
     "extract_archive",
     "is_directory",
-    "unwritable_names",
 ];
 
 /// Quote characters that open a string literal, per language. Needed by every
@@ -954,16 +953,12 @@ fn every_command_that_can_block_is_marked_async() {
     // Measured before this was fixed: `check_server` against an unroutable
     // address froze the window for the whole of ureq's 30 second connect
     // timeout, and a compression froze it for as long as the compression took.
-    const MUST_NOT_BLOCK: [(&str, &str); 4] = [
+    const MUST_NOT_BLOCK: [(&str, &str); 3] = [
         (
             "compress_path",
             "compresses a whole tree, or waits on a server with no read timeout",
         ),
         ("extract_archive", "unpacks a whole archive"),
-        (
-            "unwritable_names",
-            "reads the listing of a whole archive, which for a tar means walking every header",
-        ),
         (
             "check_server",
             "waits out a connect timeout when the address is wrong",
@@ -1214,7 +1209,7 @@ fn command_signatures_are_pinned_with_their_types() {
     //
     // Sets, not sequences: Tauri binds arguments by key, so reordering two
     // parameters changes nothing on the wire and must not fail here.
-    let expected: [(&str, &[(&str, &str)]); 5] = [
+    let expected: [(&str, &[(&str, &str)]); 4] = [
         ("check_server", &[("url", "String")]),
         (
             "compress_path",
@@ -1230,18 +1225,9 @@ fn command_signatures_are_pinned_with_their_types() {
         ),
         (
             "extract_archive",
-            &[
-                ("archive", "String"),
-                ("output_dir", "String"),
-                // The user's answers for the entry names this host cannot
-                // write, one character to what it becomes. A `HashMap` here
-                // would deserialize identically and report two bad keys in a
-                // different order on every run.
-                ("replacements", "BTreeMap<String, String>"),
-            ],
+            &[("archive", "String"), ("output_dir", "String")],
         ),
         ("is_directory", &[("path", "String")]),
-        ("unwritable_names", &[("archive", "String")]),
     ];
 
     // One list of commands, not two: BASELINE decides what ships, this table
