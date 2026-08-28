@@ -5,7 +5,7 @@ name: test-and-build
 # landing has no test suite and is built by deploy-landing.yml instead.
 on:
   push:
-    branches: [main, dev]
+    branches: [main, develop]
   # `labeled` is not in the default set, and without it the `full-matrix` label
   # below would be a documented escape hatch that never fires: adding a label
   # would change nothing until the next push.
@@ -245,11 +245,11 @@ jobs:
   # times a Linux one in billed minutes and feature work does not need them.
   #
   # They run when the code is on, or heading to, a shipping branch:
-  #   - any push to dev or main (the `on:` block already limits pushes to those)
-  #   - a pull request FROM dev (the release PR into main), from main (a
+  #   - any push to develop or main (the `on:` block already limits pushes to those)
+  #   - a pull request FROM develop (the release PR into main), from main (a
   #     back-merge) or from a release/* branch
   # A pull request from feature/* or hotfix/* therefore stays Linux only, and
-  # picks these up when it lands on dev. When such a branch does touch
+  # picks these up when it lands on develop. When such a branch does touch
   # platform-specific code, label the pull request `full-matrix` to ask for
   # them anyway rather than renaming the branch.
   #
@@ -263,7 +263,7 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch' ||
-      github.head_ref == 'dev' ||
+      github.head_ref == 'develop' ||
       github.head_ref == 'main' ||
       startsWith(github.head_ref, 'release/') ||
       contains(github.event.pull_request.labels.*.name, 'full-matrix')
@@ -534,22 +534,22 @@ jobs:
         run: make desktop/compile
 
   # The same compile on the other two platforms it ships to, on the release
-  # path only: a release/* branch, and the dev to main pull request itself.
+  # path only: a release/* branch, and the develop to main pull request itself.
   #
   # That second one is not optional. The pull request into main IS the release
   # gate, the last thing that runs before a tag exists, so a desktop build
   # skipping there would mean the app was never compiled for macOS or Windows
-  # on the commit about to ship. Its head branch is dev, not release/*, so it
+  # on the commit about to ship. Its head branch is develop, not release/*, so it
   # needs naming separately.
   #
-  # Not on dev, deliberately. The test jobs above already compile this crate on
+  # Not on develop, deliberately. The test jobs above already compile this crate on
   # both platforms: `make desktop/test-rust` runs `cargo test` inside src-tauri,
   # which goes through generate_context!(), runs build.rs (so rc.exe, the icon
   # and the manifest on Windows) and links executables. All this adds is the
   # release profile, which for this crate means lto, codegen-units = 1 and
   # panic = "abort": a real difference, but a narrow one, and the slowest kind
   # of build there is. Paying ten to fifteen minutes per platform on every push
-  # to dev for that is not a good trade.
+  # to develop for that is not a good trade.
   #
   # On a release branch it is, because the alternative is finding out after the
   # tag is pushed. Note what it still does not cover: it compiles rather than

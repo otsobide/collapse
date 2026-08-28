@@ -30,7 +30,7 @@ concurrency:
 jobs:
   # A release must correspond to a released state of the code: refuse any
   # v* tag whose commit is not part of main's history (e.g. a tag placed on
-  # dev by mistake). The publish job requires this to pass.
+  # develop by mistake). The publish job requires this to pass.
   verify:
     name: tag is on main
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')

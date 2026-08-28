@@ -550,7 +550,7 @@ outside. Source files carry no inline `#[cfg(test)] mod tests`.
 
 ## CI
 
-`.github/workflows/test-and-build.yml` runs on every push to `main`/`dev` and
+`.github/workflows/test-and-build.yml` runs on every push to `main`/`develop` and
 on pull requests, entirely on Linux runners. Every job is named
 `test (<app>)` or `build (<app>)`, so a check's name says what it does and
 which app it belongs to; the job ids match those names (`test-cli`,
@@ -569,10 +569,10 @@ and is the only Linux job that compiles the Tauri crate at all), while
 `test (server-frontend)` is independent of the Rust engine and waits only on
 `fmt`. **Linux runs everything, on every push and every pull request.** macOS and
 Windows run the whole Rust suite too, as `test (rust, macos)` and
-`test (rust, windows)`, but only for the branches that ship: any push to `dev`
-or `main`, and any pull request from `dev`, from `main`, or from a `release/*`
+`test (rust, windows)`, but only for the branches that ship: any push to `develop`
+or `main`, and any pull request from `develop`, from `main`, or from a `release/*`
 branch. A `feature/*` or `hotfix/*` pull request stays Linux only and picks
-them up when it lands on `dev`, because those runners cost several times a
+them up when it lands on `develop`, because those runners cost several times a
 Linux one per minute. When such a branch does touch platform-specific code,
 labelling the pull request `full-matrix` asks for them anyway.
 
@@ -585,13 +585,13 @@ a developer's own machine ever ran the desktop suite there.
 
 The desktop app is compiled on Linux everywhere as `build (desktop)`, and on
 the other two platforms as `build (desktop, macos)` and `build (desktop,
-windows)` **on the release path only**: a `release/*` branch, and the `dev` to
+windows)` **on the release path only**: a `release/*` branch, and the `develop` to
 `main` pull request itself. That second one matters, since that pull request is
-the release gate and its head branch is `dev` rather than `release/*`, so
+the release gate and its head branch is `develop` rather than `release/*`, so
 skipping there would mean the app was never compiled for macOS or Windows on
 the commit about to ship.
 
-Not on `dev`, deliberately. The cross-platform test jobs already compile this
+Not on `develop`, deliberately. The cross-platform test jobs already compile this
 crate on both platforms, since `make desktop/test-rust` runs `cargo test` inside
 `src-tauri`, which goes through `generate_context!()`, runs `build.rs` and links
 executables. All the extra build adds is the release profile (`lto`,

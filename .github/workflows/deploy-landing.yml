@@ -3,13 +3,13 @@ name: Deploy landing
 # Build the Nuxt landing and publish the compiled static site to a branch that
 # holds only the build output:
 #   - push to main → pages/landing       (production)
-#   - push to dev  → pages/landing-dev    (staging, to preview before main)
+#   - push to develop → pages/landing-dev  (staging, to preview before main)
 on:
   push:
-    branches: [main, dev]
+    branches: [main, develop]
   workflow_dispatch:
 
-# One deploy per source branch at a time; don't let main and dev cancel each other.
+# One deploy per source branch at a time; don't let main and develop cancel each other.
 concurrency:
   group: deploy-landing-${{ github.ref_name }}
   cancel-in-progress: true
@@ -39,7 +39,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # main goes to production; every other branch (dev) goes to staging.
+          # main goes to production; every other branch (develop) goes to staging.
+          # The target branch keeps its -dev name: it is what serves the staging
+          # site, and renaming it would change that URL for no gain.
           if [ "$GITHUB_REF_NAME" = "main" ]; then
             TARGET="pages/landing"
           else
