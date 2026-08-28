@@ -82,19 +82,35 @@ any platform, so every Windows rule is tested from a Mac, and only
 `NameRules::host()` is chosen by the compiler. A rule reachable solely under
 `#[cfg(windows)]` is a rule this repository cannot test.
 
-It answers with structure rather than a string, because a front end has to
-render it: each offending character (and whether the host **rejects** it or
-**reinterprets** it, which is the difference between a colon failing and a
-colon quietly becoming an NTFS stream), a trailing dot or space, and a reserved
-device name. Only the first is a question for the user; the other two are
-adjustments that need explaining, not answering.
+**A name that does not fit stops the extraction.** Nothing is renamed to make it
+fit, and nothing is put to the user as a question: an archive arrives under the
+names it carries or it does not arrive. `refuse_unwritable_names` judges the
+whole listing before the first byte and fails on the first component
+`NameRules::can_write` rejects, so the output directory is left as it was found,
+the writable entries included.
 
-`unwritable_names` inspects a listing without extracting, and `extract_with`
-takes the answers. Replacements are applied **before** the structural
-adjustments, or `CO?1` answered with `M` would be left as the device `COM1`.
-An answer that is itself unwritable, carries a path separator, or empties a
-component is refused, and a collision is refused naming both entries rather
-than silently renaming one.
+The four faults it knows about are one fault as far as a caller is concerned —
+a character the host **rejects** (`?`), one it **reinterprets** (`:`, which is
+the difference between a write failing and a write quietly becoming an NTFS
+stream), a trailing dot or space, and a reserved device name. Each would leave a
+file under a name the archive did not ask for, and that is the whole of what is
+being prevented.
+[threat_model.md](threat_model.md#4b-entry-names-this-host-cannot-write) records
+why this replaced a scheme that adjusted and asked instead.
+
+It still answers with **structure** rather than a string, because the refusal has
+to be rendered: `unwritable_names` inspects a listing without extracting
+anything and reports every entry this host would refuse and why, so a front end
+can say what will not work before anyone waits for it. The CLI names every
+offending entry at once from that report; core stops at the first, the run being
+over either way.
+
+`Substitutions` and `ExtractOptions::with_replacements` survive as inert
+surface, so the two front ends still compile while their naming dialogs are
+taken out. `NamePlan` and the `extract_*_planned` backend variants are likewise
+vestigial: nothing constructs a plan that says anything. Removing all of it,
+tar's second write path included, is follow-up work kept out of the commit that
+changed the policy, because that path carries the containment guard.
 
 ### `src/paths.rs` — the guards both front ends share
 
@@ -206,6 +222,15 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
 Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
 as needed.
+
+Ahead of that it reads the listing once through `unwritable_names_with` and
+refuses an archive holding any name this host cannot write, which core would
+refuse anyway. The duplication is deliberate and is the reason the CLI's message
+is worth having: core stops at the first offending component, while this has the
+whole listing and names every entry at fault in one go, so a user is not refused
+four times over four runs. A listing this build cannot read is deliberately not
+this check's business — extraction is about to open the same archive and fail on
+it in the extractor's own vocabulary, which is the message worth keeping.
 
 ## collapse-remote — the client for a remote server
 
@@ -438,15 +463,21 @@ HTTP, same engine as the CLI. It compresses files and folders and extracts
 archives, in the cervantic visual style (warm cream + terracotta, monospace), and
 targets macOS, Windows and Linux from one codebase.
 
-The backend exposes four Tauri commands: `is_directory` (UI icon/name hint),
+The backend exposes five Tauri commands: `is_directory` (UI icon/name hint),
 `compress_path` (dispatches file vs. folder, refuses to overwrite its own source
 or a file inside the folder being compressed, replaces an existing output only
 when `overwrite` says the user agreed to it in the save dialog, and hands the
 work to a remote server when one is chosen),
-`extract_archive`, and `check_server` (a health probe for the settings panel).
+`extract_archive`, `check_server` (a health probe for the settings panel), and
+`unwritable_names`, which reports the entry names this machine cannot write.
 
-All three of those carry `#[tauri::command(async)]`. A bare `#[tauri::command]`
-on a synchronous function runs the body on the thread handling the IPC message,
+That last one, and the dialog it feeds, are **inert**: extraction refuses such
+an archive outright rather than taking answers, so the replacements the dialog
+collects reach nothing. Both go when the dialog does.
+
+All four of the blocking ones carry `#[tauri::command(async)]`. A bare
+`#[tauri::command]` on a synchronous function runs the body on the thread
+handling the IPC message,
 so the window stops repainting until it returns: a compression froze it for its
 whole duration, and a mistyped server address froze it for the 30 seconds of
 ureq's connect timeout. `is_directory` is the exception, being a single `stat`.
