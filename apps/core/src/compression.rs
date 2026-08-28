@@ -9,7 +9,7 @@ mod zip;
 pub use self::algorithm::Algorithm;
 pub use self::names::{
     CharacterFault, NameError, NameProblem, NameReport, NameRules, OffendingCharacter,
-    Substitutions, UnwritableEntry,
+    UnwritableEntry,
 };
 pub use self::sevenz::{compress_7z, compress_7z_dir, extract_7z};
 pub use self::tar::{compress_tar, compress_tar_dir, extract_tar};
@@ -378,7 +378,6 @@ pub fn compress_dir(
 #[non_exhaustive]
 pub struct ExtractOptions {
     rules: NameRules,
-    replacements: Substitutions,
 }
 
 impl ExtractOptions {
@@ -394,26 +393,8 @@ impl ExtractOptions {
         self
     }
 
-    /// **Inert.** Kept so the callers that pass answers still compile while
-    /// their own naming dialogs are being taken out; nothing reads it.
-    ///
-    /// Extraction no longer substitutes anything: a character this filesystem
-    /// cannot write fails the extraction rather than being replaced, so there
-    /// is no answer for a caller to supply. Removing this, [`Substitutions`]
-    /// and the two front-end dialogs that fill it is follow-up work.
-    pub fn with_replacements(mut self, replacements: Substitutions) -> Self {
-        self.replacements = replacements;
-        self
-    }
-
     pub fn rules(&self) -> NameRules {
         self.rules
-    }
-
-    /// The answers this was handed. Read by nobody; see
-    /// [`Self::with_replacements`].
-    pub fn replacements(&self) -> &Substitutions {
-        &self.replacements
     }
 }
 

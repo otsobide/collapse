@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use collapse_core::compression::{
     extract_7z, extract_tar, extract_zip, CharacterFault, NameError, NameProblem, NameReport,
-    NameRules, Substitutions,
+    NameRules,
 };
 use collapse_core::{
     extract, extract_with, unwritable_names_with, CompressionError, ExtractOptions,
@@ -118,10 +118,8 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
 }
 
 /// Extract the way a Windows machine would, wherever this runs.
-fn as_windows(replacements: Substitutions) -> ExtractOptions {
-    ExtractOptions::new()
-        .with_rules(NameRules::windows())
-        .with_replacements(replacements)
+fn as_windows() -> ExtractOptions {
+    ExtractOptions::new().with_rules(NameRules::windows())
 }
 
 /// The message of the refusal an unwritable entry must produce.
@@ -301,153 +299,6 @@ fn the_host_rules_are_this_platform_s_rules() {
 
 // ------------------------------------------------------------- rewriting ----
 
-#[test]
-fn a_replacement_is_applied_to_every_occurrence_and_may_be_empty() {
-    let rules = NameRules::windows();
-    let answers = Substitutions::new().with('?', "_");
-    assert_eq!(rules.rewrite("a?b?c", &answers).unwrap(), "a_b_c");
-    let dropped = Substitutions::new().with('?', "");
-    assert_eq!(rules.rewrite("a?b", &dropped).unwrap(), "ab");
-}
-
-#[test]
-fn the_structural_problems_are_adjusted_without_being_asked() {
-    // A trailing dot and a device name have no offending character, so there is
-    // nothing to put a text field beside; they are stated, not asked. If this
-    // ever needs an answer, the UI has a field with no question.
-    let rules = NameRules::windows();
-    let nothing = Substitutions::new();
-    assert_eq!(rules.rewrite("notes.txt.", &nothing).unwrap(), "notes.txt");
-    assert_eq!(rules.rewrite("CON.txt", &nothing).unwrap(), "CON_.txt");
-    assert_eq!(
-        rules.rewrite("con", &nothing).unwrap(),
-        "con_",
-        "the adjustment keeps the spelling the archive used"
-    );
-}
-
-#[test]
-fn the_adjustments_run_after_the_replacements_not_before() {
-    // Both of these come out wrong if the order in `rewrite` is reversed, and
-    // both are reachable from an ordinary answer:
-    let rules = NameRules::windows();
-    // `M` for `?` spells a device that was not in the archive.
-    assert_eq!(
-        rules
-            .rewrite("CO?1", &Substitutions::new().with('?', "M"))
-            .unwrap(),
-        "COM1_"
-    );
-    // `.` for `?` puts a dot at the end, which Windows would drop silently.
-    assert_eq!(
-        rules
-            .rewrite("notes?", &Substitutions::new().with('?', "."))
-            .unwrap(),
-        "notes"
-    );
-}
-
-#[test]
-fn a_replacement_the_host_cannot_write_either_is_refused() {
-    let err = NameRules::windows()
-        .rewrite("a?b", &Substitutions::new().with('?', "*"))
-        .unwrap_err();
-    assert_eq!(
-        err,
-        NameError::UnwritableReplacement {
-            character: '?',
-            replacement: "*".to_string(),
-            offending: '*',
-        }
-    );
-}
-
-#[test]
-fn a_replacement_may_not_contain_a_path_separator() {
-    // Not a usability rule: `../` in an answer is a traversal, since the
-    // replacement lands inside a component that has already been cleared by the
-    // containment guard.
-    for replacement in ["../", "a/b", r"a\b"] {
-        let err = NameRules::windows()
-            .rewrite("a?b", &Substitutions::new().with('?', replacement))
-            .unwrap_err();
-        assert!(
-            matches!(err, NameError::SeparatorInReplacement { .. }),
-            "{replacement}: {err}"
-        );
-    }
-}
-
-#[test]
-fn an_answer_that_leaves_no_name_or_spells_a_parent_directory_is_refused() {
-    let rules = NameRules::windows();
-    // An answer of `.` for a two-character name spells the directory above,
-    // which would climb out of the output directory. Under these rules the
-    // trailing-dot adjustment gets there first and leaves nothing at all, so
-    // the refusal says `""` rather than `".."`; either way it is refused, and
-    // the second assertion is the one that matters if a future ruleset stops
-    // trimming trailing dots.
-    let outcome = rules.rewrite("??", &Substitutions::new().with('?', "."));
-    assert!(
-        matches!(&outcome, Err(NameError::Unnameable { .. })),
-        "{outcome:?}"
-    );
-    assert_ne!(outcome.unwrap_or_default(), "..");
-    // An empty answer that empties the whole name.
-    let err = rules
-        .rewrite("??", &Substitutions::new().with('?', ""))
-        .unwrap_err();
-    assert!(matches!(err, NameError::Unnameable { result, .. } if result.is_empty()));
-    // And a name that is nothing but what the host drops, which no answer can
-    // help with because there is no character to answer for.
-    let err = rules.rewrite("...", &Substitutions::new()).unwrap_err();
-    assert!(matches!(err, NameError::Unnameable { .. }), "{err}");
-}
-
-#[test]
-fn an_unanswered_character_is_reported_against_the_whole_entry() {
-    // The user sees entry names, not components. Dropping `in_entry` would name
-    // `a?b.txt` here, which is not a line they can find in any listing.
-    let err = NameRules::windows()
-        .rewrite_entry("photos/2026/a?b.txt", &Substitutions::new())
-        .unwrap_err();
-    assert_eq!(
-        err,
-        NameError::NoReplacement {
-            entry: "photos/2026/a?b.txt".to_string(),
-            character: '?',
-        }
-    );
-    assert!(err.to_string().contains("photos/2026/a?b.txt"), "{err}");
-}
-
-#[test]
-fn every_component_of_an_entry_is_rewritten() {
-    let answers = Substitutions::new().with(':', "-").with('?', "_");
-    let written = NameRules::windows()
-        .rewrite_entry("a:b/CON/c?.txt.", &answers)
-        .unwrap();
-    assert_eq!(written, PathBuf::from("a-b").join("CON_").join("c_.txt"));
-}
-
-#[test]
-fn a_key_that_is_not_a_single_character_is_refused() {
-    // The front ends receive their answers as strings (a JSON object has no
-    // char keys), so this is where "??" or "" is caught, once, instead of in
-    // each of them.
-    let mut answers = Substitutions::new();
-    assert!(answers.set_str("?", "_").is_ok());
-    assert_eq!(answers.get('?'), Some("_"));
-    assert!(matches!(
-        answers.set_str("??", "_"),
-        Err(NameError::NotOneCharacter { .. })
-    ));
-    assert!(matches!(
-        answers.set_str("", "_"),
-        Err(NameError::NotOneCharacter { .. })
-    ));
-}
-
 // ---------------------------------------------------------------- reports ---
 
 #[test]
@@ -477,24 +328,19 @@ fn the_report_asks_about_each_character_once_and_says_how_many_entries_carry_it(
     );
 }
 
+/// `characters` counts only the faults that are about a character, which is
+/// what the CLI's refusal message groups by. A trailing dot and a device name
+/// are entries with a problem and nothing to group.
 #[test]
-fn the_report_separates_the_questions_from_the_stated_adjustments() {
+fn only_a_character_fault_reaches_the_characters_half_of_the_report() {
     let names = ["what?.txt", "notes.txt.", "CON.log"];
     let report = NameReport::of(&names, NameRules::windows());
-    let asked: Vec<Option<char>> = report
-        .entries
-        .iter()
-        .map(|e| e.problems[0].replaceable())
-        .collect();
-    assert_eq!(
-        asked,
-        vec![Some('?'), None, None],
-        "only a character is a question; the other two are announcements"
-    );
+
+    assert_eq!(report.entries.len(), 3, "all three are refused");
     assert_eq!(
         report.characters.len(),
         1,
-        "a trailing dot and a device name must not produce a text field"
+        "but only the `?` is a character anyone could name"
     );
     assert_eq!(
         report.entries[2].problems,
@@ -604,10 +450,7 @@ fn every_fault_stops_the_whole_archive_the_same_way() {
             let out = dir.path().join("out");
             let context = format!("{format}, {fault}");
 
-            let message = refusal(
-                extract_with(&archive, &out, &as_windows(Substitutions::new())),
-                &context,
-            );
+            let message = refusal(extract_with(&archive, &out, &as_windows()), &context);
 
             assert!(message.contains(bad), "{context}: {message}");
             assert!(
@@ -645,10 +488,7 @@ fn a_colon_entry_is_refused_and_its_neighbour_is_never_written() {
         );
         let out = dir.path().join("out");
 
-        let message = refusal(
-            extract_with(&archive, &out, &as_windows(Substitutions::new())),
-            format,
-        );
+        let message = refusal(extract_with(&archive, &out, &as_windows()), format);
 
         assert!(message.contains("notes.txt:hidden"), "{format}: {message}");
         assert!(message.contains(':'), "{format}: {message}");
@@ -682,8 +522,7 @@ fn two_entries_that_used_to_collide_are_refused_for_their_own_names() {
         );
         let out = dir.path().join("out");
 
-        let answers = Substitutions::new().with('?', "_").with('*', "_");
-        let message = refusal(extract_with(&archive, &out, &as_windows(answers)), format);
+        let message = refusal(extract_with(&archive, &out, &as_windows()), format);
 
         assert!(message.contains("a?b.txt"), "{format}: {message}");
         assert!(
@@ -711,10 +550,7 @@ fn a_trailing_dot_is_refused_rather_than_folded_onto_the_name_beside_it() {
     );
     let out = dir.path().join("out");
 
-    let message = refusal(
-        extract_with(&archive, &out, &as_windows(Substitutions::new())),
-        "zip",
-    );
+    let message = refusal(extract_with(&archive, &out, &as_windows()), "zip");
 
     assert!(message.contains("notes.txt."), "{message}");
     assert!(files_under(&out).is_empty());
@@ -734,42 +570,13 @@ fn an_archive_that_already_names_one_entry_twice_still_extracts() {
     );
     let out = dir.path().join("out");
 
-    let written = extract_with(&archive, &out, &as_windows(Substitutions::new())).unwrap();
+    let written = extract_with(&archive, &out, &as_windows()).unwrap();
 
     assert_eq!(
         written,
         vec!["notes.txt".to_string(), "notes.txt".to_string()]
     );
     assert_eq!(fs::read(out.join("notes.txt")).unwrap(), b"second");
-}
-
-#[test]
-fn an_answer_no_longer_rescues_an_entry_the_host_cannot_write() {
-    // What this test used to guarantee — that a replacement the host could not
-    // write was refused up front, before the archive was even opened — has no
-    // subject left: nothing validates an answer, because nothing applies one.
-    //
-    // It is kept, turned around to face the policy itself, because that is the
-    // part most likely to be quietly undone. `?` answered with `_` is the most
-    // reasonable answer anyone could give to the most ordinary question this
-    // ever asked, and it must still extract nothing at all.
-    for format in FORMATS {
-        let dir = tempfile::TempDir::new().unwrap();
-        let archive = archive_with(dir.path(), format, &[("what?.txt", b"question")]);
-        let out = dir.path().join("out");
-
-        let message = refusal(
-            extract_with(
-                &archive,
-                &out,
-                &as_windows(Substitutions::new().with('?', "_")),
-            ),
-            format,
-        );
-
-        assert!(message.contains("what?.txt"), "{format}: {message}");
-        assert!(files_under(&out).is_empty(), "{format}");
-    }
 }
 
 #[test]
@@ -883,44 +690,6 @@ fn a_failing_entry_names_itself_and_its_destination() {
 }
 
 // ------------------------------------- the seam: splitting is not the host's --
-
-/// An archive entry name is not a host path, and this is the test that says so.
-///
-/// It used to be split with `Path::new(name).components()`, and `std::path` is
-/// `#[cfg]`-dependent while `NameRules` is data, so the rules were portable and
-/// the splitting they ran over was not. Both directions were wrong at once, and
-/// neither was visible from a Mac:
-///
-/// * Windows parses a leading `a:` as a drive prefix, which is not a `Normal`
-///   component, so it was silently dropped and `a:b/c.txt` was judged, reported
-///   and written as `b/c.txt`. The colon that issue #63 is entirely about went
-///   unasked on the only platform issue #63 concerns.
-/// * Windows treats `\` as a separator and Unix does not, so one name split
-///   into a different number of components depending on who was reading.
-///
-/// ZIP mandates `/` (APPNOTE 4.4.17.1) and tar has used it since v7, so the
-/// component count is a property of the archive and must not move.
-#[test]
-fn an_entry_splits_the_same_way_on_every_host() {
-    // One component, whatever std would make of it. `\` is not a separator in
-    // an archive, and `a:` is not a drive.
-    for name in ["a:b", "C:x", r"dir\file.txt", r"\\server\share"] {
-        assert_eq!(
-            NameRules::unix()
-                .rewrite_entry(name, &Substitutions::new())
-                .ok(),
-            Some(PathBuf::from(name)),
-            "{name} must stay one component: Unix can hold every character in it"
-        );
-    }
-    // And the split happens exactly where the archive says it does.
-    assert_eq!(
-        NameRules::unix()
-            .rewrite_entry("a:b/c.txt", &Substitutions::new())
-            .unwrap(),
-        PathBuf::from("a:b").join("c.txt")
-    );
-}
 
 /// The Windows half of the same seam: the report must ask about a colon
 /// wherever it sits, including the leading component that used to vanish.
