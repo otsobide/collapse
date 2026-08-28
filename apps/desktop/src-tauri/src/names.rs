@@ -47,9 +47,11 @@ pub struct NameInspection {
     ///
     /// Sent as data rather than reimplemented in JavaScript. The dialog only
     /// picks the wording; whether a character is acceptable is answered here by
-    /// the same ruleset the extraction will use, and the extraction checks
-    /// again regardless (`extract_with` validates the answers before it opens
-    /// the archive).
+    /// the same ruleset the extraction will use.
+    ///
+    /// Nothing downstream re-checks it any more, and nothing needs to: core no
+    /// longer substitutes anything, so an answer cannot reach a file name. This
+    /// whole exchange is inert until the dialog is taken out.
     pub rejected_in_replacement: String,
 }
 

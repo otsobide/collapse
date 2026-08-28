@@ -18,7 +18,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use clap::Parser;
-use collapse_cli::{adjustments, run, Adjustment, Cli, CliError};
+use collapse_cli::{run, Cli, CliError};
 use collapse_core::{NameReport, NameRules};
 
 fn run_err(args: &[&str]) -> CliError {
@@ -143,50 +143,50 @@ fn the_refusal_counts_the_entries_each_character_holds_up() {
     );
 }
 
-/// A trailing dot and a device name have one correct answer and nobody to ask,
-/// so they are not what the refusal is about. Refusing them too would leave a
-/// Windows user unable to extract an archive whose only fault is a file called
-/// `aux.log`, which the desktop app would open without a word.
+/// A trailing dot and a device name used to be adjusted rather than refused, on
+/// the reasoning that they had one correct answer and nobody to ask. Core
+/// adjusts nothing now, so `run_extract` refuses on the whole report instead of
+/// on its `characters` half, and these three entries are exactly what that
+/// widening is about: an archive whose only fault is a file called `aux.log` is
+/// refused on Windows rather than arriving as `aux_.log`.
+///
+/// Judged through `NameReport` rather than by running the command, because the
+/// faults are Windows-only and this suite runs on Linux.
 #[test]
-fn a_name_that_needs_no_answer_is_adjusted_rather_than_refused() {
+fn a_name_that_needs_no_answer_is_refused_like_any_other() {
     let windows = NameRules::windows();
     let report = NameReport::of(&["notes.txt.", "CON.txt", "aux.log", "fine.txt"], windows);
 
+    // The half the CLI used to consult is empty: not one of these is a question
+    // anybody could be asked. Under the old rule the archive extracted.
+    assert!(report.characters.is_empty(), "none of these is a question");
+    // The half it consults now is not, which is the whole of the change.
+    assert!(!report.is_empty(), "the archive is refused all the same");
+
+    let named: Vec<&str> = report.entries.iter().map(|e| e.entry.as_str()).collect();
     assert_eq!(
-        adjustments(&report, windows),
-        vec![
-            Adjustment {
-                entry: "notes.txt.".to_string(),
-                written: "notes.txt".to_string(),
-            },
-            Adjustment {
-                entry: "CON.txt".to_string(),
-                written: "CON_.txt".to_string(),
-            },
-            Adjustment {
-                entry: "aux.log".to_string(),
-                written: "aux_.log".to_string(),
-            },
-        ],
-        "the device keeps the extension that says what the file is, and the writable name is absent"
+        named,
+        ["notes.txt.", "CON.txt", "aux.log"],
+        "every offending entry, and the writable one absent"
     );
 }
 
-/// An entry needing an answer has no adjustment to report, because there is no
-/// answer to apply. That is what keeps the two lists disjoint: what `run`
-/// refuses is exactly what this cannot rewrite.
+/// The two kinds of fault now arrive at the same place, which is what stops the
+/// refusal being half a list. A report mixing one of each names both, so a
+/// user is not refused for `what?.txt`, fixed nothing, and then refused again
+/// for `notes.txt.`.
 #[test]
-fn an_entry_needing_a_replacement_has_no_adjustment() {
+fn a_report_mixing_both_kinds_of_fault_names_all_of_them() {
     let windows = NameRules::windows();
     let report = NameReport::of(&["what?.txt", "notes.txt."], windows);
 
-    assert_eq!(
-        adjustments(&report, windows),
-        vec![Adjustment {
-            entry: "notes.txt.".to_string(),
-            written: "notes.txt".to_string(),
-        }],
-    );
+    assert!(!report.is_empty());
+    let named: Vec<&str> = report.entries.iter().map(|e| e.entry.as_str()).collect();
+    assert_eq!(named, ["what?.txt", "notes.txt."]);
+
+    let message = windows_refusal("mixed.zip", &["what?.txt", "notes.txt."]);
+    assert!(message.contains("what?.txt"), "{message}");
+    assert!(message.contains("notes.txt."), "{message}");
 }
 
 // ------------------------------------------------------ end to end, on any host --

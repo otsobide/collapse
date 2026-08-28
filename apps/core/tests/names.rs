@@ -124,6 +124,19 @@ fn as_windows(replacements: Substitutions) -> ExtractOptions {
         .with_replacements(replacements)
 }
 
+/// The message of the refusal an unwritable entry must produce.
+///
+/// Panics naming what happened instead, because the two ways this goes wrong
+/// need telling apart: extracting anything at all is the policy being broken,
+/// while a different error is usually the fixture failing to build the name.
+fn refusal(result: Result<Vec<String>, CompressionError>, context: &str) -> String {
+    match result {
+        Err(CompressionError::Name(problem @ NameError::Unwritable { .. })) => problem.to_string(),
+        Err(other) => panic!("{context}: expected a naming refusal, got {other}"),
+        Ok(files) => panic!("{context}: expected a refusal, extracted {files:?}"),
+    }
+}
+
 // ------------------------------------------------------------- the ruleset --
 
 #[test]
@@ -564,55 +577,62 @@ fn inspecting_this_machine_s_own_archives_asks_nothing() {
 // -------------------------------------------- extracting with the answers ---
 
 #[test]
-fn the_answers_are_written_and_the_listing_names_what_is_on_disk() {
-    // Issue #64 end to end, for all three formats. The listing is the half that
-    // matters most: returning the archive's names would have a front end show
-    // `what?.txt` next to a file called `what_.txt`.
+fn every_fault_stops_the_whole_archive_the_same_way() {
+    // Issue #64 end to end, for all three formats, under the policy that
+    // replaced the answers. The four faults used to have four different
+    // endings: a question put to the user, a trailing run truncated in
+    // silence, a `_` appended to a device name. They have one ending now, and
+    // that is the whole of what this pins.
+    //
+    // `summary.txt` rides along in every archive and is the assertion that
+    // matters most. It is perfectly writable on any host, and it must still not
+    // be on disk: the refusal is judged over the listing before a byte is
+    // written, so a good entry beside a bad one goes nowhere either.
     for format in FORMATS {
-        let dir = tempfile::TempDir::new().unwrap();
-        let archive = archive_with(
-            dir.path(),
-            format,
-            &[
-                ("summary.txt", b"fine"),
-                ("what?.txt", b"question"),
-                ("notes.txt.", b"trailing"),
-                ("CON.txt", b"device"),
-            ],
-        );
-        let out = dir.path().join("out");
+        for (bad, fault) in [
+            ("what?.txt", "a character the host refuses"),
+            ("notes.txt:hidden", "a character the host reinterprets"),
+            ("notes.txt.", "a trailing dot"),
+            ("CON.txt", "a reserved device"),
+        ] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let archive = archive_with(
+                dir.path(),
+                format,
+                &[("summary.txt", b"fine"), (bad, b"trouble")],
+            );
+            let out = dir.path().join("out");
+            let context = format!("{format}, {fault}");
 
-        let written = extract_with(
-            &archive,
-            &out,
-            &as_windows(Substitutions::new().with('?', "_")),
-        )
-        .unwrap();
+            let message = refusal(
+                extract_with(&archive, &out, &as_windows(Substitutions::new())),
+                &context,
+            );
 
-        let expected = vec![
-            "CON_.txt".to_string(),
-            "notes.txt".to_string(),
-            "summary.txt".to_string(),
-            "what_.txt".to_string(),
-        ];
-        assert_eq!(sorted(written), expected, "{format}: the returned listing");
-        assert_eq!(files_under(&out), expected, "{format}: what is on disk");
-        assert_eq!(
-            fs::read(out.join("what_.txt")).unwrap(),
-            b"question",
-            "{format}: the renamed entry kept its content"
-        );
+            assert!(message.contains(bad), "{context}: {message}");
+            assert!(
+                files_under(&out).is_empty(),
+                "{context}: {:?} was written before the refusal",
+                files_under(&out)
+            );
+        }
     }
 }
 
 #[test]
-fn a_colon_entry_becomes_a_file_of_its_own_and_leaves_its_neighbour_alone() {
+fn a_colon_entry_is_refused_and_its_neighbour_is_never_written() {
     // Issue #63. On Windows the unfixed path writes these bytes into the
     // `hidden` stream of `notes.txt`, which changes nothing about `notes.txt`
     // that `dir` can see and leaves the listing naming a file that exists
-    // nowhere. Here the answer turns it into a file, and the assertion that
-    // `notes.txt` still holds its own bytes is what would fail if a future
-    // "simplification" let the colon through.
+    // nowhere.
+    //
+    // The answer used to be a substitution that turned it into a file of its
+    // own. That is gone: `notes.txt-hidden` is not the file the archive named
+    // either, and inventing it hid the problem rather than reporting it.
+    //
+    // `notes.txt` is what would catch a future "simplification" letting the
+    // colon through. It is the innocent half of the archive, and it must not
+    // exist: on a host that refuses the other entry, nothing is written.
     for format in FORMATS {
         let dir = tempfile::TempDir::new().unwrap();
         let archive = archive_with(
@@ -625,59 +645,34 @@ fn a_colon_entry_becomes_a_file_of_its_own_and_leaves_its_neighbour_alone() {
         );
         let out = dir.path().join("out");
 
-        let written = extract_with(
-            &archive,
-            &out,
-            &as_windows(Substitutions::new().with(':', "-")),
-        )
-        .unwrap();
-
-        assert_eq!(
-            sorted(written),
-            vec!["notes.txt".to_string(), "notes.txt-hidden".to_string()],
-            "{format}"
-        );
-        assert_eq!(fs::read(out.join("notes.txt")).unwrap(), b"the real file");
-        assert_eq!(
-            fs::read(out.join("notes.txt-hidden")).unwrap(),
-            b"the payload"
-        );
-    }
-}
-
-#[test]
-fn an_entry_with_no_answer_stops_before_anything_is_written() {
-    // The pre-pass earning its keep: judged one entry at a time, `summary.txt`
-    // would already be on disk when `what?.txt` was refused, and the user would
-    // be left with half a directory and no list of what is in it (issue #64's
-    // other complaint).
-    for format in FORMATS {
-        let dir = tempfile::TempDir::new().unwrap();
-        let archive = archive_with(
-            dir.path(),
+        let message = refusal(
+            extract_with(&archive, &out, &as_windows(Substitutions::new())),
             format,
-            &[("summary.txt", b"fine"), ("what?.txt", b"question")],
         );
-        let out = dir.path().join("out");
 
-        let err = extract_with(&archive, &out, &as_windows(Substitutions::new())).unwrap_err();
-
-        let message = err.to_string();
-        assert!(message.contains("what?.txt"), "{format}: {message}");
-        assert!(message.contains('?'), "{format}: {message}");
+        assert!(message.contains("notes.txt:hidden"), "{format}: {message}");
+        assert!(message.contains(':'), "{format}: {message}");
         assert!(
-            files_under(&out).is_empty(),
-            "{format}: {:?} was written before the refusal",
-            files_under(&out)
+            !out.join("notes.txt").exists(),
+            "{format}: the neighbour was written despite the refusal"
         );
+        assert!(files_under(&out).is_empty(), "{format}");
     }
 }
 
 #[test]
-fn two_entries_that_would_land_on_one_name_are_refused_by_name() {
-    // Deliberately not disambiguated: renaming one of them to `a_b (2).txt` is
-    // how a user ends up with a file they never look at again. Both names are
-    // in the message so the answer can be changed.
+fn two_entries_that_used_to_collide_are_refused_for_their_own_names() {
+    // These two were the collision case: `?` and `*` both answered with `_`
+    // made one name out of two, and the refusal named all three spellings so
+    // the answer could be changed.
+    //
+    // A collision can no longer be manufactured, because nothing is renamed, so
+    // the guard that looked for one has gone with it. The archive is still
+    // refused, for the plainer reason that this host cannot write either name.
+    //
+    // Only the first offending entry is reported, and the assertion that
+    // `a_b.txt` is absent is the one that matters: a planned name appearing in
+    // a message would mean something is still working one out.
     for format in FORMATS {
         let dir = tempfile::TempDir::new().unwrap();
         let archive = archive_with(
@@ -688,24 +683,26 @@ fn two_entries_that_would_land_on_one_name_are_refused_by_name() {
         let out = dir.path().join("out");
 
         let answers = Substitutions::new().with('?', "_").with('*', "_");
-        let err = extract_with(&archive, &out, &as_windows(answers)).unwrap_err();
+        let message = refusal(extract_with(&archive, &out, &as_windows(answers)), format);
 
-        let message = err.to_string();
         assert!(message.contains("a?b.txt"), "{format}: {message}");
-        assert!(message.contains("a*b.txt"), "{format}: {message}");
-        assert!(message.contains("a_b.txt"), "{format}: {message}");
         assert!(
-            files_under(&out).is_empty(),
-            "{format}: a collision must leave the output alone"
+            !message.contains("a_b.txt"),
+            "{format}: nothing is renamed, so no planned name should appear: {message}"
         );
+        assert!(files_under(&out).is_empty(), "{format}");
     }
 }
 
 #[test]
-fn a_renamed_entry_colliding_with_an_untouched_one_is_refused_too() {
-    // The case a "compare the rewritten names to each other" check would miss:
-    // only one of these two changes, and it lands on a name the archive already
-    // uses.
+fn a_trailing_dot_is_refused_rather_than_folded_onto_the_name_beside_it() {
+    // `notes.txt.` used to lose its dot and land on `notes.txt`, which the
+    // archive already holds, and the collision guard existed to catch exactly
+    // that. Now the dot is never dropped, so the two names stay two names and
+    // the archive is refused for the one the host will not preserve.
+    //
+    // The neighbour is ordinary and still goes nowhere, which is the all-or-
+    // nothing half of the policy.
     let dir = tempfile::TempDir::new().unwrap();
     let archive = archive_with(
         dir.path(),
@@ -714,9 +711,11 @@ fn a_renamed_entry_colliding_with_an_untouched_one_is_refused_too() {
     );
     let out = dir.path().join("out");
 
-    let err = extract_with(&archive, &out, &as_windows(Substitutions::new())).unwrap_err();
+    let message = refusal(
+        extract_with(&archive, &out, &as_windows(Substitutions::new())),
+        "zip",
+    );
 
-    let message = err.to_string();
     assert!(message.contains("notes.txt."), "{message}");
     assert!(files_under(&out).is_empty());
 }
@@ -745,26 +744,32 @@ fn an_archive_that_already_names_one_entry_twice_still_extracts() {
 }
 
 #[test]
-fn an_answer_the_host_cannot_write_is_refused_before_the_archive_is_opened() {
-    // Checked against a path that does not exist: if the answer were validated
-    // per entry instead of up front, this would fail with "no such file"
-    // instead, and a user would only learn their replacement was no good after
-    // choosing an archive.
-    let dir = tempfile::TempDir::new().unwrap();
-    let missing = dir.path().join("nowhere.zip");
-    let err = extract_with(
-        &missing,
-        &dir.path().join("out"),
-        &as_windows(Substitutions::new().with('?', "<")),
-    )
-    .unwrap_err();
-    assert!(
-        matches!(
-            err,
-            collapse_core::CompressionError::Name(NameError::UnwritableReplacement { .. })
-        ),
-        "{err}"
-    );
+fn an_answer_no_longer_rescues_an_entry_the_host_cannot_write() {
+    // What this test used to guarantee — that a replacement the host could not
+    // write was refused up front, before the archive was even opened — has no
+    // subject left: nothing validates an answer, because nothing applies one.
+    //
+    // It is kept, turned around to face the policy itself, because that is the
+    // part most likely to be quietly undone. `?` answered with `_` is the most
+    // reasonable answer anyone could give to the most ordinary question this
+    // ever asked, and it must still extract nothing at all.
+    for format in FORMATS {
+        let dir = tempfile::TempDir::new().unwrap();
+        let archive = archive_with(dir.path(), format, &[("what?.txt", b"question")]);
+        let out = dir.path().join("out");
+
+        let message = refusal(
+            extract_with(
+                &archive,
+                &out,
+                &as_windows(Substitutions::new().with('?', "_")),
+            ),
+            format,
+        );
+
+        assert!(message.contains("what?.txt"), "{format}: {message}");
+        assert!(files_under(&out).is_empty(), "{format}");
+    }
 }
 
 #[test]

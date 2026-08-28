@@ -60,8 +60,18 @@ Formats: `zip` (default, or inferred from `-o`'s extension), `7z`, `tar`. Level
 next to the source; override with `-o`. It **won't overwrite** an existing
 archive unless you pass `--force`, and `--force` still refuses to write onto its
 own source or onto a file inside the folder being compressed, because either
-would destroy the data instead of archiving it. Run `collapse --help` for the
-full surface.
+would destroy the data instead of archiving it.
+
+**Every local compression is read back before it is reported.** A compressor
+here finalises on drop, so a run that dies partway through still closes out an
+archive that opens cleanly and is quietly missing whatever had not been written
+yet — nothing about the file itself says so. By default the check is the
+archive's own listing, which is what catches that. `--verify` upgrades it to
+reading every entry back, roughly twice the work, which also checks the
+per-entry checksums zip and 7z store (tar stores none). It cannot be combined
+with `--server`, since the archive is built on the far side.
+
+Run `collapse --help` for the full surface.
 
 Prebuilt macOS binaries (Apple Silicon and Intel tarballs, with sha256
 checksums) are attached to every
@@ -188,8 +198,8 @@ Requires **Rust 1.88+** (2021 edition).
 
 ```bash
 make build             # build the Rust crates
-make test              # run every suite (620 Rust tests + 116 Vitest cases)
-make test/rust         # only the Rust tests that need no Node toolchain (505)
+make test              # run every suite (621 Rust tests + 116 Vitest cases)
+make test/rust         # only the Rust tests that need no Node toolchain (506)
 ```
 
 `make test` includes the desktop app's own Rust suite, which compiles Tauri, so
@@ -244,9 +254,9 @@ make fmt  make lint  # format / clippy both Rust workspaces
 make fmt/check       # fail instead of reformatting (the tree is rustfmt clean)
 ```
 
-Work happens on `dev`, merged into `main` per release (see
+Work happens on `develop`, merged into `main` per release (see
 [git flow](docs/git_flow.md)). CI invokes these same `make` targets on every
-pull request and on pushes to `dev` and `main`.
+pull request and on pushes to `develop` and `main`.
 
 ## License
 

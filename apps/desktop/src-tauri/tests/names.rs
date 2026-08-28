@@ -316,21 +316,27 @@ fn an_ordinary_archive_extracts_with_no_answers_at_all() {
 }
 
 #[test]
-fn an_answer_containing_a_separator_is_refused_before_anything_is_written() {
-    // `?` is writable on this host, so nothing in this archive needs answering:
-    // the answer is refused on its own account, by the ruleset, before the
-    // archive is opened. That is what keeps a bad answer from being discovered
-    // half way through an extraction.
+fn a_hostile_answer_changes_nothing_because_no_answer_is_applied() {
+    // This used to be the guard on the answer itself: `?` replaced with
+    // `../escaped` would have carried an entry out of the output directory, so
+    // the ruleset refused the answer before the archive was opened.
+    //
+    // There is no answer to refuse any more. Nothing in this archive is
+    // unwritable, so it extracts, and the point is what does *not* happen: the
+    // replacement reaches no name, creates no directory and moves nothing. A
+    // regression here would show up as `escaped` existing somewhere.
     let dir = TempDir::new().unwrap();
     let archive = zip_with(dir.path(), &[("notes.txt", b"hello")]);
     let out = dir.path().join("out");
 
-    let problem = refusal(extract_answering(&archive, &out, &[("?", "../escaped")]).unwrap());
+    let outcome = extract_answering(&archive, &out, &[("?", "../escaped")]).unwrap();
 
-    assert!(problem.contains("path separator"), "{problem}");
+    assert_eq!(written(outcome), ["notes.txt"]);
+    assert_eq!(files_under(&out), ["notes.txt"]);
     assert!(
-        !out.exists(),
-        "the output directory was created before the answer was judged"
+        !dir.path().join("escaped").exists() && !out.join("escaped").exists(),
+        "the answer reached a path: {:?}",
+        files_under(dir.path())
     );
 }
 
@@ -381,38 +387,40 @@ fn a_name_this_computer_cannot_write_is_reported_with_the_character_to_ask_about
 
 #[cfg(unix)]
 #[test]
-fn the_answer_is_written_and_the_listing_names_what_is_on_disk() {
-    let dir = TempDir::new().unwrap();
-    let archive = zip_with(dir.path(), &[(UNWRITABLE_HERE, b"hello")]);
-    let out = dir.path().join("out");
+fn no_answer_rescues_a_name_this_computer_cannot_write() {
+    // Both halves of what the dialog used to offer, and neither works now: a
+    // character to put in its place, and an empty answer meaning "just drop
+    // it". The name the archive gave is the only name that may be written, so
+    // an entry holding a NUL does not arrive under some other spelling — it
+    // does not arrive.
+    //
+    // This is the test to look at if the dialog is ever wired back up by
+    // accident: it is the one that says the answers are inert.
+    for answer in ["_", ""] {
+        let dir = TempDir::new().unwrap();
+        let archive = zip_with(dir.path(), &[(UNWRITABLE_HERE, b"hello")]);
+        let out = dir.path().join("out");
 
-    let outcome = extract_answering(&archive, &out, &[("\u{0}", "_")]).unwrap();
+        let problem = refusal(extract_answering(&archive, &out, &[("\u{0}", answer)]).unwrap());
 
-    // The name on disk, never the archive's: reporting `bad\0name.txt` would
-    // name a file that exists nowhere and send the user looking for it.
-    assert_eq!(written(outcome), ["bad_name.txt"]);
-    assert_eq!(files_under(&out), ["bad_name.txt"]);
-    assert_eq!(fs::read(out.join("bad_name.txt")).unwrap(), b"hello");
+        assert!(
+            problem.contains("cannot be written on this system"),
+            "answer {answer:?}: {problem}"
+        );
+        assert!(
+            !out.exists(),
+            "answer {answer:?} wrote {:?}",
+            files_under(&out)
+        );
+    }
 }
 
 #[cfg(unix)]
 #[test]
-fn an_empty_answer_removes_the_character() {
-    let dir = TempDir::new().unwrap();
-    let archive = zip_with(dir.path(), &[(UNWRITABLE_HERE, b"hello")]);
-    let out = dir.path().join("out");
-
-    let outcome = extract_answering(&archive, &out, &[("\u{0}", "")]).unwrap();
-
-    assert_eq!(written(outcome), ["badname.txt"]);
-}
-
-#[cfg(unix)]
-#[test]
-fn a_name_left_unanswered_stops_before_anything_is_written() {
+fn a_name_this_computer_cannot_write_stops_before_anything_is_written() {
     // The other entry is perfectly writable and still does not get written:
-    // extraction settles every name from the listing before the first byte, so
-    // a user who dismissed the dialog is not left with half an archive.
+    // every name is judged from the listing before the first byte, so a user is
+    // never left with half an archive and no way to tell which half.
     let dir = TempDir::new().unwrap();
     let archive = zip_with(
         dir.path(),
@@ -423,40 +431,49 @@ fn a_name_left_unanswered_stops_before_anything_is_written() {
     let problem = refusal(extract_answering(&archive, &out, &[]).unwrap());
 
     assert!(
-        problem.contains("no replacement for it was given"),
+        problem.contains("cannot be written on this system"),
         "{problem}"
     );
     assert!(problem.contains("bad"), "the entry names itself: {problem}");
     assert!(
         !out.exists(),
-        "an unanswered name wrote {:?}",
+        "an unwritable name wrote {:?}",
         files_under(&out)
     );
 }
 
 #[cfg(unix)]
 #[test]
-fn an_answer_this_computer_cannot_write_either_is_refused_with_the_reason() {
+fn the_refusal_says_which_character_is_the_problem() {
+    // The reason has to travel, because the dialog renders it and it is all the
+    // user gets: naming the entry without naming the character leaves them
+    // staring at a file name that looks fine, since a NUL prints as nothing.
     let dir = TempDir::new().unwrap();
     let archive = zip_with(dir.path(), &[(UNWRITABLE_HERE, b"hello")]);
     let out = dir.path().join("out");
 
-    // Replacing the NUL with a NUL is not an answer, and it is caught before
-    // the archive is opened rather than by the write failing.
-    let problem = refusal(extract_answering(&archive, &out, &[("\u{0}", "a\u{0}b")]).unwrap());
+    let problem = refusal(extract_answering(&archive, &out, &[]).unwrap());
 
-    assert!(problem.contains("cannot write"), "{problem}");
+    assert!(problem.contains("refuses in a file name"), "{problem}");
+    assert!(
+        problem.contains("\\0"),
+        "the character is shown escaped: {problem}"
+    );
     assert!(!out.exists());
 }
 
 #[cfg(unix)]
 #[test]
-fn two_entries_that_would_land_on_one_name_are_refused_naming_both() {
-    // Renaming one of them behind the user's back is how a file disappears
-    // without anyone noticing, so the answer is refused and both names are
-    // said out loud. The second entry here is one the host could write
-    // perfectly well: the collision is created by the answer, not found in the
-    // archive.
+fn an_entry_beside_the_name_it_would_have_taken_is_still_just_refused() {
+    // This was the collision case: answering the NUL with `_` made this entry
+    // into `bad_name.txt`, which the archive already holds, and one of the two
+    // would have been written over the other. Both names went into the refusal
+    // so the answer could be changed.
+    //
+    // Nothing is renamed now, so the two names stay two names and there is no
+    // collision to find. The archive is refused for the NUL alone, and
+    // `bad_name.txt` — an entry this host writes perfectly well — is not
+    // written either, which is the part worth keeping.
     let dir = TempDir::new().unwrap();
     let archive = zip_with(
         dir.path(),
@@ -466,11 +483,9 @@ fn two_entries_that_would_land_on_one_name_are_refused_naming_both() {
 
     let problem = refusal(extract_answering(&archive, &out, &[("\u{0}", "_")]).unwrap());
 
-    assert!(problem.contains("bad_name.txt"), "{problem}");
-    assert!(problem.contains("both be written as"), "{problem}");
-    assert!(!out.exists(), "a collision wrote {:?}", files_under(&out));
-
-    // And an answer that keeps them apart goes through.
-    let outcome = extract_answering(&archive, &out, &[("\u{0}", "-")]).unwrap();
-    assert_eq!(written(outcome), ["bad-name.txt", "bad_name.txt"]);
+    assert!(
+        problem.contains("cannot be written on this system"),
+        "{problem}"
+    );
+    assert!(!out.exists(), "wrote {:?}", files_under(&out));
 }

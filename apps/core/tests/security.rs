@@ -11,7 +11,7 @@ use collapse_core::compression::{
     compress_7z_dir, compress_tar_dir, compress_zip_dir, extract_7z, extract_tar, extract_zip,
     NameRules, Substitutions,
 };
-use collapse_core::{extract, extract_with, Algorithm, ExtractOptions, Verify};
+use collapse_core::{extract, extract_with, Algorithm, CompressionError, ExtractOptions, Verify};
 use sevenz_rust2::{SevenZArchiveEntry, SevenZWriter};
 use tar::{Builder, EntryType, Header};
 use zip::write::SimpleFileOptions;
@@ -628,10 +628,17 @@ fn no_format_writes_an_entry_name_with_a_colon_as_a_stream() {
 
 #[test]
 fn a_replacement_cannot_carry_an_entry_out_of_the_output_directory() {
-    // The answer the user gives is put inside a name that containment has
-    // already cleared, so an unchecked replacement is a traversal by the back
-    // door: `?` answered with `../..` would write above the output directory
-    // with nothing left to notice it.
+    // The answer the user gave used to be pushed inside a name that containment
+    // had already cleared, so an unchecked replacement was a traversal by the
+    // back door: `?` answered with `../..` would write above the output
+    // directory with nothing left to notice it. `check_replacements` stood in
+    // front of that.
+    //
+    // The hole is now closed a layer earlier and by construction rather than by
+    // a check: an answer is never applied to anything, so it cannot reach a
+    // path at all, and the entry that would have carried it is refused for its
+    // own name. The hostile answers are still offered here, and must still
+    // change nothing.
     for (ext, build) in [
         ("zip", malicious_zip as fn(&Path, &str)),
         ("7z", malicious_7z),
@@ -737,7 +744,17 @@ fn no_format_writes_through_a_symlink_already_in_the_output() {
 /// planned rename must not be able to land outside either.
 #[cfg(unix)]
 #[test]
-fn a_renamed_entry_cannot_be_written_through_such_a_symlink() {
+fn an_entry_that_cannot_be_named_is_refused_before_any_symlink_is_followed() {
+    // This entry used to take a second write path. Windows rules made the `?` a
+    // question, the answer renamed it, and the renamed branch wrote through a
+    // route that `unpack_in`'s own containment check never saw — so it needed
+    // its own proof that a symlink already sitting in the output could not be
+    // followed.
+    //
+    // That branch is unreachable now: the name is refused and nothing is
+    // written by any path. The test stays because the thing it guards is the
+    // file outside the output directory, and that assertion does not care which
+    // of the two reasons kept it safe.
     for ext in ["zip", "7z", "tar"] {
         let dir = tempfile::TempDir::new().unwrap();
         let outside = dir.path().join("outside");
@@ -753,12 +770,8 @@ fn a_renamed_entry_cannot_be_written_through_such_a_symlink() {
             _ => malicious_tar(&archive, "link/ev?l.txt"),
         }
 
-        // Windows rules make the `?` a question, so this entry is renamed and
-        // takes the planned write path rather than the untouched one.
-        let options = ExtractOptions::new()
-            .with_rules(NameRules::windows())
-            .with_replacements(Substitutions::new().with('?', "i"));
-        let escaped = outside.join("evil.txt");
+        let options = ExtractOptions::new().with_rules(NameRules::windows());
+        let escaped = outside.join("ev?l.txt");
         assert_contained(extract_with(&archive, &out, &options), &escaped);
     }
 }
@@ -894,18 +907,29 @@ fn the_same_archive_extracts_normally_somewhere_else() {
 /// lands exactly on the archive. Checking the archive's own spelling would
 /// miss it.
 #[test]
-fn the_check_follows_the_renamed_name_not_the_archive_s() {
+fn an_entry_that_cannot_be_named_never_reaches_the_archive_it_would_overwrite() {
+    // This used to be the case for following the *planned* name: `v?.zip`
+    // answered with `_` became `v_.zip`, which is the archive being read, and
+    // the overwrite guard had to see that even though the archive's own name
+    // matched no entry.
+    //
+    // Nothing is renamed any more, so that arrangement cannot be built. What
+    // is left is the ordering, and it is worth pinning: the naming refusal
+    // comes first, so the archive is never opened for writing at all. The
+    // guarantee a person cares about is unchanged and is the last assertion —
+    // the archive is still there, byte for byte.
     let dir = tempfile::TempDir::new().unwrap();
     let archive = dir.path().join("v_.zip");
     malicious_zip(&archive, "v?.zip");
     let before = std::fs::read(&archive).unwrap();
 
-    let options = ExtractOptions::new()
-        .with_rules(NameRules::windows())
-        .with_replacements(Substitutions::new().with('?', "_"));
+    let options = ExtractOptions::new().with_rules(NameRules::windows());
 
     let err = extract_with(&archive, dir.path(), &options)
-        .expect_err("the planned name lands on the archive");
-    assert!(err.to_string().contains("over the archive itself"), "{err}");
+        .expect_err("a name this host cannot write is refused");
+    assert!(
+        matches!(err, CompressionError::Name(_)),
+        "refused for the naming reason, before the overwrite check: {err}"
+    );
     assert_eq!(std::fs::read(&archive).unwrap(), before);
 }
