@@ -437,17 +437,18 @@ fn run_extract(archive: PathBuf, output_dir: PathBuf) -> Result<Outcome, CliErro
     // about names. Core skips its own planning pass for the same reason.
     let report = unwritable_names_with(&archive, rules).unwrap_or_default();
 
-    // Refused only when a character needs a replacement, which is a question,
-    // and a question needs someone to ask. The other two problems (a trailing
-    // dot or space, a reserved device name) have one correct answer that needs
-    // nobody: refusing those would leave a Windows user with no way to extract
-    // an archive whose only fault is a file called `aux.log`, while the
-    // desktop app would open it without a word.
-    if !report.characters.is_empty() {
+    // Every problem, not only the ones that used to carry a question. There is
+    // no question left to ask: core refuses an entry it cannot write under the
+    // archive's own name rather than adjusting it, so a trailing dot and a
+    // reserved device stop the extraction exactly as a colon does. Refusing
+    // here as well is not redundant — it is what lets the message name *every*
+    // entry at fault from the one listing, where core stops at the first.
+    if !report.is_empty() {
         return Err(CliError::UnwritableEntries { archive, report });
     }
-    // Worked out before extracting, from the same listing and the same rules
-    // the engine will use, so what is reported is what lands on disk.
+    // Nothing is adjusted any more, so this is provably empty by the time it is
+    // reached: the report above was empty, and adjustments come from the report.
+    // Kept until `Outcome::Extracted` loses the field.
     let adjusted = adjustments(&report, rules);
 
     let files = extract(&archive, &output_dir)?;
