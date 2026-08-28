@@ -14,7 +14,6 @@ apps/landing/
 # Never ship history or local tooling state into the context.
 .git/
 .github/
-.claude/
 **/node_modules/
 **/.DS_Store
 
