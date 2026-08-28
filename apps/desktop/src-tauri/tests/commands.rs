@@ -11,11 +11,10 @@
 //! stringified with `.to_string()`, and `Algorithm`'s own `FromStr` already
 //! yields one), so the assertions match on the message, not on a variant.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use collapse_desktop::commands::{compress_path, extract_archive, is_directory, Extraction};
+use collapse_desktop::commands::{compress_path, extract_archive, is_directory};
 use tempfile::TempDir;
 
 /// The three formats the UI offers. The wire spelling doubles as the archive
@@ -95,21 +94,14 @@ fn compress_local_with(
     )
 }
 
-/// Extract with no answers, which is every archive in this file: none of them
-/// carries a name this host cannot write, so `Extraction` can only be the
-/// `Extracted` arm and the naming question is `tests/names.rs`'s subject.
+/// Extract, which for every archive in this file simply works: none of them
+/// carries a name this host cannot write, and such a name is a plain `Err`
+/// now rather than an outcome of its own.
 fn extract_to(archive: &Path, output_dir: &Path) -> Result<Vec<String>, String> {
-    match extract_archive(
+    extract_archive(
         archive.to_string_lossy().into_owned(),
         output_dir.to_string_lossy().into_owned(),
-        BTreeMap::new(),
-    )? {
-        Extraction::Extracted { files } => Ok(files),
-        Extraction::NameProblem { message } => panic!(
-            "{} holds a name this host cannot write, which no fixture here intends: {message}",
-            archive.display()
-        ),
-    }
+    )
 }
 
 /// Normalize and sort an extracted listing so the expectations read the same

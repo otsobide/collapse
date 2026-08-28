@@ -24,16 +24,12 @@
 //! a caller that wanted several at once should move the work to
 //! `spawn_blocking` rather than add more of these.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use collapse_core::{
-    compress, compress_dir, extract_with, Algorithm, CompressionError, ExtractOptions, NameRules,
-    Verify,
+    compress, compress_dir, extract_with, Algorithm, ExtractOptions, NameRules, Verify,
 };
-use serde::Serialize;
 
-use crate::names::{substitutions_from, NameInspection};
 use crate::paths::{inside, same_file};
 
 /// Whether a path points at a directory (used by the UI to pick the icon and
@@ -179,110 +175,27 @@ pub fn check_server(url: String) -> Result<(), String> {
     collapse_remote::check_health(&url).map_err(|e| e.to_string())
 }
 
-/// What an archive holds that this machine cannot write as ordinary files, so
-/// the UI can ask the user about it **before** anything is extracted.
+/// Extract an archive into `output_dir`.
 ///
-/// Reads the archive's listing and nothing else: no entry is decompressed and
-/// nothing is created, which is what makes it safe to call the moment a
-/// destination has been chosen. An empty answer (`entries` empty) means there
-/// is no question to ask, which on macOS and Linux is nearly always the case:
-/// the rules are **this host's**, and Unix refuses only the NUL byte, while
-/// Windows refuses `? * < > | "`, control characters, a trailing dot or space
-/// and the device names, and silently reinterprets a colon.
+/// Returns the names as written, which are the names the archive spells: a name
+/// this host cannot hold fails the whole extraction rather than being adjusted
+/// to fit, so there is nothing for the user to answer and nothing for this
+/// command to take besides where the archive is and where it should go.
 ///
-/// An archive whose listing cannot be read reports nothing rather than
-/// failing, and that is deliberate: [`extract_archive`] is about to open the
-/// same file and fail on it in the extractor's own vocabulary ("Could not find
-/// EOCD", "failed to unpack `x`"), which is the message the user needs. This
-/// command answering first would replace it with a worse one. Core's
-/// `extract_with` makes the same choice for the same reason.
+/// A naming refusal comes back as an ordinary `Err`. It used to have a variant
+/// of its own so the dialog could stay open on it; there is no dialog now, and
+/// what is left is a message the user reads in the same place as any other
+/// failure.
 #[tauri::command(async)]
-pub fn unwritable_names(archive: String) -> Result<NameInspection, String> {
-    let archive_path = PathBuf::from(&archive);
-    if !archive_path.exists() {
-        return Err(format!("Not found: {archive}"));
-    }
-    // Named rather than left to `ExtractOptions`' default so that the rules the
-    // dialog is built from are visibly the same ones `extract_archive` will
-    // judge the answers by. They must agree: a dialog that asked about a
-    // different alphabet than the extractor enforces would ask the wrong
-    // questions and then fail anyway.
-    let rules = NameRules::host();
-    let report = collapse_core::unwritable_names_with(&archive_path, rules).unwrap_or_default();
-    Ok(NameInspection::new(report, rules))
-}
-
-/// What came of an extraction attempt.
-///
-/// Two arms because two things can come back that are not failures of the
-/// machine: the archive was extracted, or **nothing was written** and the user
-/// has another naming question to answer. An `Err` from [`extract_archive`]
-/// stays what it always was, something the user cannot fix by typing (a
-/// missing file, a corrupt archive, a full disk).
-///
-/// Keeping the second case out of `Err` is what lets the dialog stay open on
-/// the answer that needs changing while the error banner keeps meaning "this
-/// did not work". The distinction is sound rather than hopeful: core raises
-/// `CompressionError::Name` only while validating the answers and while
-/// planning every entry's name from the listing, both of which happen before
-/// the first byte is written.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
-pub enum Extraction {
-    /// Written, under these names. Never the archive's names: an entry this
-    /// host had to be given a different name for is reported as it is on disk,
-    /// or the UI would list files nobody can find.
-    Extracted { files: Vec<String> },
-    /// Nothing was written, and here is what has to be answered differently.
-    NameProblem { message: String },
-}
-
-/// Extract an archive into `output_dir` with the user's answers for the names
-/// this host cannot write.
-///
-/// `replacements` maps one character to whatever should stand in for it, and
-/// is empty for the ordinary archive that needs nothing. An empty *value* is a
-/// real answer meaning "drop the character". The two adjustments no one can be
-/// asked about (a trailing dot or space, a reserved device name) are applied by
-/// core without appearing here; [`unwritable_names`] is what tells the user
-/// they are coming.
-///
-/// A `BTreeMap` rather than a `HashMap`: with two bad keys in one payload, the
-/// message has to name the same one on every run.
-#[tauri::command(async)]
-pub fn extract_archive(
-    archive: String,
-    output_dir: String,
-    replacements: BTreeMap<String, String>,
-) -> Result<Extraction, String> {
+pub fn extract_archive(archive: String, output_dir: String) -> Result<Vec<String>, String> {
     let archive_path = PathBuf::from(&archive);
     if !archive_path.exists() {
         return Err(format!("Not found: {archive}"));
     }
     let output = PathBuf::from(&output_dir);
 
-    let answers = match substitutions_from(&replacements) {
-        Ok(answers) => answers,
-        // A key that is not a single character is the webview's mistake rather
-        // than the user's, but it is still a naming question that wrote
-        // nothing, so it travels the same way and the dialog stays open.
-        Err(problem) => {
-            return Ok(Extraction::NameProblem {
-                message: problem.to_string(),
-            })
-        }
-    };
-    // The host's rules, spelled out rather than left to the default, because
-    // they have to be the same ones `unwritable_names` built the dialog from.
-    let options = ExtractOptions::new()
-        .with_rules(NameRules::host())
-        .with_replacements(answers);
-
-    match extract_with(&archive_path, &output, &options) {
-        Ok(files) => Ok(Extraction::Extracted { files }),
-        Err(CompressionError::Name(problem)) => Ok(Extraction::NameProblem {
-            message: problem.to_string(),
-        }),
-        Err(other) => Err(other.to_string()),
-    }
+    // The host's rules, spelled out rather than left to the default, so the
+    // machine being judged is visibly this one.
+    let options = ExtractOptions::new().with_rules(NameRules::host());
+    extract_with(&archive_path, &output, &options).map_err(|e| e.to_string())
 }
