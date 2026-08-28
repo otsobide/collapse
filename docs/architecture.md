@@ -176,7 +176,8 @@ effects — no subprocess needed.
 ### Command surface
 
 ```
-collapse compress <file|dir> [-f 7z|zip|tar] [-l 1-5] [-o <path>] [--force] [--server <URL>]
+collapse compress <file|dir> [-f 7z|zip|tar] [-l 1-5] [-o <path>] [--force]
+                             [--verify] [--server <URL>]
 collapse extract  <archive>  [-o <dir>]
 ```
 
@@ -218,6 +219,15 @@ Aliases `c` / `e`. The CLI-local `Format` enum (`clap::ValueEnum`) converts to
    handles files and directories alike; the archive lands at the same output
    path local mode would use. The safety guards in step 4 run before any
    network I/O. Extraction has no remote mode.
+6. **Read the archive back.** Every local compression is checked, and `--verify`
+   only chooses how deeply: `Verify::Index` by default, `Verify::Contents` with
+   the flag. The depth is bound once and then both handed to the engine and
+   reported, so an `Outcome` cannot name a check that did not happen. The flag
+   is refused alongside `--server`, because the archive is built on the far side
+   and the protocol has no way to ask for the deeper check; the server takes its
+   own `verify=` parameter instead. What each depth buys per format is in
+   `compression/verify.rs`, and the difference is not cosmetic: tar stores no
+   checksum over an entry's data at all.
 
 Extraction (`run_extract`) resolves the output directory (default the current
 directory) and calls `collapse_core::extract`, which creates the directory tree
@@ -552,7 +562,10 @@ for four minutes. It is there because merging two individually well formatted
 branches can still produce an unformatted tree, and only a check on the merged
 result sees that. Per app, tests gate the build: `test (core)` (`make core/test`)
 gates `test (remote)`, `test (cli)`, `test (server-backend)` and
-`test (desktop)` (the Tauri IPC is mocked, so that one needs Node only), while
+`test (desktop)` (the Tauri IPC is mocked, so that one needs Node only) and
+`test (desktop, rust)` (the `src-tauri` suite, which needs the Node toolchain to
+build the bundle `generate_context!()` embeds, plus the webkit system libraries,
+and is the only Linux job that compiles the Tauri crate at all), while
 `test (server-frontend)` is independent of the Rust engine and waits only on
 `fmt`. **Linux runs everything, on every push and every pull request.** macOS and
 Windows run the whole Rust suite too, as `test (rust, macos)` and
