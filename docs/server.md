@@ -604,6 +604,45 @@ Everything below follows from that:
 The full picture, including what the server does defend against when it unpacks
 a tar someone sent it, is in [threat_model.md](threat_model.md#the-api-server).
 
+### Putting it behind something that authenticates
+
+"Put it behind a proxy" is the standing advice above, and it is worth spelling
+out, because **the CLI already works with the most ordinary form of it** and
+nothing in the codebase said so.
+
+`ureq` sends HTTP Basic credentials from a URL's userinfo, so a reverse proxy
+that asks for a password needs no client change:
+
+```bash
+collapse compress notes.txt --server http://user:secret@proxy.internal:8080
+```
+
+Verified against a stub that requires authentication: the request arrives with
+`Authorization: Basic dXNlcjpzZWNyZXQ=`, and a rejection is reported legibly
+rather than as a transport failure —
+
+```
+error: the server rejected the request (HTTP 401): authentication required
+```
+
+— because the CLI prefers the server's JSON `detail` field when it has one.
+
+**What this costs, stated rather than left to be discovered.** The credential is
+in the command, so it is in shell history and in the process list while the
+command runs. If the same URL is saved as a server in the desktop app it is
+written to the webview's `localStorage` in clear text (`apps/desktop/src/
+sources.js`), which is a file on disk with no protection beyond the user
+account. Prefer a credential minted for this purpose over a password that
+unlocks anything else.
+
+**What the client cannot do.** There is no way to send a bearer token, an API
+key header, or a client certificate. Basic through a proxy is the whole of it
+today, which is enough for "keep strangers off it" and is not enough for
+per-client identity or revocation.
+
+Terminating TLS at that proxy costs nothing extra on the client: `ureq` is built
+with rustls, so `--server https://…` works the moment something answers on it.
+
 ## Known limitations
 
 Worth knowing before deploying this unattended:
