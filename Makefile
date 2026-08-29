@@ -95,8 +95,16 @@ docker/shell: ## Open a shell inside the running backend container
 	$(COMPOSE) exec backend /bin/bash
 
 .PHONY: docker/run
+# Published on loopback, like compose, `docker/aio` and both smoke scripts. The
+# server binds 127.0.0.1 by default precisely because it has no authentication,
+# but the image's ENTRYPOINT pins --host 0.0.0.0 so a published port reaches it
+# at all — which means the port mapping is the only thing left deciding who can
+# talk to it. `-p $(COLLAPSE_PORT):8000` binds every interface, so on a laptop
+# on a cafe network this target alone put an unauthenticated compression
+# service on the LAN. Publish wider by hand, on a network you have thought
+# about.
 docker/run: docker/build ## Run a throwaway container — ARGS="--max-upload-mb 50"
-	docker run --rm -p $(COLLAPSE_PORT):8000 $(IMAGE) $(ARGS)
+	docker run --rm -p 127.0.0.1:$(COLLAPSE_PORT):8000 $(IMAGE) $(ARGS)
 
 .PHONY: docker/smoke
 docker/smoke: ## Build, start, drive a real compression through the published port, stop
