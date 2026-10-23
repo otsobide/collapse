@@ -358,7 +358,10 @@ Stated plainly, because deploying it assumes these:
 - **No authentication and no rate limiting.** Anyone who can reach the port can
   submit jobs, and jobs consume CPU, memory and disk. Bind it to localhost (the
   default, and what the container image publishes) or put it behind something
-  that authenticates.
+  that authenticates. That second half is written out in
+  [server.md](server.md#putting-it-behind-something-that-authenticates):
+  the CLI already carries Basic credentials through a proxy, and what that
+  costs is stated there too.
 - **The web frontend proxies the API, so its port exposes the API too.** nginx
   forwards `/compress` and `/jobs` to the backend, which is what keeps the
   browser same-origin; the consequence is that publishing the web port to a
