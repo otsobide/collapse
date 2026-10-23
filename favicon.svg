@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40" viewBox="0 0 40 40">
+  <rect width="40" height="40" rx="11" fill="#c15f3c"/>
+  <!-- Collapse's compress motif: a down arrow, in cervantic's cream stroke -->
+  <path d="M20 9 V24 M12 17.5 L20 27 L28 17.5"
+        fill="none" stroke="#f5f0e8" stroke-width="4.2"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
